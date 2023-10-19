@@ -30,7 +30,21 @@ std::optional<std::string_view> Info::get_name() const {
 }
 
 void Info::set_name(std::string_view new_name) {
+    if (new_name.size() > NAME_MAX_LENGTH)
+        new_name = new_name.substr(0, NAME_MAX_LENGTH);
     set_nonempty_str(data["n"], new_name);
+}
+
+std::optional<std::string_view> Info::get_description() const {
+    if (auto* s = data["o"].string(); s && !s->empty())
+        return *s;
+    return std::nullopt;
+}
+
+void Info::set_description(std::string_view new_desc) {
+    if (new_desc.size() > DESCRIPTION_MAX_LENGTH)
+        new_desc = new_desc.substr(0, DESCRIPTION_MAX_LENGTH);
+    set_nonempty_str(data["o"], new_desc);
 }
 
 profile_pic Info::get_profile_pic() const {
@@ -104,6 +118,10 @@ bool Info::is_destroyed() const {
 
 using namespace session;
 using namespace session::config;
+
+LIBSESSION_C_API const size_t GROUP_INFO_NAME_MAX_LENGTH = groups::Info::NAME_MAX_LENGTH;
+LIBSESSION_C_API const size_t GROUP_INFO_DESCRIPTION_MAX_LENGTH =
+        groups::Info::DESCRIPTION_MAX_LENGTH;
 
 LIBSESSION_C_API int groups_info_init(
         config_object** conf,
