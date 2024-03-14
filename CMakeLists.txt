@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.14...3.23)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Has to be set before `project()`, and ignored on non-macos:
-set(CMAKE_OSX_DEPLOYMENT_TARGET 10.13 CACHE STRING "macOS deployment target (Apple clang only)")
+set(CMAKE_OSX_DEPLOYMENT_TARGET 10.15 CACHE STRING "macOS deployment target (Apple clang only)")
 
 set(LANGS C CXX)
 find_program(CCACHE_PROGRAM ccache)
@@ -15,7 +15,6 @@ if(CCACHE_PROGRAM)
     endif()
   endforeach()
 endif()
-
 
 project(libsession-util
     VERSION 1.2.0
@@ -80,9 +79,6 @@ option(WARNINGS_AS_ERRORS "Treat all compiler warnings as errors" OFF)
 option(STATIC_LIBSTD "Statically link libstdc++/libgcc" ${default_static_libstd})
 
 option(USE_LTO "Use Link-Time Optimization" ${use_lto_default})
-
-# Provide this as an option for now because GMP and iOS are sometimes unhappy with each other.
-option(ENABLE_ONIONREQ "Build with onion request functionality" ON)
 
 if(USE_LTO)
   include(CheckIPOSupported)
