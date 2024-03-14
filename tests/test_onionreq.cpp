@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <session/network.hpp>
 #include <session/onionreq/hop_encryption.hpp>
 #include <session/onionreq/parser.hpp>
 
@@ -6,6 +7,11 @@
 
 using namespace session;
 using namespace session::onionreq;
+
+// TODO: Remove this
+TEST_CASE("Quic Linking test", "[oxen][quic]") {
+    oxen::quic::RemoteAddress test = oxen::quic::RemoteAddress{"1234"};
+}
 
 TEST_CASE("Onion request encryption", "[encryption][onionreq]") {
 

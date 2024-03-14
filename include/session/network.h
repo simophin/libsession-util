@@ -16,14 +16,19 @@ typedef struct remote_address {
 } remote_address;
 
 LIBSESSION_EXPORT void network_send_request(
-    const unsigned char* ed25519_secretkey_bytes,
-    const remote_address remote,
-    const char* endpoint,
-    size_t endpoint_size,
-    const unsigned char* body,
-    size_t body_size,
-    void (*callback)(bool success, int16_t status_code, const char* response, size_t response_size, void*),
-    void* ctx);
+        const unsigned char* ed25519_secretkey_bytes,
+        const remote_address remote,
+        const char* endpoint,
+        size_t endpoint_size,
+        const unsigned char* body,
+        size_t body_size,
+        void (*callback)(
+                bool success,
+                int16_t status_code,
+                const char* response,
+                size_t response_size,
+                void*),
+        void* ctx);
 
 #ifdef __cplusplus
 }

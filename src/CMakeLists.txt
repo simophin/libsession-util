@@ -108,8 +108,8 @@ target_link_libraries(onionreq
     PUBLIC
     crypto
     common
+    quic
     PRIVATE
-    quic::quic
     nlohmann_json::nlohmann_json
     libsodium::sodium-internal
     nettle
