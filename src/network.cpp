@@ -1,5 +1,7 @@
 #include "session/network.hpp"
 
+#include <string>
+#include <string_view>
 #include <sodium/core.h>
 #include <sodium/crypto_sign_ed25519.h>
 
@@ -12,7 +14,7 @@
 
 using namespace session;
 using namespace oxen::quic;
-using namespace oxenc::literals;
+using namespace std::literals;
 
 namespace session::network {
 

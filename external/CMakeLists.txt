@@ -100,7 +100,8 @@ if(CMAKE_CROSSCOMPILING)
     endif()
 endif()
 
-
+set(OXENC_BUILD_TESTS OFF CACHE BOOL "")
+set(OXENC_BUILD_DOCS OFF CACHE BOOL "")
 system_or_submodule(OXENC oxenc liboxenc>=1.0.10 oxen-encoding)
 
 set(LIBQUIC_BUILD_TESTS OFF CACHE BOOL "")
