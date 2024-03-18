@@ -11,6 +11,15 @@ using namespace session::onionreq;
 // TODO: Remove this
 TEST_CASE("Quic Linking test", "[oxen][quic]") {
     oxen::quic::RemoteAddress test = oxen::quic::RemoteAddress{"1234"};
+
+    session::network::send_request(
+            to_usv(""),
+            test,
+            "test",
+            std::nullopt,
+            [](bool success, int16_t status_code, std::optional<std::string> response) {
+
+            });
 }
 
 TEST_CASE("Onion request encryption", "[encryption][onionreq]") {
