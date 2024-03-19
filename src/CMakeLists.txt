@@ -34,17 +34,6 @@ macro(add_libsession_util_library name)
 endmacro()
 
 
-if(NOT BUILD_STATIC_DEPS)
-    find_package(PkgConfig REQUIRED)
-
-    if(NOT TARGET nettle)
-        pkg_check_modules(NETTLE nettle IMPORTED_TARGET REQUIRED)
-        add_library(nettle INTERFACE IMPORTED)
-        target_link_libraries(nettle INTERFACE PkgConfig::NETTLE)
-    endif()
-endif()
-
-
 add_libsession_util_library(crypto
     blinding.cpp
     curve25519.cpp
@@ -112,7 +101,6 @@ target_link_libraries(onionreq
     PRIVATE
     nlohmann_json::nlohmann_json
     libsodium::sodium-internal
-    nettle
 )
 
 

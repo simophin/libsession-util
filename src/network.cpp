@@ -95,7 +95,7 @@ LIBSESSION_C_API void network_send_request(
             body = {body_, body_size};
 
         send_request(
-                {ed25519_secretkey_bytes, 66},
+                {ed25519_secretkey_bytes, 64},
                 {remote.pubkey, remote.ip, remote.port},
                 {endpoint, endpoint_size},
                 body,
