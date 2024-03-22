@@ -21,6 +21,20 @@ typedef struct onion_request_builder_object {
     ENCRYPT_TYPE enc_type;
 } onion_request_builder_object;
 
+typedef struct onion_request_service_node {
+    const char ip[40];  // IPv4 is 15 chars, IPv6 is 39 chars, + null terminator.
+    const uint16_t lmq_port;
+    const char* x25519_pubkey_hex;   // 64 chars
+    const char* ed25519_pubkey_hex;  // 64 chars
+    const uint8_t failure_count;
+} onion_request_service_node;
+
+typedef struct onion_request_path {
+    const onion_request_service_node* nodes;
+    const size_t nodes_count;
+    const uint8_t failure_count;
+} onion_request_path;
+
 /// API: groups/onion_request_builder_init
 ///
 /// Constructs an onion request builder and sets a pointer to it in `builder`.
@@ -66,12 +80,16 @@ LIBSESSION_EXPORT void onion_request_builder_set_enc_type(
 ///
 /// Inputs:
 /// - `builder` -- [in] Pointer to the builder object
+/// - `ip` -- [in] The IP address for the snode destination
+/// - `lmq_port` -- [in] The LMQ port request for the snode destination
 /// - `ed25519_pubkey` -- [in] The ed25519 public key for the snode destination
 /// - `x25519_pubkey` -- [in] The x25519 public key for the snode destination
 LIBSESSION_EXPORT void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
-        const char* ed25519_pubkey,
-        const char* x25519_pubkey);
+        const char* ip,
+        const uint16_t lmq_port,
+        const char* x25519_pubkey,
+        const char* ed25519_pubkey);
 
 /// API: onion_request_builder_set_server_destination
 ///
@@ -95,6 +113,7 @@ LIBSESSION_EXPORT void onion_request_builder_set_snode_destination(
 /// - `host` -- [in] The host for the server destination
 /// - `target` -- [in] The target (endpoint) for the server destination
 /// - `protocol` -- [in] The protocol to use for the
+/// - `method` -- [in] The HTTP method to use for the server destination
 /// - `port` -- [in] The host for the server destination
 /// - `x25519_pubkey` -- [in] The x25519 public key for the snode destination
 LIBSESSION_EXPORT void onion_request_builder_set_server_destination(
@@ -102,6 +121,7 @@ LIBSESSION_EXPORT void onion_request_builder_set_server_destination(
         const char* host,
         const char* target,
         const char* protocol,
+        const char* method,
         uint16_t port,
         const char* x25519_pubkey);
 

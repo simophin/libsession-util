@@ -1,22 +1,41 @@
 #include "session/network.hpp"
 
-#include <string>
-#include <string_view>
+#include <oxenc/hex.h>
 #include <sodium/core.h>
 #include <sodium/crypto_sign_ed25519.h>
 
 #include <nlohmann/json.hpp>
+#include <oxen/log.hpp>
+#include <oxen/log/ring_buffer_sink.hpp>
 #include <oxen/quic.hpp>
+#include <string>
+#include <string_view>
 
 #include "session/export.h"
 #include "session/network.h"
+#include "session/onionreq/builder.h"
+#include "session/onionreq/builder.hpp"
+#include "session/onionreq/key_types.hpp"
+#include "session/onionreq/response_parser.hpp"
 #include "session/util.hpp"
 
 using namespace session;
 using namespace oxen::quic;
+using namespace session::onionreq;
 using namespace std::literals;
 
 namespace session::network {
+
+namespace {
+    ustring encode_size(uint32_t s) {
+        ustring result;
+        result.resize(4);
+        oxenc::write_host_as_little(s, result.data());
+        return result;
+    }
+}  // namespace
+
+class Timeout : public std::exception {};
 
 constexpr auto ALPN = "oxenstorage"sv;
 const ustring uALPN{reinterpret_cast<const unsigned char*>(ALPN.data()), ALPN.size()};
@@ -25,46 +44,193 @@ void send_request(
         ustring_view ed_sk,
         RemoteAddress target,
         std::string endpoint,
-        std::optional<ustring> body,
-        std::function<void(bool success, int16_t status_code, std::optional<std::string> response)>
-                handle_response) {
-    Network net;
-    std::promise<nlohmann::json> sns_prom;
-    auto creds = GNUTLSCreds::make_from_ed_seckey(std::string(from_unsigned_sv(ed_sk)));
-    auto ep = net.endpoint(Address{"0.0.0.0", 0}, opt::outbound_alpns{{uALPN}});
-    auto c = ep->connect(target, creds);
-    auto s = c->open_stream<BTRequestStream>();
-    bstring_view payload = {};
-
-    if (body)
-        payload = convert_sv<std::byte>(from_unsigned_sv(*body));
-
-    s->command(std::move(endpoint), payload, [&target, &sns_prom](message resp) {
-        try {
-            if (resp.is_error())
-                throw std::runtime_error{"Failed to fetch service node list from seed node"};
-
-            sns_prom.set_value(nlohmann::json::parse(resp.body()));
-        } catch (...) {
-            sns_prom.set_exception(std::current_exception());
-        }
-    });
-
-    nlohmann::json sns;
+        std::optional<bstring_view> body,
+        network_response_callback_t handle_response) {
     try {
-        sns = sns_prom.get_future().get();
-        if (!(sns.is_array() && sns.size() == 2 && sns[0].get<int16_t>() == 200)) {
-            handle_response(
-                    false, sns[0].get<int16_t>(), sns.dump());  // TODO: Check for response data
-            return;
+        Network net;
+        std::promise<std::string> prom;
+        auto creds = GNUTLSCreds::make_from_ed_seckey(std::string(from_unsigned_sv(ed_sk)));
+        auto ep = net.endpoint(Address{"0.0.0.0", 0}, opt::outbound_alpns{{uALPN}});
+        auto c = ep->connect(target, creds);
+        auto s = c->open_stream<BTRequestStream>();
+        bstring_view payload = {};
+
+        if (body)
+            payload = *body;
+
+        s->command(std::move(endpoint), payload, [&target, &prom](message resp) {
+            try {
+                if (resp.timed_out)
+                    throw Timeout{};
+
+                std::string body = resp.body_str();
+                if (resp.is_error() && !body.empty())
+                    throw std::runtime_error{"Failed to fetch response with error: " + body};
+                else if (resp.is_error())
+                    throw std::runtime_error{"Failed to fetch response"};
+
+                prom.set_value(body);
+            } catch (...) {
+                prom.set_exception(std::current_exception());
+            }
+        });
+
+        std::string response = prom.get_future().get();
+        int16_t status_code = 200;
+        std::string response_data;
+
+        try {
+            nlohmann::json response_json = nlohmann::json::parse(response);
+
+            if (response_json.is_array() && response_json.size() == 2) {
+                status_code = response_json[0].get<int16_t>();
+                response_data = response_json[1].dump();
+            } else
+                response_data = response;
+        } catch (...) {
+            response_data = response;
         }
 
-        handle_response(true, sns[0].get<int16_t>(), sns.dump());
-
+        handle_response(true, false, status_code, response_data);
+    } catch (const Timeout&) {
+        handle_response(false, true, -1, "Request timed out");
     } catch (const std::exception& e) {
-        std::cerr << "\e[3mFailed to obtain service node list: " << e.what() << "\e[0m\n";
-        // result.clear();
-        handle_response(false, -1, e.what());
+        handle_response(false, false, -1, e.what());
+    }
+}
+
+template <typename Destination>
+void process_response(
+        const Builder builder,
+        const Destination destination,
+        const std::string response,
+        network_response_callback_t handle_response) {
+    handle_response(false, false, -1, "Invalid destination.");
+}
+
+template <>
+void process_response(
+        const Builder builder,
+        const SnodeDestination destination,
+        const std::string response,
+        network_response_callback_t handle_response) {
+    // The SnodeDestination runs via V3 onion requests
+    try {
+        std::string base64_iv_and_ciphertext;
+
+        try {
+            nlohmann::json response_json = nlohmann::json::parse(response);
+
+            if (!response_json.contains("result") || !response_json["result"].is_string())
+                throw std::runtime_error{"JSON missing result field."};
+
+            base64_iv_and_ciphertext = response_json["result"].get<std::string>();
+        } catch (...) {
+            base64_iv_and_ciphertext = response;
+        }
+
+        if (!oxenc::is_base64(base64_iv_and_ciphertext))
+            throw std::runtime_error{"Invalid base64 encoded IV and ciphertext."};
+
+        ustring iv_and_ciphertext;
+        oxenc::from_base64(
+                base64_iv_and_ciphertext.begin(),
+                base64_iv_and_ciphertext.end(),
+                std::back_inserter(iv_and_ciphertext));
+        auto parser = ResponseParser(builder);
+        auto result = parser.decrypt(iv_and_ciphertext);
+        auto result_json = nlohmann::json::parse(result);
+        int status_code;
+
+        if (result_json.contains("status_code") && result_json["status_code"].is_number())
+            status_code = result_json["status_code"].get<int>();
+        else if (result_json.contains("status") && result_json["status"].is_number())
+            status_code = result_json["status"].get<int>();
+        else
+            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
+
+        if (result_json.contains("body") && result_json["body"].is_string())
+            handle_response(true, false, status_code, result_json["body"].get<std::string>());
+        else
+            handle_response(true, false, status_code, result_json.dump());
+    } catch (const std::exception& e) {
+        oxen::log::info(log_cat, "Triggered callback SnodeDestinationEnd: {}", e.what());
+        handle_response(false, false, -1, e.what());
+    }
+}
+
+template <>
+void process_response(
+        const Builder builder,
+        const ServerDestination destination,
+        const std::string response,
+        network_response_callback_t handle_response) {
+    // The ServerDestination runs via V4 onion requests
+    try {
+        auto parser = ResponseParser(builder);
+        ustring response_data;
+        oxenc::from_hex(response.begin(), response.end(), std::back_inserter(response_data));
+        auto result = parser.decrypt(response_data);
+
+        // Process the bencoded response
+        oxenc::bt_dict_consumer result_bencode{result};
+    } catch (const std::exception& e) {
+        oxen::log::info(log_cat, "Triggered callback SnodeDestinationEnd: {}", e.what());
+        handle_response(false, false, -1, e.what());
+    }
+}
+
+template <typename Destination>
+void send_onion_request(
+        const onion_path path,
+        const Destination destination,
+        const std::optional<ustring> body,
+        const ustring_view ed_sk,
+        network_response_callback_t handle_response) {
+    if (path.nodes.empty()) {
+        handle_response(false, false, -1, "No nodes in the path");
+        return;
+    }
+
+    try {
+        // Construct the onion request
+        auto builder = Builder();
+        builder.set_destination(destination);
+
+        for (const auto& node : path.nodes)
+            builder.add_hop({node.ed25519_pubkey, node.x25519_pubkey});
+
+        auto payload = builder.generate_payload(destination, body);
+        auto onion_req_payload = builder.build(payload);
+        bstring_view quic_payload = bstring_view{
+                reinterpret_cast<const std::byte*>(onion_req_payload.data()),
+                onion_req_payload.size()};
+
+        send_request(
+                ed_sk,
+                RemoteAddress{
+                        path.nodes[0].ed25519_pubkey.view(),
+                        path.nodes[0].ip,
+                        path.nodes[0].lmq_port},
+                "onion_req",
+                quic_payload,
+                [builder = std::move(builder),
+                 destination = std::move(destination),
+                 callback = std::move(handle_response)](
+                        bool success,
+                        bool timeout,
+                        int16_t status_code,
+                        std::optional<std::string> response) {
+                    if (!response.has_value()) {
+                        callback(success, timeout, status_code, response);
+                        return;
+                    }
+
+                    process_response(builder, destination, *response, callback);
+                });
+    } catch (const std::exception& e) {
+        oxen::log::info(log_cat, "Triggered callback3: {}", e.what());
+        handle_response(false, false, -1, e.what());
     }
 }
 
@@ -83,29 +249,161 @@ LIBSESSION_C_API void network_send_request(
         size_t body_size,
         void (*callback)(
                 bool success,
+                bool timeout,
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
                 void*),
         void* ctx) {
     assert(ed25519_secretkey_bytes && endpoint && callback);
+
+    std::optional<bstring_view> body;
+    if (body_size > 0)
+        body = bstring_view{reinterpret_cast<const std::byte*>(body_), body_size};
+
+    std::string_view remote_pubkey_hex = {remote.pubkey, 64};
+    session::ustring remote_pubkey;
+    oxenc::from_hex(
+            remote_pubkey_hex.begin(), remote_pubkey_hex.end(), std::back_inserter(remote_pubkey));
+
+    send_request(
+            {ed25519_secretkey_bytes, 64},
+            {remote_pubkey, remote.ip, remote.port},
+            {endpoint, endpoint_size},
+            body,
+            [callback, ctx](
+                    bool success,
+                    bool timeout,
+                    int status_code,
+                    std::optional<std::string> response) {
+                callback(success, timeout, status_code, response->data(), response->size(), ctx);
+            });
+}
+
+LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
+        const onion_request_path path_,
+        const unsigned char* ed25519_secretkey_bytes,
+        const onion_request_service_node node,
+        const unsigned char* body_,
+        size_t body_size,
+        void (*callback)(
+                bool success,
+                bool timeout,
+                int16_t status_code,
+                const char* response,
+                size_t response_size,
+                void*),
+        void* ctx) {
+    assert(ed25519_secretkey_bytes && callback);
+
     try {
+        std::vector<session::onionreq::service_node> nodes;
+        for (size_t i = 0; i < path_.nodes_count; i++)
+            nodes.emplace_back(
+                    path_.nodes[i].ip,
+                    path_.nodes[i].lmq_port,
+                    x25519_pubkey::from_hex({path_.nodes[i].x25519_pubkey_hex, 64}),
+                    ed25519_pubkey::from_hex({path_.nodes[i].ed25519_pubkey_hex, 64}),
+                    path_.nodes[i].failure_count);
+
+        session::onionreq::onion_path path = {nodes, path_.failure_count};
+
         std::optional<ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
 
-        send_request(
-                {ed25519_secretkey_bytes, 64},
-                {remote.pubkey, remote.ip, remote.port},
-                {endpoint, endpoint_size},
+        send_onion_request(
+                path,
+                SnodeDestination{
+                        {node.ip,
+                         node.lmq_port,
+                         x25519_pubkey::from_hex({node.x25519_pubkey_hex, 64}),
+                         ed25519_pubkey::from_hex({node.ed25519_pubkey_hex, 64}),
+                         node.failure_count}},
                 body,
+                {ed25519_secretkey_bytes, 64},
                 [callback, ctx](
-                        bool success, int16_t status_code, std::optional<std::string> response) {
-                    callback(success, status_code, response->data(), response->size(), ctx);
+                        bool success,
+                        bool timeout,
+                        int status_code,
+                        std::optional<std::string> response) {
+                    callback(
+                            success, timeout, status_code, response->data(), response->size(), ctx);
                 });
     } catch (const std::exception& e) {
-        std::string_view error = e.what();
-        callback(false, -1, e.what(), error.size(), ctx);
+        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
+    }
+}
+
+LIBSESSION_C_API void network_send_onion_request_to_server_destination(
+        const onion_request_path path_,
+        const unsigned char* ed25519_secretkey_bytes,
+        const char* method,
+        const char* host,
+        const char* target,
+        const char* protocol,
+        const char* x25519_pubkey,
+        uint16_t port,
+        const char** headers_,
+        const char** header_values,
+        size_t headers_size,
+        const unsigned char* body_,
+        size_t body_size,
+        void (*callback)(
+                bool success,
+                bool timeout,
+                int16_t status_code,
+                const char* response,
+                size_t response_size,
+                void*),
+        void* ctx) {
+    assert(ed25519_secretkey_bytes && host && target && protocol && x25519_pubkey && callback);
+
+    try {
+        std::vector<session::onionreq::service_node> nodes;
+        for (size_t i = 0; i < path_.nodes_count; i++)
+            nodes.emplace_back(
+                    path_.nodes[i].ip,
+                    path_.nodes[i].lmq_port,
+                    x25519_pubkey::from_hex({path_.nodes[i].x25519_pubkey_hex, 64}),
+                    ed25519_pubkey::from_hex({path_.nodes[i].ed25519_pubkey_hex, 64}),
+                    path_.nodes[i].failure_count);
+
+        session::onionreq::onion_path path = {nodes, path_.failure_count};
+        std::optional<std::vector<std::pair<std::string, std::string>>> headers;
+        if (headers_size > 0) {
+            headers = std::vector<std::pair<std::string, std::string>>{};
+
+            for (size_t i = 0; i < headers_size; i++)
+                headers->emplace_back(headers_[i], header_values[i]);
+        }
+
+        std::optional<ustring> body;
+        if (body_size > 0)
+            body = {body_, body_size};
+
+        send_onion_request(
+                path,
+                ServerDestination{
+                        host,
+                        target,
+                        protocol,
+                        x25519_pubkey::from_hex({x25519_pubkey, 64}),
+                        method,
+                        port,
+                        headers},
+                body,
+                {ed25519_secretkey_bytes, 64},
+                [callback, ctx](
+                        bool success,
+                        bool timeout,
+                        int status_code,
+                        std::optional<std::string> response) {
+                    callback(
+                            success, timeout, status_code, response->data(), response->size(), ctx);
+                });
+    } catch (const std::exception& e) {
+        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
     }
 }
 

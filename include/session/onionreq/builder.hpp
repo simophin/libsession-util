@@ -7,6 +7,70 @@
 
 namespace session::onionreq {
 
+struct service_node {
+    std::string ip;
+    uint16_t lmq_port;
+    session::onionreq::x25519_pubkey x25519_pubkey;
+    session::onionreq::ed25519_pubkey ed25519_pubkey;
+    uint8_t failure_count;
+
+    service_node(
+            std::string ip,
+            uint16_t lmq_port,
+            session::onionreq::x25519_pubkey x25519_pubkey,
+            session::onionreq::ed25519_pubkey ed25519_pubkey,
+            uint8_t failure_count) :
+            ip{std::move(ip)},
+            lmq_port{std::move(lmq_port)},
+            x25519_pubkey{std::move(x25519_pubkey)},
+            ed25519_pubkey{std::move(ed25519_pubkey)},
+            failure_count{failure_count} {}
+};
+
+struct onion_path {
+    std::vector<service_node> nodes;
+    uint8_t failure_count;
+};
+
+class SnodeDestination {
+  public:
+    service_node node;
+
+    // SnodeDestination(service_node node) : node{std::move(node)} {}
+
+    ustring generate_payload(std::optional<ustring> body) const;
+};
+
+class ServerDestination {
+  public:
+    std::string host;
+    std::string target;
+    std::string protocol;
+    session::onionreq::x25519_pubkey x25519_pubkey;
+    std::string method;
+    std::optional<uint16_t> port;
+    std::optional<std::vector<std::pair<std::string, std::string>>> headers;
+
+    ServerDestination(
+            std::string host,
+            std::string target,
+            std::string protocol,
+            session::onionreq::x25519_pubkey x25519_pubkey,
+            std::string method = "GET",
+            std::optional<uint16_t> port = std::nullopt,
+            std::optional<std::vector<std::pair<std::string, std::string>>> headers =
+                    std::nullopt) :
+            host{std::move(host)},
+            target{std::move(target)},
+            protocol{std::move(protocol)},
+            x25519_pubkey{std::move(x25519_pubkey)},
+            port{std::move(port)},
+            headers{std::move(headers)},
+            method{std::move(method)} {}
+
+    ustring generate_payload(std::optional<ustring> body) const;
+};
+
 enum class EncryptType {
     aes_gcm,
     xchacha20,
@@ -35,30 +99,11 @@ class Builder {
 
     void set_enc_type(EncryptType enc_type_) { enc_type = enc_type_; }
 
-    void set_snode_destination(ed25519_pubkey ed25519_public_key, x25519_pubkey x25519_public_key) {
-        destination_x25519_public_key.reset();
-        ed25519_public_key_.reset();
-        destination_x25519_public_key.emplace(x25519_public_key);
-        ed25519_public_key_.emplace(ed25519_public_key);
-    }
+    template <typename Destination>
+    void set_destination(Destination destination);
 
-    void set_server_destination(
-            std::string host,
-            std::string target,
-            std::string protocol,
-            std::optional<uint16_t> port,
-            x25519_pubkey x25519_public_key) {
-        destination_x25519_public_key.reset();
-
-        host_.emplace(host);
-        target_.emplace(target);
-        protocol_.emplace(protocol);
-
-        if (port)
-            port_.emplace(*port);
-
-        destination_x25519_public_key.emplace(x25519_public_key);
-    }
+    template <typename Destination>
+    ustring generate_payload(Destination destination, std::optional<ustring> body) const;
 
     void add_hop(std::pair<ed25519_pubkey, x25519_pubkey> keys) { hops_.push_back(keys); }
 

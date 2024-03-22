@@ -43,6 +43,80 @@ EncryptType parse_enc_type(std::string_view enc_type) {
     throw std::runtime_error{"Invalid encryption type " + std::string{enc_type}};
 }
 
+template <typename Destination>
+void Builder::set_destination(Destination destination) {
+    throw std::runtime_error{"Invalid destination."};
+}
+
+template <>
+void Builder::set_destination(SnodeDestination destination) {
+    destination_x25519_public_key.reset();
+    ed25519_public_key_.reset();
+    destination_x25519_public_key.emplace(destination.node.x25519_pubkey);
+    ed25519_public_key_.emplace(destination.node.ed25519_pubkey);
+}
+
+template <>
+void Builder::set_destination(ServerDestination destination) {
+    destination_x25519_public_key.reset();
+
+    host_.emplace(destination.host);
+    target_.emplace(destination.target);
+    protocol_.emplace(destination.protocol);
+
+    if (destination.port.has_value())
+        port_.emplace(destination.port.value());
+
+    destination_x25519_public_key.emplace(destination.x25519_pubkey);
+}
+
+template <typename Destination>
+ustring Builder::generate_payload(Destination destination, std::optional<ustring> body) const {
+    throw std::runtime_error{"Invalid destination."};
+}
+
+template <>
+ustring Builder::generate_payload(SnodeDestination destination, std::optional<ustring> body) const {
+    return {reinterpret_cast<const unsigned char*>(body->data()), body->size()};
+}
+
+template <>
+ustring Builder::generate_payload(
+        ServerDestination destination, std::optional<ustring> body) const {
+    auto headers_json = nlohmann::json::array();
+    for (const auto& [key, value] : destination.headers.value())
+        headers_json.push_back({key, value});
+
+    if (body.has_value() && !headers_json.contains("Content-Type"))
+        headers_json.push_back({"Content-Type", "application/json"});
+
+    // Some platforms might automatically add this header, but we don't want to include it
+    headers_json.erase("User-Agent");
+
+    // Generate the Bencoded payload in the form
+    // `l{requestInfoLength}:{requestInfo}{bodyLength}:{body}e`
+    nlohmann::json request_info{
+            {"method", destination.method},
+            {"endpoint", destination.target},
+            {"headers", headers_json}};
+    ustring_view request_info_data = to_unsigned_sv(request_info.dump());
+    ustring result;
+    result += to_unsigned_sv("l");
+    result += encode_size(request_info_data.size());
+    result += to_unsigned_sv(":");
+    result += request_info_data;
+
+    if (body.has_value()) {
+        result += encode_size(body->size());
+        result += to_unsigned_sv(":");
+        result += {reinterpret_cast<const unsigned char*>(body->data()), body->size()};
+    }
+
+    result += to_unsigned_sv("e");
+
+    return result;
+}
+
 ustring Builder::build(ustring payload) {
     ustring blob;
 
@@ -121,7 +195,13 @@ ustring Builder::build(ustring payload) {
             data += to_unsigned_sv(control.dump());
             blob = e.encrypt(enc_type, data, *destination_x25519_public_key);
         } else {
-            throw std::runtime_error{"Destination not set"};
+            if (!destination_x25519_public_key.has_value())
+                throw std::runtime_error{"Destination not set: No destination x25519 public key"};
+            if (!ed25519_public_key_.has_value())
+                throw std::runtime_error{"Destination not set: No destination ed25519 public key"};
+            throw std::runtime_error{
+                    "Destination not set: " + host_.value_or("N/A") + ", " +
+                    target_.value_or("N/A") + ", " + protocol_.value_or("N/A")};
         }
 
         // Save these because we need them again to decrypt the final response:
@@ -204,13 +284,19 @@ LIBSESSION_C_API void onion_request_builder_set_enc_type(
 
 LIBSESSION_C_API void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
-        const char* ed25519_pubkey,
-        const char* x25519_pubkey) {
-    assert(builder && ed25519_pubkey && x25519_pubkey);
+        const char* ip,
+        const uint16_t lmq_port,
+        const char* x25519_pubkey,
+        const char* ed25519_pubkey) {
+    assert(builder && ip && x25519_pubkey && ed25519_pubkey);
 
-    unbox(builder).set_snode_destination(
+    auto node = session::onionreq::service_node{
+            ip,
+            lmq_port,
+            session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
             session::onionreq::ed25519_pubkey::from_hex({ed25519_pubkey, 64}),
-            session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}));
+            0};
+    unbox(builder).set_destination(session::onionreq::SnodeDestination{node});
 }
 
 LIBSESSION_C_API void onion_request_builder_set_server_destination(
@@ -218,16 +304,19 @@ LIBSESSION_C_API void onion_request_builder_set_server_destination(
         const char* host,
         const char* target,
         const char* protocol,
+        const char* method,
         uint16_t port,
         const char* x25519_pubkey) {
     assert(builder && host && target && protocol && x25519_pubkey);
 
-    unbox(builder).set_server_destination(
+    unbox(builder).set_destination(session::onionreq::ServerDestination{
             host,
             target,
             protocol,
+            session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
+            method,
             port,
-            session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}));
+            std::nullopt});
 }
 
 LIBSESSION_C_API void onion_request_builder_add_hop(
