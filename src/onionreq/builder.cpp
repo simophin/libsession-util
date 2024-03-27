@@ -1,6 +1,7 @@
 #include "session/onionreq/builder.hpp"
 
 #include <nettle/gcm.h>
+#include <oxenc/bt.h>
 #include <oxenc/endian.h>
 #include <oxenc/hex.h>
 #include <sodium/crypto_aead_xchacha20poly1305.h>
@@ -61,7 +62,7 @@ void Builder::set_destination(ServerDestination destination) {
     destination_x25519_public_key.reset();
 
     host_.emplace(destination.host);
-    target_.emplace(destination.target);
+    target_.emplace("/oxen/v4/lsrpc");  // All servers support V4 onion requests
     protocol_.emplace(destination.protocol);
 
     if (destination.port.has_value())
@@ -71,50 +72,53 @@ void Builder::set_destination(ServerDestination destination) {
 }
 
 template <typename Destination>
-ustring Builder::generate_payload(Destination destination, std::optional<ustring> body) const {
+std::string Builder::generate_payload(Destination destination, std::optional<ustring> body) const {
     throw std::runtime_error{"Invalid destination."};
 }
 
 template <>
-ustring Builder::generate_payload(SnodeDestination destination, std::optional<ustring> body) const {
-    return {reinterpret_cast<const unsigned char*>(body->data()), body->size()};
+std::string Builder::generate_payload(
+        SnodeDestination destination, std::optional<ustring> body) const {
+    if (body.has_value())
+        return std::string(from_unsigned_sv(*body));
+    return "";
 }
 
 template <>
-ustring Builder::generate_payload(
+std::string Builder::generate_payload(
         ServerDestination destination, std::optional<ustring> body) const {
-    auto headers_json = nlohmann::json::array();
-    for (const auto& [key, value] : destination.headers.value())
-        headers_json.push_back({key, value});
+    auto headers_json = nlohmann::json::object();
+
+    if (destination.headers)
+        for (const auto& [key, value] : destination.headers.value()) {
+            // Some platforms might automatically add this header, but we don't want to include it
+            if (key != "User-Agent")
+                headers_json[key] = value;
+        }
 
     if (body.has_value() && !headers_json.contains("Content-Type"))
-        headers_json.push_back({"Content-Type", "application/json"});
+        headers_json["Content-Type"] = "application/json";
 
-    // Some platforms might automatically add this header, but we don't want to include it
-    headers_json.erase("User-Agent");
+    // Need to ensure the endpoint has a leading forward slash so add it if it's missing
+    auto endpoint = destination.endpoint;
 
-    // Generate the Bencoded payload in the form
-    // `l{requestInfoLength}:{requestInfo}{bodyLength}:{body}e`
+    if (!endpoint.empty() && endpoint.front() != '/')
+        endpoint = '/' + endpoint;
+
+    // Structure the request information
     nlohmann::json request_info{
             {"method", destination.method},
-            {"endpoint", destination.target},
+            {"endpoint", endpoint},
             {"headers", headers_json}};
-    ustring_view request_info_data = to_unsigned_sv(request_info.dump());
-    ustring result;
-    result += to_unsigned_sv("l");
-    result += encode_size(request_info_data.size());
-    result += to_unsigned_sv(":");
-    result += request_info_data;
+    auto request_info_dump = request_info.dump();
+    std::vector<std::string> payload{request_info_dump};
 
-    if (body.has_value()) {
-        result += encode_size(body->size());
-        result += to_unsigned_sv(":");
-        result += {reinterpret_cast<const unsigned char*>(body->data()), body->size()};
-    }
+    // If we were given a body, add it to the payload
 
-    result += to_unsigned_sv("e");
+    if (body.has_value())
+        payload.emplace_back(std::string(from_unsigned(body->data()), body->size()));
 
-    return result;
+    return oxenc::bt_serialize(payload);
 }
 
 ustring Builder::build(ustring payload) {
@@ -170,11 +174,11 @@ ustring Builder::build(ustring payload) {
         // server or a service node
         if (host_ && target_ && protocol_ && destination_x25519_public_key) {
             final_route = {
-                    {"host", host_.value()},
-                    {"target", target_.value()},
+                    {"host", *host_},
+                    {"target", *target_},
                     {"method", "POST"},
-                    {"protocol", protocol_.value()},
-                    {"port", port_.value_or(protocol_.value() == "https" ? 443 : 80)},
+                    {"protocol", *protocol_},
+                    {"port", port_.value_or(*protocol_ == "https" ? 443 : 80)},
                     {"ephemeral_key", A.hex()},  // The x25519 ephemeral_key here is the key for the
                                                  // *next* hop to use
                     {"enc_type", to_string(enc_type)},
@@ -301,18 +305,18 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
 
 LIBSESSION_C_API void onion_request_builder_set_server_destination(
         onion_request_builder_object* builder,
-        const char* host,
-        const char* target,
         const char* protocol,
+        const char* host,
+        const char* endpoint,
         const char* method,
         uint16_t port,
         const char* x25519_pubkey) {
-    assert(builder && host && target && protocol && x25519_pubkey);
+    assert(builder && protocol && host && endpoint && x25519_pubkey);
 
     unbox(builder).set_destination(session::onionreq::ServerDestination{
-            host,
-            target,
             protocol,
+            host,
+            endpoint,
             session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
             method,
             port,

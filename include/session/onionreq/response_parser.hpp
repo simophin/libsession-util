@@ -20,6 +20,8 @@ class ResponseParser {
             x25519_keypair_{std::move(x25519_keypair)},
             enc_type_{enc_type} {}
 
+    static bool response_long_enough(EncryptType enc_type, size_t response_size);
+
     ustring decrypt(ustring ciphertext) const;
 
   private:

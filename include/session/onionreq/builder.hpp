@@ -13,18 +13,21 @@ struct service_node {
     session::onionreq::x25519_pubkey x25519_pubkey;
     session::onionreq::ed25519_pubkey ed25519_pubkey;
     uint8_t failure_count;
+    bool invalid;
 
     service_node(
             std::string ip,
             uint16_t lmq_port,
             session::onionreq::x25519_pubkey x25519_pubkey,
             session::onionreq::ed25519_pubkey ed25519_pubkey,
-            uint8_t failure_count) :
+            uint8_t failure_count,
+            bool invalid = false) :
             ip{std::move(ip)},
             lmq_port{std::move(lmq_port)},
             x25519_pubkey{std::move(x25519_pubkey)},
             ed25519_pubkey{std::move(ed25519_pubkey)},
-            failure_count{failure_count} {}
+            failure_count{failure_count},
+            invalid{invalid} {}
 };
 
 struct onion_path {
@@ -43,26 +46,26 @@ class SnodeDestination {
 
 class ServerDestination {
   public:
-    std::string host;
-    std::string target;
     std::string protocol;
+    std::string host;
+    std::string endpoint;
     session::onionreq::x25519_pubkey x25519_pubkey;
     std::string method;
     std::optional<uint16_t> port;
     std::optional<std::vector<std::pair<std::string, std::string>>> headers;
 
     ServerDestination(
-            std::string host,
-            std::string target,
             std::string protocol,
+            std::string host,
+            std::string endpoint,
             session::onionreq::x25519_pubkey x25519_pubkey,
             std::string method = "GET",
             std::optional<uint16_t> port = std::nullopt,
             std::optional<std::vector<std::pair<std::string, std::string>>> headers =
                     std::nullopt) :
-            host{std::move(host)},
-            target{std::move(target)},
             protocol{std::move(protocol)},
+            host{std::move(host)},
+            endpoint{std::move(endpoint)},
             x25519_pubkey{std::move(x25519_pubkey)},
             port{std::move(port)},
             headers{std::move(headers)},
@@ -103,7 +106,7 @@ class Builder {
     void set_destination(Destination destination);
 
     template <typename Destination>
-    ustring generate_payload(Destination destination, std::optional<ustring> body) const;
+    std::string generate_payload(Destination destination, std::optional<ustring> body) const;
 
     void add_hop(std::pair<ed25519_pubkey, x25519_pubkey> keys) { hops_.push_back(keys); }
 

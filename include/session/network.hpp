@@ -10,6 +10,12 @@ namespace session::network {
 
 using network_response_callback_t = std::function<void(
         bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
+using network_onion_response_callback_t = std::function<void(
+        bool success,
+        bool timeout,
+        int16_t status_code,
+        std::optional<std::string> response,
+        session::onionreq::onion_path updated_failures_path)>;
 
 void send_request(
         ustring_view ed_sk,
@@ -24,6 +30,6 @@ void send_onion_request(
         const Destination destination,
         const std::optional<ustring> body,
         const ustring_view ed_sk,
-        network_response_callback_t handle_response);
+        network_onion_response_callback_t handle_response);
 
 }  // namespace session::network

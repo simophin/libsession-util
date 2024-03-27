@@ -23,6 +23,10 @@ ResponseParser::ResponseParser(session::onionreq::Builder builder) {
     x25519_keypair_ = builder.final_hop_x25519_keypair.value();
 }
 
+bool ResponseParser::response_long_enough(EncryptType enc_type, size_t response_size) {
+    return HopEncryption::response_long_enough(enc_type, response_size);
+}
+
 ustring ResponseParser::decrypt(ustring ciphertext) const {
     HopEncryption d{x25519_keypair_.second, x25519_keypair_.first, false};
 
@@ -38,7 +42,7 @@ ustring ResponseParser::decrypt(ustring ciphertext) const {
                     ciphertext,
                     destination_x25519_public_key_);
         else
-            throw e;
+            throw;
     }
 }
 

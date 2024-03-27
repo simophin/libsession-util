@@ -16,8 +16,6 @@ typedef struct remote_address {
     uint16_t port;
 } remote_address;
 
-LIBSESSION_EXPORT void network_add_logger(void (*callback)(const char*, size_t));
-
 LIBSESSION_EXPORT void network_send_request(
         const unsigned char* ed25519_secretkey_bytes,
         const remote_address remote,
@@ -46,6 +44,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
+                onion_request_path updated_failures_path,
                 void*),
         void* ctx);
 
@@ -53,11 +52,11 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
         const onion_request_path path,
         const unsigned char* ed25519_secretkey_bytes,
         const char* method,
-        const char* host,
-        const char* target,
         const char* protocol,
-        const char* x25519_pubkey,
+        const char* host,
+        const char* endpoint,
         uint16_t port,
+        const char* x25519_pubkey,
         const char** headers_,
         const char** header_values,
         size_t headers_size,
@@ -69,6 +68,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
+                onion_request_path updated_failures_path,
                 void*),
         void* ctx);
 
