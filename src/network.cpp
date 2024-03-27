@@ -185,8 +185,8 @@ void process_response(
             throw std::runtime_error{"Invalid bencoded response"};
 
         auto response_info_string = result_bencode.consume_string();
-        auto response_info_json = nlohmann::json::parse(response_info_string);
         int16_t status_code;
+        nlohmann::json response_info_json = nlohmann::json::parse(response_info_string);
 
         if (response_info_json.contains("code") && response_info_json["code"].is_number())
             status_code = response_info_json["code"].get<int16_t>();
@@ -205,9 +205,15 @@ void process_response(
             return;
         }
 
+        // If there is no body just return the success status
+        if (result_bencode.is_finished()) {
+            handle_response(true, false, status_code, std::nullopt, path);
+            return;
+        }
+
+        // Otherwise process the response
         auto response_string = result_bencode.consume_string();
-        auto response_json = nlohmann::json::parse(response_string);
-        handle_response(true, false, status_code, response_json.dump(), path);
+        handle_response(true, false, status_code, response_string, path);
     } catch (const std::exception& e) {
         handle_response(false, false, -1, e.what(), path);
     }
