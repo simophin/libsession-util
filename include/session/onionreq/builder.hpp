@@ -3,43 +3,20 @@
 #include <string>
 #include <string_view>
 
+#include "../network_service_node.hpp"
 #include "key_types.hpp"
 
 namespace session::onionreq {
 
-struct service_node {
-    std::string ip;
-    uint16_t lmq_port;
-    session::onionreq::x25519_pubkey x25519_pubkey;
-    session::onionreq::ed25519_pubkey ed25519_pubkey;
-    uint8_t failure_count;
-    bool invalid;
-
-    service_node(
-            std::string ip,
-            uint16_t lmq_port,
-            session::onionreq::x25519_pubkey x25519_pubkey,
-            session::onionreq::ed25519_pubkey ed25519_pubkey,
-            uint8_t failure_count,
-            bool invalid = false) :
-            ip{std::move(ip)},
-            lmq_port{std::move(lmq_port)},
-            x25519_pubkey{std::move(x25519_pubkey)},
-            ed25519_pubkey{std::move(ed25519_pubkey)},
-            failure_count{failure_count},
-            invalid{invalid} {}
-};
-
 struct onion_path {
-    std::vector<service_node> nodes;
+    std::vector<session::network::service_node> nodes;
     uint8_t failure_count;
 };
 
 class SnodeDestination {
   public:
-    service_node node;
-
-    // SnodeDestination(service_node node) : node{std::move(node)} {}
+    session::network::service_node node;
+    std::optional<std::vector<session::network::service_node>> swarm;
 
     ustring generate_payload(std::optional<ustring> body) const;
 };

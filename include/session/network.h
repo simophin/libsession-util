@@ -8,34 +8,47 @@ extern "C" {
 #include <stdint.h>
 
 #include "export.h"
+#include "network_service_node.h"
 #include "onionreq/builder.h"
 
-typedef struct remote_address {
-    char pubkey[65];  // in hex; 64 hex chars + null terminator.
-    char ip[40];      // IPv4 is 15 chars, IPv6 is 39 chars, + null terminator.
-    uint16_t port;
-} remote_address;
+typedef enum SERVICE_NODE_CHANGE_TYPE {
+    SERVICE_NODE_CHANGE_TYPE_NONE = 0,
+    SERVICE_NODE_CHANGE_TYPE_INVALID_PATH = 1,
+    SERVICE_NODE_CHANGE_TYPE_REPLACE_SWARM = 2,
+    SERVICE_NODE_CHANGE_TYPE_UPDATE_PATH = 3,
+} SERVICE_NODE_CHANGE_TYPE;
+
+typedef struct network_service_node_changes {
+    SERVICE_NODE_CHANGE_TYPE type;
+    network_service_node* nodes;
+    size_t nodes_count;
+    uint8_t failure_count;
+} network_service_node_changes;
+
+LIBSESSION_EXPORT void network_add_logger(void (*callback)(const char*, size_t));
 
 LIBSESSION_EXPORT void network_send_request(
         const unsigned char* ed25519_secretkey_bytes,
-        const remote_address remote,
+        const network_service_node destination,
         const char* endpoint,
-        size_t endpoint_size,
         const unsigned char* body,
         size_t body_size,
+        const network_service_node* swarm,
+        const size_t swarm_count,
         void (*callback)(
                 bool success,
                 bool timeout,
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
+                network_service_node_changes changes,
                 void*),
         void* ctx);
 
 LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
         const onion_request_path path,
         const unsigned char* ed25519_secretkey_bytes,
-        const onion_request_service_node node,
+        const onion_request_service_node_destination node,
         const unsigned char* body,
         size_t body_size,
         void (*callback)(
@@ -44,7 +57,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
-                onion_request_path updated_failures_path,
+                network_service_node_changes changes,
                 void*),
         void* ctx);
 
@@ -68,7 +81,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
-                onion_request_path updated_failures_path,
+                network_service_node_changes changes,
                 void*),
         void* ctx);
 

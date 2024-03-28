@@ -8,6 +8,7 @@ extern "C" {
 #include <stddef.h>
 
 #include "../export.h"
+#include "../network_service_node.h"
 
 typedef enum ENCRYPT_TYPE {
     ENCRYPT_TYPE_AES_GCM = 0,
@@ -21,17 +22,20 @@ typedef struct onion_request_builder_object {
     ENCRYPT_TYPE enc_type;
 } onion_request_builder_object;
 
-typedef struct onion_request_service_node {
+typedef struct onion_request_service_node_destination {
     char ip[40];  // IPv4 is 15 chars, IPv6 is 39 chars, + null terminator.
     uint16_t lmq_port;
     char x25519_pubkey_hex[64];
     char ed25519_pubkey_hex[64];
+
     uint8_t failure_count;
     bool invalid;
-} onion_request_service_node;
+    const network_service_node* swarm;
+    const size_t swarm_count;
+} onion_request_service_node_destination;
 
 typedef struct onion_request_path {
-    const onion_request_service_node* nodes;
+    const network_service_node* nodes;
     const size_t nodes_count;
     uint8_t failure_count;
 } onion_request_path;
@@ -85,12 +89,14 @@ LIBSESSION_EXPORT void onion_request_builder_set_enc_type(
 /// - `lmq_port` -- [in] The LMQ port request for the snode destination
 /// - `ed25519_pubkey` -- [in] The ed25519 public key for the snode destination
 /// - `x25519_pubkey` -- [in] The x25519 public key for the snode destination
+/// - `failure_count` -- [in] The number of times requests to this service node have failed
 LIBSESSION_EXPORT void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
         const char* ip,
         const uint16_t lmq_port,
         const char* x25519_pubkey,
-        const char* ed25519_pubkey);
+        const char* ed25519_pubkey,
+        const uint8_t failure_count);
 
 /// API: onion_request_builder_set_server_destination
 ///

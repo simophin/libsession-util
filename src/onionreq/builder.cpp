@@ -107,9 +107,7 @@ std::string Builder::generate_payload(
 
     // Structure the request information
     nlohmann::json request_info{
-            {"method", destination.method},
-            {"endpoint", endpoint},
-            {"headers", headers_json}};
+            {"method", destination.method}, {"endpoint", endpoint}, {"headers", headers_json}};
     auto request_info_dump = request_info.dump();
     std::vector<std::string> payload{request_info_dump};
 
@@ -291,15 +289,17 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
         const char* ip,
         const uint16_t lmq_port,
         const char* x25519_pubkey,
-        const char* ed25519_pubkey) {
+        const char* ed25519_pubkey,
+        const uint8_t failure_count) {
     assert(builder && ip && x25519_pubkey && ed25519_pubkey);
 
-    auto node = session::onionreq::service_node{
+    auto node = session::network::service_node{
             ip,
             lmq_port,
             session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
             session::onionreq::ed25519_pubkey::from_hex({ed25519_pubkey, 64}),
-            0};
+            failure_count,
+            false};
     unbox(builder).set_destination(session::onionreq::SnodeDestination{node});
 }
 
