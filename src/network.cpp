@@ -82,13 +82,13 @@ void handle_errors(
         // The snode is reporting that it isn't associated with the given public key anymore. If
         // this is the first 421 then we want to try another node in the swarm (just in case it was
         // reported incorrectly). If this is the second occurrence of the 421 then the client needs
-        // to update the swarm (the response might contain updated swarm data)
+        // to update the swarm (if the response contains updated swarm data), or increment the path
+        // failure count.
         case 421:
-
             try {
                 // If there is no response data or no swarm informaiton was provided then we should
                 // just replace the swarm
-                if (!response || !info.swarm)
+                if (!info.swarm)
                     throw std::invalid_argument{"Unable to handle redirect."};
 
                 // If this was the first 421 then we want to retry using another node in the swarm
@@ -112,8 +112,7 @@ void handle_errors(
                     if (!random_node)
                         throw std::invalid_argument{"No other nodes in the swarm."};
 
-                    if (info.path) {
-                        oxen::log::info(log_cat, "retry onion request");
+                    if (info.path)
                         return send_onion_request(
                                 *info.path,
                                 SnodeDestination{*random_node, *info.swarm},
@@ -121,7 +120,6 @@ void handle_errors(
                                 info.ed_sk,
                                 true,
                                 handle_response);
-                    }
 
                     return send_request(
                             {info.ed_sk,
@@ -164,11 +162,29 @@ void handle_errors(
                         response,
                         service_node_changes{ServiceNodeChangeType::replace_swarm, swarm});
             } catch (...) {
-                auto updated_path = info.path.value_or(onion_path{{info.target}, 0});
+                // If we don't have a path then this is a direct request so we can only update the
+                // failure count for the target node
+                if (!info.path) {
+                    auto updated_node = info.target;
+                    updated_node.failure_count += 1;
+
+                    if (updated_node.failure_count >= snode_failure_threshold)
+                        updated_node.invalid = true;
+
+                    return handle_response(
+                            false,
+                            false,
+                            status_code,
+                            response,
+                            service_node_changes{
+                                    ServiceNodeChangeType::update_node, {updated_node}});
+                }
+
+                auto updated_path = *info.path;
                 updated_path.failure_count += 1;
 
-                // If the path has failed too many times, drop the guard snode and increment the
-                // failure count of each node in the path
+                // If the path has failed too many times we want to drop the guard snode (marking it
+                // as invalid) and increment the failure count of each node in the path
                 if (updated_path.failure_count >= path_failure_threshold) {
                     updated_path.nodes[0].invalid = true;
 
@@ -188,11 +204,29 @@ void handle_errors(
                         service_node_changes{
                                 ServiceNodeChangeType::update_path,
                                 updated_path.nodes,
-                                updated_path.failure_count});
+                                updated_path.failure_count,
+                                (updated_path.failure_count >= path_failure_threshold)});
             }
 
         default:
-            auto updated_path = info.path.value_or(onion_path{{info.target}, 0});
+            // If we don't have a path then this is a direct request so we can only update the
+            // failure count for the target node
+            if (!info.path) {
+                auto updated_node = info.target;
+                updated_node.failure_count += 1;
+
+                if (updated_node.failure_count >= snode_failure_threshold)
+                    updated_node.invalid = true;
+
+                return handle_response(
+                        false,
+                        false,
+                        status_code,
+                        response,
+                        service_node_changes{ServiceNodeChangeType::update_node, {updated_node}});
+            }
+
+            auto updated_path = *info.path;
             bool found_invalid_node = false;
 
             if (response && starts_with(*response, node_not_found_prefix)) {
@@ -224,8 +258,8 @@ void handle_errors(
                 // Increment the path failure count
                 updated_path.failure_count += 1;
 
-                // If the path has failed too many times, drop the guard snode and increment the
-                // failure count of each node in the path
+                // If the path has failed too many times we want to drop the guard snode (marking it
+                // as invalid) and increment the failure count of each node in the path
                 if (updated_path.failure_count >= path_failure_threshold) {
                     updated_path.nodes[0].invalid = true;
 
@@ -246,7 +280,8 @@ void handle_errors(
                     service_node_changes{
                             ServiceNodeChangeType::update_path,
                             updated_path.nodes,
-                            updated_path.failure_count});
+                            updated_path.failure_count,
+                            (updated_path.failure_count >= path_failure_threshold)});
     }
 }
 
@@ -479,7 +514,7 @@ void send_onion_request(
             builder.add_hop({node.ed25519_pubkey, node.x25519_pubkey});
 
         auto payload = builder.generate_payload(destination, body);
-        auto onion_req_payload = builder.build(to_unsigned(payload.data()));
+        auto onion_req_payload = builder.build(payload);
 
         request_info info = {
                 ed_sk,
@@ -565,7 +600,11 @@ LIBSESSION_C_API void network_send_request(
         body = {body_, body_size};
 
     std::optional<std::vector<session::network::service_node>> swarm;
-    if (swarm_count > 0)
+
+    if (swarm_count > 0) {
+        swarm = std::vector<session::network::service_node>{};
+        swarm->reserve(swarm_count);
+
         for (size_t i = 0; i < swarm_count; i++)
             swarm->emplace_back(
                     swarm_[i].ip,
@@ -574,6 +613,7 @@ LIBSESSION_C_API void network_send_request(
                     ed25519_pubkey::from_hex({swarm_[i].ed25519_pubkey_hex, 64}),
                     swarm_[i].failure_count,
                     false);
+    }
 
     send_request(
             {ed25519_secretkey_bytes, 64},
@@ -646,7 +686,11 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
             body = {body_, body_size};
 
         std::optional<std::vector<session::network::service_node>> swarm;
-        if (node.swarm_count > 0)
+
+        if (node.swarm_count > 0) {
+            swarm = std::vector<session::network::service_node>{};
+            swarm->reserve(node.swarm_count);
+
             for (size_t i = 0; i < node.swarm_count; i++)
                 swarm->emplace_back(
                         node.swarm[i].ip,
@@ -655,6 +699,7 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                         ed25519_pubkey::from_hex({node.swarm[i].ed25519_pubkey_hex, 64}),
                         node.swarm[i].failure_count,
                         false);
+        }
 
         send_onion_request(
                 path,
@@ -680,7 +725,8 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                             static_cast<SERVICE_NODE_CHANGE_TYPE>(changes.type),
                             c_nodes.data(),
                             c_nodes.size(),
-                            changes.path_failure_count};
+                            changes.path_failure_count,
+                            changes.path_invalid};
 
                     callback(
                             success,
@@ -712,6 +758,9 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
         const char* endpoint,
         uint16_t port,
         const char* x25519_pubkey,
+        const char** query_param_keys,
+        const char** query_param_values,
+        size_t query_params_size,
         const char** headers_,
         const char** header_values,
         size_t headers_size,
@@ -749,6 +798,14 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                 headers->emplace_back(headers_[i], header_values[i]);
         }
 
+        std::optional<std::vector<std::pair<std::string, std::string>>> query_params;
+        if (query_params_size > 0) {
+            query_params = std::vector<std::pair<std::string, std::string>>{};
+
+            for (size_t i = 0; i < query_params_size; i++)
+                query_params->emplace_back(query_param_keys[i], query_param_values[i]);
+        }
+
         std::optional<ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
@@ -762,7 +819,8 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                         x25519_pubkey::from_hex({x25519_pubkey, 64}),
                         method,
                         port,
-                        headers},
+                        headers,
+                        query_params},
                 body,
                 {ed25519_secretkey_bytes, 64},
                 false,
@@ -777,7 +835,8 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                             static_cast<SERVICE_NODE_CHANGE_TYPE>(changes.type),
                             c_nodes.data(),
                             c_nodes.size(),
-                            changes.path_failure_count};
+                            changes.path_failure_count,
+                            changes.path_invalid};
 
                     callback(
                             success,

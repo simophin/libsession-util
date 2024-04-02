@@ -13,16 +13,12 @@ struct onion_path {
     uint8_t failure_count;
 };
 
-class SnodeDestination {
-  public:
+struct SnodeDestination {
     session::network::service_node node;
     std::optional<std::vector<session::network::service_node>> swarm;
-
-    ustring generate_payload(std::optional<ustring> body) const;
 };
 
-class ServerDestination {
-  public:
+struct ServerDestination {
     std::string protocol;
     std::string host;
     std::string endpoint;
@@ -30,6 +26,7 @@ class ServerDestination {
     std::string method;
     std::optional<uint16_t> port;
     std::optional<std::vector<std::pair<std::string, std::string>>> headers;
+    std::optional<std::vector<std::pair<std::string, std::string>>> query_params;
 
     ServerDestination(
             std::string protocol,
@@ -38,17 +35,17 @@ class ServerDestination {
             session::onionreq::x25519_pubkey x25519_pubkey,
             std::string method = "GET",
             std::optional<uint16_t> port = std::nullopt,
-            std::optional<std::vector<std::pair<std::string, std::string>>> headers =
+            std::optional<std::vector<std::pair<std::string, std::string>>> headers = std::nullopt,
+            std::optional<std::vector<std::pair<std::string, std::string>>> query_params =
                     std::nullopt) :
             protocol{std::move(protocol)},
             host{std::move(host)},
             endpoint{std::move(endpoint)},
             x25519_pubkey{std::move(x25519_pubkey)},
+            method{std::move(method)},
             port{std::move(port)},
             headers{std::move(headers)},
-            method{std::move(method)} {}
-
-    ustring generate_payload(std::optional<ustring> body) const;
+            query_params{std::move(query_params)} {}
 };
 
 enum class EncryptType {
@@ -83,7 +80,7 @@ class Builder {
     void set_destination(Destination destination);
 
     template <typename Destination>
-    std::string generate_payload(Destination destination, std::optional<ustring> body) const;
+    ustring generate_payload(Destination destination, std::optional<ustring> body) const;
 
     void add_hop(std::pair<ed25519_pubkey, x25519_pubkey> keys) { hops_.push_back(keys); }
 

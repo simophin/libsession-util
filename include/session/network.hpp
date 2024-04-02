@@ -14,12 +14,14 @@ enum class ServiceNodeChangeType {
     invalid_path = 1,
     replace_swarm = 2,
     update_path = 3,
+    update_node = 4,
 };
 
 struct service_node_changes {
     ServiceNodeChangeType type = ServiceNodeChangeType::none;
     std::vector<session::network::service_node> nodes = {};
     uint8_t path_failure_count = 0;
+    bool path_invalid = false;
 };
 
 using network_response_callback_t = std::function<void(

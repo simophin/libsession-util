@@ -72,20 +72,17 @@ void Builder::set_destination(ServerDestination destination) {
 }
 
 template <typename Destination>
-std::string Builder::generate_payload(Destination destination, std::optional<ustring> body) const {
+ustring Builder::generate_payload(Destination destination, std::optional<ustring> body) const {
     throw std::runtime_error{"Invalid destination."};
 }
 
 template <>
-std::string Builder::generate_payload(
-        SnodeDestination destination, std::optional<ustring> body) const {
-    if (body.has_value())
-        return std::string(from_unsigned_sv(*body));
-    return "";
+ustring Builder::generate_payload(SnodeDestination destination, std::optional<ustring> body) const {
+    return body.value_or(ustring{});
 }
 
 template <>
-std::string Builder::generate_payload(
+ustring Builder::generate_payload(
         ServerDestination destination, std::optional<ustring> body) const {
     auto headers_json = nlohmann::json::object();
 
@@ -105,6 +102,18 @@ std::string Builder::generate_payload(
     if (!endpoint.empty() && endpoint.front() != '/')
         endpoint = '/' + endpoint;
 
+    // If we have query parameters, add them to the endpoint to be included in the payload
+    if (destination.query_params && !destination.query_params->empty()) {
+        std::string query_string = "";
+
+        for (auto& query : *destination.query_params) {
+            query_string += query.first + "=" + query.second + "&";
+        }
+
+        // Drop the extra '&' from the end
+        endpoint += "?" + query_string.substr(0, query_string.size() - 1);
+    }
+
     // Structure the request information
     nlohmann::json request_info{
             {"method", destination.method}, {"endpoint", endpoint}, {"headers", headers_json}};
@@ -112,11 +121,11 @@ std::string Builder::generate_payload(
     std::vector<std::string> payload{request_info_dump};
 
     // If we were given a body, add it to the payload
-
     if (body.has_value())
         payload.emplace_back(std::string(from_unsigned(body->data()), body->size()));
 
-    return oxenc::bt_serialize(payload);
+    auto result = oxenc::bt_serialize(payload);
+    return {to_unsigned(result.data()), result.size()};
 }
 
 ustring Builder::build(ustring payload) {
@@ -182,7 +191,7 @@ ustring Builder::build(ustring payload) {
                     {"enc_type", to_string(enc_type)},
             };
 
-            blob = e.encrypt(enc_type, payload.data(), *destination_x25519_public_key);
+            blob = e.encrypt(enc_type, payload, *destination_x25519_public_key);
         } else if (ed25519_public_key_ && destination_x25519_public_key) {
             nlohmann::json control{{"headers", ""}};
             final_route = {
@@ -320,6 +329,7 @@ LIBSESSION_C_API void onion_request_builder_set_server_destination(
             session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
             method,
             port,
+            std::nullopt,
             std::nullopt});
 }
 

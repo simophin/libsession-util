@@ -4,9 +4,9 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 typedef struct network_service_node {
     char ip[40];  // IPv4 is 15 chars, IPv6 is 39 chars, + null terminator.
