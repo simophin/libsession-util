@@ -80,7 +80,7 @@ inline bool string_iequal(std::string_view s1, std::string_view s2) {
 
 // C++20 starts_/ends_with backport
 inline constexpr bool starts_with(std::string_view str, std::string_view prefix) {
-    return str.size() >= prefix.size() && str.substr(prefix.size()) == prefix;
+    return str.size() >= prefix.size() && str.substr(0, prefix.size()) == prefix;
 }
 
 inline constexpr bool end_with(std::string_view str, std::string_view suffix) {

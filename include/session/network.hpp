@@ -24,12 +24,28 @@ struct service_node_changes {
     bool path_invalid = false;
 };
 
+struct request_info {
+    const ustring_view ed_sk;
+    const service_node target;
+    const std::string endpoint;
+    const std::optional<ustring> body;
+    const std::optional<std::vector<service_node>> swarm;
+    const std::optional<session::onionreq::onion_path> path;
+    const bool is_retry;
+};
+
 using network_response_callback_t = std::function<void(
         bool success,
         bool timeout,
         int16_t status_code,
         std::optional<std::string> response,
         service_node_changes changes)>;
+
+void handle_errors(
+        const int16_t status_code,
+        const std::optional<std::string> response,
+        const request_info info,
+        network_response_callback_t handle_response);
 
 void send_request(
         const ustring_view ed_sk,

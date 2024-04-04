@@ -29,18 +29,6 @@ using namespace std::literals;
 
 namespace session::network {
 
-namespace {
-    struct request_info {
-        const ustring_view ed_sk;
-        const service_node target;
-        const std::string endpoint;
-        const std::optional<ustring> body;
-        const std::optional<std::vector<service_node>> swarm;
-        const std::optional<onion_path> path;
-        const bool is_retry = false;
-    };
-}  // namespace
-
 class Timeout : public std::exception {};
 
 // The number of times a path can fail before it's replaced.
@@ -188,7 +176,7 @@ void handle_errors(
                 if (updated_path.failure_count >= path_failure_threshold) {
                     updated_path.nodes[0].invalid = true;
 
-                    for (auto it : updated_path.nodes) {
+                    for (auto& it : updated_path.nodes) {
                         it.failure_count += 1;
 
                         if (it.failure_count >= snode_failure_threshold)
@@ -263,7 +251,7 @@ void handle_errors(
                 if (updated_path.failure_count >= path_failure_threshold) {
                     updated_path.nodes[0].invalid = true;
 
-                    for (auto it : updated_path.nodes) {
+                    for (auto& it : updated_path.nodes) {
                         it.failure_count += 1;
 
                         if (it.failure_count >= snode_failure_threshold)

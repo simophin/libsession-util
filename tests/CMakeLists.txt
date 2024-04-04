@@ -18,6 +18,7 @@ add_executable(testAll
     test_group_members.cpp
     test_hash.cpp
     test_multi_encrypt.cpp
+    test_network.cpp
     test_onionreq.cpp
     test_proto.cpp
     test_random.cpp
@@ -29,6 +30,7 @@ target_link_libraries(testAll PRIVATE
     libsession::config
     libsession::onionreq
     libsodium::sodium-internal
+    nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain)
 
 add_custom_target(check COMMAND testAll)
