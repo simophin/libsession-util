@@ -22,7 +22,12 @@ function(libsession_static_bundle)
                 _libsession_static_bundle_append("${tgt}")
             endif()
 
-            get_target_property(tgt_link_deps ${tgt} LINK_LIBRARIES)
+            if(tgt_type STREQUAL INTERFACE_LIBRARY)
+                get_target_property(tgt_link_deps ${tgt} INTERFACE_LINK_LIBRARIES)
+            else()
+                get_target_property(tgt_link_deps ${tgt} LINK_LIBRARIES)
+            endif()
+
             if(tgt_link_deps)
                 libsession_static_bundle(${tgt_link_deps})
             endif()
