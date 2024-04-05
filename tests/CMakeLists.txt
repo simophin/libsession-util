@@ -33,6 +33,10 @@ target_link_libraries(testAll PRIVATE
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain)
 
+if(NOT TARGET check)
+    add_custom_target(check COMMAND testAll)
+endif()
+
 add_executable(swarm-auth-test EXCLUDE_FROM_ALL swarm-auth-test.cpp)
 target_link_libraries(swarm-auth-test PRIVATE config)
 
