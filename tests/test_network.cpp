@@ -9,7 +9,7 @@ using namespace session;
 using namespace session::onionreq;
 using namespace session::network;
 
-TEST_CASE("Network error handling", "[network]") {
+namespace {
     struct Result {
         bool success;
         bool timeout;
@@ -17,6 +17,9 @@ TEST_CASE("Network error handling", "[network]") {
         std::optional<std::string> response;
         service_node_changes changes;
     };
+} // namespace
+
+TEST_CASE("Network error handling", "[network]") {
     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
     auto ed_pk2 = "5ea34e72bb044654a6a23675690ef5ffaaf1656b02f93fb76655f9cbdbe89876"_hexbytes;
     auto ed_sk =
