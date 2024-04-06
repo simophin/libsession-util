@@ -10,14 +10,14 @@ using namespace session::onionreq;
 using namespace session::network;
 
 namespace {
-    struct Result {
-        bool success;
-        bool timeout;
-        int16_t status_code;
-        std::optional<std::string> response;
-        service_node_changes changes;
-    };
-} // namespace
+struct Result {
+    bool success;
+    bool timeout;
+    int16_t status_code;
+    std::optional<std::string> response;
+    service_node_changes changes;
+};
+}  // namespace
 
 TEST_CASE("Network error handling", "[network]") {
     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
@@ -361,7 +361,8 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check the retry request of a 421 with no response data throws (no good way to handle this
     // case)
-    auto mock_request9 = request_info{ed_sk, target, "test", std::nullopt, std::vector<service_node>{target}, path, true};
+    auto mock_request9 = request_info{
+            ed_sk, target, "test", std::nullopt, std::vector<service_node>{target}, path, true};
     handle_errors(
             421,
             std::nullopt,
