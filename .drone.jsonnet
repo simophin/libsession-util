@@ -10,7 +10,11 @@ local submodules = {
 
 local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 
-local default_deps_nocxx = ['nlohmann-json3-dev', 'gnutls-bin'];
+local default_deps_nocxx = [
+  'nlohmann-json3-dev',
+  'gnutls-bin',
+  'libgnutls28-dev',
+];
 local default_deps = ['g++'] + default_deps_nocxx;
 
 local docker_base = 'registry.oxen.rocks/';
