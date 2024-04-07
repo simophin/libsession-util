@@ -15,7 +15,7 @@ local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 local default_deps_nocxx = ['nlohmann-json3-dev'];
 local default_deps = ['g++'] + default_deps_nocxx;
 
-local docker_base = 'registry.oxen.rocks/lokinet-ci-';
+local docker_base = 'registry.oxen.rocks/';
 
 // Do something on a debian-like system
 local debian_pipeline(name,
@@ -317,7 +317,7 @@ local static_build(name,
   debian_build('Debian stable (armhf)', docker_base + 'debian-stable/arm32v7', arch='arm64', jobs=4),
 
   // Windows builds (x64)
-  windows_cross_pipeline('Windows (amd64)', docker_base + 'debian-win32-cross-wine'),
+  windows_cross_pipeline('Windows (amd64)', docker_base + 'debian-win32-cross'),
 
   // Macos builds:
   mac_builder('macOS (Release)'),
