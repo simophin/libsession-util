@@ -1,3 +1,5 @@
+#include <session/network.h>
+
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 #include <session/network.hpp>
@@ -433,4 +435,88 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.nodes[0].failure_count == 0);
     CHECK(result.changes.nodes[0].invalid == false);
     CHECK(result.changes.path_failure_count == 0);
+}
+
+TEST_CASE("Network direct request", "[send_request][network]") {
+    auto ed_sk =
+            "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab78862834829a"
+            "87e0afadfed763fa8785e893dbde7f2c001ff1071aa55005c347f"_hexbytes;
+    auto test_service_node = service_node{
+            "144.76.164.202",
+            35400,
+            x25519_pubkey::from_bytes(
+                    "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45"_hexbytes),
+            ed25519_pubkey::from_bytes(
+                    "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes),
+            0,
+            false};
+    Result result;
+
+    send_request(
+            ed_sk,
+            test_service_node,
+            "info",
+            std::nullopt,
+            std::nullopt,
+            [&result](
+                    bool success,
+                    bool timeout,
+                    int16_t status_code,
+                    std::optional<std::string> response,
+                    service_node_changes changes) {
+                result = {success, timeout, status_code, response, changes};
+            });
+    CHECK(result.success == true);
+    CHECK(result.timeout == false);
+    CHECK(result.status_code == 200);
+    CHECK(result.changes.type == ServiceNodeChangeType::none);
+    REQUIRE(result.response.has_value());
+    REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
+
+    auto response = nlohmann::json::parse(*result.response);
+    CHECK(response.contains("hf"));
+    CHECK(response.contains("t"));
+    CHECK(response.contains("version"));
+}
+
+TEST_CASE("Network direct request C API", "[network_send_request][network]") {
+    auto ed_sk =
+            "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab78862834829a"
+            "87e0afadfed763fa8785e893dbde7f2c001ff1071aa55005c347f"_hexbytes;
+    auto test_service_node = network_service_node{};
+    test_service_node.lmq_port = 35400;
+    std::strcpy(test_service_node.ip, "144.76.164.202");
+    std::strcpy(test_service_node.x25519_pubkey_hex, "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45");
+    std::strcpy(test_service_node.ed25519_pubkey_hex, "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9");
+
+    network_send_request(
+            ed_sk.data(),
+            test_service_node,
+            "info",
+            nullptr,
+            0,
+            nullptr,
+            0,
+            [](bool success,
+               bool timeout,
+               int16_t status_code,
+               const char* c_response,
+               size_t response_size,
+               network_service_node_changes changes,
+               void*) {
+                CHECK(success == true);
+                CHECK(timeout == false);
+                CHECK(status_code == 200);
+                CHECK(changes.type == SERVICE_NODE_CHANGE_TYPE_NONE);
+                REQUIRE(response_size != 0);
+
+                auto response_str = std::string(c_response, response_size);
+                REQUIRE_NOTHROW(nlohmann::json::parse(response_str));
+
+                auto response = nlohmann::json::parse(response_str);
+                CHECK(response.contains("hf"));
+                CHECK(response.contains("t"));
+                CHECK(response.contains("version"));
+            },
+            nullptr);
 }
