@@ -1,5 +1,3 @@
-local docker_base = 'registry.oxen.rocks/lokinet-ci-';
-
 local submodule_commands = [
   'git fetch --tags',
   'git submodule update --init --recursive --depth=1 --jobs=4',
@@ -12,7 +10,7 @@ local submodules = {
 
 local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 
-local default_deps_nocxx = ['nlohmann-json3-dev'];
+local default_deps_nocxx = ['nlohmann-json3-dev', 'gnutls-bin'];
 local default_deps = ['g++'] + default_deps_nocxx;
 
 local docker_base = 'registry.oxen.rocks/';
