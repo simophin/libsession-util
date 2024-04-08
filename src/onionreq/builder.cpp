@@ -309,7 +309,7 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
             session::onionreq::ed25519_pubkey::from_hex({ed25519_pubkey, 64}),
             failure_count,
             false};
-    unbox(builder).set_destination(session::onionreq::SnodeDestination{node});
+    unbox(builder).set_destination(session::onionreq::SnodeDestination{node, std::nullopt});
 }
 
 LIBSESSION_C_API void onion_request_builder_set_server_destination(

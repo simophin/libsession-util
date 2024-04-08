@@ -25,8 +25,8 @@ typedef struct onion_request_builder_object {
 typedef struct onion_request_service_node_destination {
     char ip[40];  // IPv4 is 15 chars, IPv6 is 39 chars, + null terminator.
     uint16_t lmq_port;
-    char x25519_pubkey_hex[64];
-    char ed25519_pubkey_hex[64];
+    char x25519_pubkey_hex[65];   // The 64-byte x25519 pubkey in hex + null terminator.
+    char ed25519_pubkey_hex[65];  // The 64-byte ed25519 pubkey in hex + null terminator.
 
     uint8_t failure_count;
     bool invalid;

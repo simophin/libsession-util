@@ -289,7 +289,7 @@ void send_request(const request_info info, network_response_callback_t handle_re
             payload = bstring_view{
                     reinterpret_cast<const std::byte*>(info.body->data()), info.body->size()};
 
-        s->command(info.endpoint, payload, [&info, &prom](message resp) {
+        s->command(info.endpoint, payload, [&prom](message resp) {
             try {
                 if (resp.timed_out)
                     throw Timeout{};
@@ -342,12 +342,12 @@ void send_request(
         const std::optional<ustring> body,
         const std::optional<std::vector<session::network::service_node>> swarm,
         network_response_callback_t handle_response) {
-    send_request({ed_sk, target, endpoint, body, swarm, std::nullopt}, handle_response);
+    send_request({ed_sk, target, endpoint, body, swarm, std::nullopt, false}, handle_response);
 }
 
 template <typename Destination>
 std::optional<std::vector<session::network::service_node>> swarm_for_destination(
-        const Destination destination) {
+        const Destination) {
     return std::nullopt;
 }
 
@@ -357,24 +357,12 @@ std::optional<std::vector<session::network::service_node>> swarm_for_destination
     return destination.swarm;
 }
 
-template <typename Destination>
-void process_response(
+// The SnodeDestination runs via V3 onion requests
+void process_snode_response(
         const Builder builder,
-        const Destination destination,
         const std::string response,
         const request_info info,
         network_response_callback_t handle_response) {
-    handle_response(false, false, -1, "Invalid destination.", service_node_changes{});
-}
-
-template <>
-void process_response(
-        const Builder builder,
-        const SnodeDestination destination,
-        const std::string response,
-        const request_info info,
-        network_response_callback_t handle_response) {
-    // The SnodeDestination runs via V3 onion requests
     try {
         std::string base64_iv_and_ciphertext;
 
@@ -425,21 +413,18 @@ void process_response(
     }
 }
 
-template <>
-void process_response(
+// The ServerDestination runs via V4 onion requests
+void process_server_response(
         const Builder builder,
-        const ServerDestination destination,
         const std::string response,
         const request_info info,
         network_response_callback_t handle_response) {
-    // The ServerDestination runs via V4 onion requests
     try {
         ustring response_data = {to_unsigned(response.data()), response.size()};
         auto parser = ResponseParser(builder);
         auto result = parser.decrypt(response_data);
 
         // Process the bencoded response
-        auto result_sv = from_unsigned_sv(result.data());
         oxenc::bt_list_consumer result_bencode{result};
 
         if (result_bencode.is_finished() || !result_bencode.is_string())
@@ -523,12 +508,17 @@ void send_onion_request(
                         bool timeout,
                         int16_t status_code,
                         std::optional<std::string> response,
-                        service_node_changes changes) {
+                        service_node_changes) {
                     if (!success || timeout ||
                         !ResponseParser::response_long_enough(builder.enc_type, response->size()))
                         return handle_errors(status_code, response, info, callback);
 
-                    process_response(builder, destination, *response, info, callback);
+                    if constexpr (std::is_same_v<Destination, SnodeDestination>)
+                        process_snode_response(builder, *response, info, callback);
+                    else if constexpr (std::is_same_v<Destination, ServerDestination>)
+                        process_server_response(builder, *response, info, callback);
+                    else
+                        callback(false, false, -1, "Invalid destination.", service_node_changes{});
                 });
     } catch (const std::exception& e) {
         handle_response(false, false, -1, e.what(), service_node_changes{});
@@ -544,6 +534,8 @@ std::vector<network_service_node> convert_service_nodes(
         converted_node.ip[sizeof(converted_node.ip) - 1] = '\0';  // Ensure null termination
         strncpy(converted_node.x25519_pubkey_hex, node.x25519_pubkey.hex().c_str(), 64);
         strncpy(converted_node.ed25519_pubkey_hex, node.ed25519_pubkey.hex().c_str(), 64);
+        converted_node.x25519_pubkey_hex[64] = '\0';   // Ensure null termination
+        converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
         converted_node.lmq_port = node.lmq_port;
         converted_node.failure_count = node.failure_count;
         converted_node.invalid = node.invalid;
@@ -626,7 +618,8 @@ LIBSESSION_C_API void network_send_request(
                         static_cast<SERVICE_NODE_CHANGE_TYPE>(changes.type),
                         c_nodes.data(),
                         c_nodes.size(),
-                        changes.path_failure_count};
+                        changes.path_failure_count,
+                        changes.path_invalid};
 
                 callback(
                         success,

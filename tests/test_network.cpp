@@ -486,8 +486,12 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
     auto test_service_node = network_service_node{};
     test_service_node.lmq_port = 35400;
     std::strcpy(test_service_node.ip, "144.76.164.202");
-    std::strcpy(test_service_node.x25519_pubkey_hex, "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45");
-    std::strcpy(test_service_node.ed25519_pubkey_hex, "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9");
+    std::strcpy(
+            test_service_node.x25519_pubkey_hex,
+            "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45");
+    std::strcpy(
+            test_service_node.ed25519_pubkey_hex,
+            "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9");
 
     network_send_request(
             ed_sk.data(),
