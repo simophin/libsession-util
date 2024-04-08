@@ -63,52 +63,54 @@ void Builder::set_destination(ServerDestination destination) {
 
     host_.emplace(destination.host);
     target_.emplace("/oxen/v4/lsrpc");  // All servers support V4 onion requests
+    endpoint_.emplace(destination.endpoint);
     protocol_.emplace(destination.protocol);
+    method_.emplace(destination.method);
 
-    if (destination.port.has_value())
-        port_.emplace(destination.port.value());
+    if (destination.port)
+        port_.emplace(*destination.port);
+
+    if (destination.headers)
+        headers_.emplace(*destination.headers);
+
+    if (destination.query_params)
+        headers_.emplace(*destination.query_params);
 
     destination_x25519_public_key.emplace(destination.x25519_pubkey);
 }
 
-template <typename Destination>
-ustring Builder::generate_payload(Destination destination, std::optional<ustring> body) const {
-    throw std::runtime_error{"Invalid destination."};
-}
+ustring Builder::generate_payload(std::optional<ustring> body) const {
+    // If we don't have the data required for a server request, then assume it's targeting a
+    // service node and, therefore, the `body` is the payload
+    if (!host_ || !target_ || !endpoint_ || !protocol_ || !method_ ||
+        !destination_x25519_public_key)
+        return body.value_or(ustring{});
 
-template <>
-ustring Builder::generate_payload(SnodeDestination destination, std::optional<ustring> body) const {
-    return body.value_or(ustring{});
-}
-
-template <>
-ustring Builder::generate_payload(
-        ServerDestination destination, std::optional<ustring> body) const {
+    // Otherwise generate the payload for a server request
     auto headers_json = nlohmann::json::object();
 
-    if (destination.headers)
-        for (const auto& [key, value] : destination.headers.value()) {
+    if (headers_)
+        for (const auto& [key, value] : *headers_) {
             // Some platforms might automatically add this header, but we don't want to include it
             if (key != "User-Agent")
                 headers_json[key] = value;
         }
 
-    if (body.has_value() && !headers_json.contains("Content-Type"))
+    if (body && !headers_json.contains("Content-Type"))
         headers_json["Content-Type"] = "application/json";
 
     // Need to ensure the endpoint has a leading forward slash so add it if it's missing
-    auto endpoint = destination.endpoint;
+    auto endpoint = *endpoint_;
 
     if (!endpoint.empty() && endpoint.front() != '/')
         endpoint = '/' + endpoint;
 
     // If we have query parameters, add them to the endpoint to be included in the payload
-    if (destination.query_params && !destination.query_params->empty()) {
+    if (query_params_ && !query_params_->empty()) {
         std::string query_string = "";
 
-        for (auto& query : *destination.query_params) {
+        for (auto& query : *query_params_)
             query_string += query.first + "=" + query.second + "&";
-        }
 
         // Drop the extra '&' from the end
         endpoint += "?" + query_string.substr(0, query_string.size() - 1);
@@ -116,7 +118,7 @@ ustring Builder::generate_payload(
 
     // Structure the request information
     nlohmann::json request_info{
-            {"method", destination.method}, {"endpoint", endpoint}, {"headers", headers_json}};
+            {"method", *method_}, {"endpoint", endpoint}, {"headers", headers_json}};
     auto request_info_dump = request_info.dump();
     std::vector<std::string> payload{request_info_dump};
 

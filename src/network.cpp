@@ -486,7 +486,7 @@ void send_onion_request(
         for (const auto& node : path.nodes)
             builder.add_hop({node.ed25519_pubkey, node.x25519_pubkey});
 
-        auto payload = builder.generate_payload(destination, body);
+        auto payload = builder.generate_payload(body);
         auto onion_req_payload = builder.build(payload);
 
         request_info info = {

@@ -79,11 +79,9 @@ class Builder {
     template <typename Destination>
     void set_destination(Destination destination);
 
-    template <typename Destination>
-    ustring generate_payload(Destination destination, std::optional<ustring> body) const;
-
     void add_hop(std::pair<ed25519_pubkey, x25519_pubkey> keys) { hops_.push_back(keys); }
 
+    ustring generate_payload(std::optional<ustring> body) const;
     ustring build(ustring payload);
 
   private:
@@ -97,8 +95,12 @@ class Builder {
 
     std::optional<std::string> host_ = std::nullopt;
     std::optional<std::string> target_ = std::nullopt;
+    std::optional<std::string> endpoint_ = std::nullopt;
     std::optional<std::string> protocol_ = std::nullopt;
+    std::optional<std::string> method_ = std::nullopt;
     std::optional<uint16_t> port_ = std::nullopt;
+    std::optional<std::vector<std::pair<std::string, std::string>>> headers_ = std::nullopt;
+    std::optional<std::vector<std::pair<std::string, std::string>>> query_params_ = std::nullopt;
 };
 
 }  // namespace session::onionreq
