@@ -19,6 +19,12 @@ local default_deps = ['g++'] + default_deps_nocxx;
 
 local docker_base = 'registry.oxen.rocks/';
 
+local debian_backports(distro, pkgs) = [
+  'echo "deb http://deb.debian.org/debian ' + distro + '-backports main" >/etc/apt/sources.list.d/' + distro + '-backports.list',
+  'eatmydata ' + apt_get_quiet + ' update',
+  'eatmydata ' + apt_get_quiet + ' install -y ' + std.join(' ', std.map(function(x) x + '/' + distro + '-backports', pkgs)),
+];
+
 // Do something on a debian-like system
 local debian_pipeline(name,
                       image,
@@ -27,7 +33,9 @@ local debian_pipeline(name,
                       oxen_repo=false,
                       kitware_repo=''/* ubuntu codename, if wanted */,
                       allow_fail=false,
+                      cmake_pkg='cmake',
                       build=['echo "Error: drone build argument not set"', 'exit 1'],
+                      extra_setup=[],
                       extra_steps=[])
       = {
   kind: 'pipeline',
@@ -61,9 +69,9 @@ local debian_pipeline(name,
           'echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ' + kitware_repo + ' main" >/etc/apt/sources.list.d/kitware.list',
           'eatmydata ' + apt_get_quiet + ' update',
         ] else []
-      ) + [
+      ) + extra_setup + [
         'eatmydata ' + apt_get_quiet + ' dist-upgrade -y',
-        'eatmydata ' + apt_get_quiet + ' install --no-install-recommends -y cmake make git ccache ca-certificates ' + std.join(' ', deps),
+        'eatmydata ' + apt_get_quiet + ' install --no-install-recommends -y ' + cmake_pkg + ' make git ccache ca-certificates ' + std.join(' ', deps),
       ] + build,
     },
   ] + extra_steps,
@@ -83,6 +91,7 @@ local debian_build(name,
                    tests=true,
                    oxen_repo=false,
                    kitware_repo=''/* ubuntu codename, if wanted */,
+                   extra_setup=[],
                    allow_fail=false)
       = debian_pipeline(
   name,
@@ -103,6 +112,7 @@ local debian_build(name,
     cmake_extra,
     'make VERBOSE=1 -j' + jobs,
   ],
+  extra_setup=extra_setup,
   extra_steps=(if tests then
                  [{
                    name: 'tests',
@@ -311,7 +321,7 @@ local static_build(name,
   clang(16),
   full_llvm(16),
   debian_build('Debian stable (i386)', docker_base + 'debian-stable/i386'),
-  debian_build('Debian 11', docker_base + 'debian-bullseye'),
+  debian_build('Debian 11', docker_base + 'debian-bullseye', extra_setup=debian_backports('bullseye', ['cmake'])),
   debian_build('Ubuntu latest', docker_base + 'ubuntu-rolling'),
   debian_build('Ubuntu LTS', docker_base + 'ubuntu-lts'),
   debian_build('Ubuntu bionic',
