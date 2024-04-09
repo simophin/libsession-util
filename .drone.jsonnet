@@ -163,14 +163,14 @@ local windows_cross_pipeline(name,
 );
 
 local clang(version) = debian_build(
-  'Debian sid/clang-' + version + ' (amd64)',
+  'Debian sid/clang-' + version,
   docker_base + 'debian-sid-clang',
   deps=['clang-' + version] + default_deps_nocxx,
   cmake_extra='-DCMAKE_C_COMPILER=clang-' + version + ' -DCMAKE_CXX_COMPILER=clang++-' + version + ' '
 );
 
 local full_llvm(version) = debian_build(
-  'Debian sid/llvm-' + version + ' (amd64)',
+  'Debian sid/llvm-' + version,
   docker_base + 'debian-sid-clang',
   deps=['clang-' + version, ' lld-' + version, ' libc++-' + version + '-dev', 'libc++abi-' + version + '-dev']
        + default_deps_nocxx,
@@ -305,16 +305,16 @@ local static_build(name,
   },
 
   // Various debian builds
-  debian_build('Debian sid (amd64)', docker_base + 'debian-sid'),
-  debian_build('Debian sid/Debug (amd64)', docker_base + 'debian-sid', build_type='Debug'),
+  debian_build('Debian sid', docker_base + 'debian-sid'),
+  debian_build('Debian sid/Debug', docker_base + 'debian-sid', build_type='Debug'),
   debian_build('Debian testing', docker_base + 'debian-testing'),
   clang(16),
   full_llvm(16),
   debian_build('Debian stable (i386)', docker_base + 'debian-stable/i386'),
   debian_build('Debian 11', docker_base + 'debian-bullseye'),
-  debian_build('Ubuntu latest (amd64)', docker_base + 'ubuntu-rolling'),
-  debian_build('Ubuntu LTS (amd64)', docker_base + 'ubuntu-lts'),
-  debian_build('Ubuntu bionic (amd64)',
+  debian_build('Ubuntu latest', docker_base + 'ubuntu-rolling'),
+  debian_build('Ubuntu LTS', docker_base + 'ubuntu-lts'),
+  debian_build('Ubuntu bionic',
                docker_base + 'ubuntu-bionic',
                deps=['g++-8'],
                kitware_repo='bionic',
@@ -326,7 +326,7 @@ local static_build(name,
   debian_build('Debian stable (armhf)', docker_base + 'debian-stable/arm32v7', arch='arm64', jobs=4),
 
   // Windows builds (x64)
-  windows_cross_pipeline('Windows (amd64)', docker_base + 'debian-win32-cross'),
+  windows_cross_pipeline('Windows', docker_base + 'debian-win32-cross'),
 
   // Macos builds:
   mac_builder('macOS Intel (Release)'),
@@ -334,10 +334,10 @@ local static_build(name,
   mac_builder('macOS Arm64 (Debug)', arch='arm64', build_type='Debug'),
 
   // Static lib builds
-  static_build('Static Linux amd64', docker_base + 'debian-stable', 'libsession-util-linux-amd64-TAG.tar.xz'),
-  static_build('Static Linux i386', docker_base + 'debian-stable', 'libsession-util-linux-i386-TAG.tar.xz'),
-  static_build('Static Linux arm64', docker_base + 'debian-stable', 'libsession-util-linux-arm64-TAG.tar.xz', arch='arm64'),
-  static_build('Static Linux armhf', docker_base + 'debian-stable/arm32v7', 'libsession-util-linux-armhf-TAG.tar.xz', arch='arm64'),
+  static_build('Static Linux/amd64', docker_base + 'debian-stable', 'libsession-util-linux-amd64-TAG.tar.xz'),
+  static_build('Static Linux/i386', docker_base + 'debian-stable', 'libsession-util-linux-i386-TAG.tar.xz'),
+  static_build('Static Linux/arm64', docker_base + 'debian-stable', 'libsession-util-linux-arm64-TAG.tar.xz', arch='arm64'),
+  static_build('Static Linux/armhf', docker_base + 'debian-stable/arm32v7', 'libsession-util-linux-armhf-TAG.tar.xz', arch='arm64'),
   static_build('Static Windows x64',
                docker_base + 'debian-win32-cross',
                'libsession-util-windows-x64-TAG.zip',
