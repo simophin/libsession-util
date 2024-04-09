@@ -492,9 +492,6 @@ TEST_CASE("Conversation pruning", "[config][conversations][pruning]") {
         auto pk = some_pubkey(x);
         return "05" + oxenc::to_hex(pk.begin(), pk.end());
     };
-    auto some_og_url = [&](unsigned char x) -> std::string {
-        return "https://example.com/r/room"s + std::to_string(x);
-    };
     const auto now = std::chrono::system_clock::now() - 1ms;
     auto unix_timestamp = [&now](int days_ago) -> int64_t {
         return std::chrono::duration_cast<std::chrono::milliseconds>(

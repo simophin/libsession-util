@@ -801,7 +801,7 @@ class ConfigBase : public ConfigSig {
     ///
     /// Inputs:
     /// - `extra` -- bt_dict containing a previous dump of data
-    virtual void load_extra_data(oxenc::bt_dict extra) {}
+    virtual void load_extra_data([[maybe_unused]] oxenc::bt_dict extra) {}
 
     /// API: base/ConfigBase::load_key
     ///

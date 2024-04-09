@@ -99,8 +99,8 @@ TEST_CASE("user profile C API", "[config][user_profile][c]") {
     CHECK(name == "Kallie"sv);
 
     pic = user_profile_get_pic(conf);
-    REQUIRE(pic.url);
-    REQUIRE(pic.key);
+    REQUIRE(pic.url != ""s);
+    REQUIRE(pic.key != to_usv(""s));
     CHECK(pic.url == "http://example.org/omg-pic-123.bmp"sv);
     CHECK(ustring_view{pic.key, 32} == "secret78901234567890123456789012"_bytes);
 

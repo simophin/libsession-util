@@ -45,7 +45,7 @@ EncryptType parse_enc_type(std::string_view enc_type) {
 }
 
 template <typename Destination>
-void Builder::set_destination(Destination destination) {
+void Builder::set_destination(Destination /*destination*/) {
     throw std::runtime_error{"Invalid destination."};
 }
 
