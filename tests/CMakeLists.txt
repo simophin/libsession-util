@@ -26,12 +26,21 @@ add_executable(testAll
     test_xed25519.cpp
     )
 
+add_library(Catch2Wrapper INTERFACE)
+target_link_libraries(Catch2Wrapper INTERFACE Catch2::Catch2WithMain)
+
+if(MSVC)
+    target_compile_options(Catch2Wrapper INTERFACE /W0)
+else()
+    target_compile_options(Catch2Wrapper INTERFACE -w)
+endif()
+
 target_link_libraries(testAll PRIVATE
     libsession::config
     libsession::onionreq
     libsodium::sodium-internal
     nlohmann_json::nlohmann_json
-    Catch2::Catch2WithMain)
+    Catch2Wrapper)
 
 if(NOT TARGET check)
     add_custom_target(check COMMAND testAll)
