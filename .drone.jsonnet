@@ -14,6 +14,7 @@ local default_deps_nocxx = [
   'nlohmann-json3-dev',
   'gnutls-bin',
   'libgnutls28-dev',
+  'ngtcp2-dev',
 ];
 local default_deps = ['g++'] + default_deps_nocxx;
 
@@ -326,7 +327,7 @@ local static_build(name,
   debian_build('Ubuntu LTS', docker_base + 'ubuntu-lts'),
   debian_build('Ubuntu bionic',
                docker_base + 'ubuntu-bionic',
-               deps=['g++-8'],
+               deps=['g++-8', 'libgnutls28-dev', 'ngtcp2-dev'],
                kitware_repo='bionic',
                oxen_repo=true,
                cmake_extra='-DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8'),
