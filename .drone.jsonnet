@@ -307,15 +307,18 @@ local static_build(name,
   // Various debian builds
   debian_build('Debian sid (amd64)', docker_base + 'debian-sid'),
   debian_build('Debian sid/Debug (amd64)', docker_base + 'debian-sid', build_type='Debug'),
+  debian_build('Debian testing', docker_base + 'debian-testing'),
   clang(16),
   full_llvm(16),
   debian_build('Debian stable (i386)', docker_base + 'debian-stable/i386'),
+  debian_build('Debian 11', docker_base + 'debian-bullseye'),
   debian_build('Ubuntu latest (amd64)', docker_base + 'ubuntu-rolling'),
   debian_build('Ubuntu LTS (amd64)', docker_base + 'ubuntu-lts'),
   debian_build('Ubuntu bionic (amd64)',
                docker_base + 'ubuntu-bionic',
                deps=['g++-8'],
                kitware_repo='bionic',
+               oxen_repo=true,
                cmake_extra='-DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8'),
 
   // ARM builds (ARM64 and armhf)
