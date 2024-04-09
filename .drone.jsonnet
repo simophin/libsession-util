@@ -186,6 +186,7 @@ local full_llvm(version) = debian_build(
 
 // Macos build
 local mac_pipeline(name,
+                   arch='amd64',
                    allow_fail=false,
                    build=['echo "Error: drone build argument not set"', 'exit 1'],
                    extra_steps=[])
@@ -193,7 +194,7 @@ local mac_pipeline(name,
   kind: 'pipeline',
   type: 'exec',
   name: name,
-  platform: { os: 'darwin', arch: 'amd64' },
+  platform: { os: 'darwin', arch: arch },
   steps: [
     { name: 'submodules', commands: submodule_commands },
     {
@@ -209,6 +210,7 @@ local mac_pipeline(name,
   ] + extra_steps,
 };
 local mac_builder(name,
+                  arch='amd64',
                   build_type='Release',
                   werror=true,
                   lto=false,
@@ -216,7 +218,7 @@ local mac_builder(name,
                   jobs=6,
                   tests=true,
                   allow_fail=false)
-      = mac_pipeline(name, allow_fail=allow_fail, build=[
+      = mac_pipeline(name, arch=arch, allow_fail=allow_fail, build=[
   'mkdir build',
   'cd build',
   'cmake .. -DCMAKE_CXX_FLAGS=-fcolor-diagnostics -DCMAKE_BUILD_TYPE=' + build_type + ' ' +
@@ -324,8 +326,9 @@ local static_build(name,
   windows_cross_pipeline('Windows (amd64)', docker_base + 'debian-win32-cross'),
 
   // Macos builds:
-  mac_builder('macOS (Release)'),
-  mac_builder('macOS (Debug)', build_type='Debug'),
+  mac_builder('macOS Intel (Release)'),
+  mac_builder('macOS Arm64 (Release)', arch='arm64'),
+  mac_builder('macOS Arm64 (Debug)', arch='arm64', build_type='Debug'),
 
   // Static lib builds
   static_build('Static Linux amd64', docker_base + 'debian-stable', 'libsession-util-linux-amd64-TAG.tar.xz'),
@@ -359,7 +362,7 @@ local static_build(name,
     'cd build-macos && ../utils/ci/drone-static-upload.sh',
   ]),
 
-  mac_pipeline('Static iOS', build=[
+  mac_pipeline('Static iOS', arch='arm64', build=[
     'export JOBS=6',
     './utils/ios.sh libsession-util-ios-TAG',
     'cd build-ios && ../utils/ci/drone-static-upload.sh',
