@@ -78,6 +78,7 @@ local debian_build(name,
                    lto=false,
                    werror=true,
                    cmake_extra='',
+                   shared_libs=true,
                    jobs=6,
                    tests=true,
                    oxen_repo=false,
@@ -96,7 +97,7 @@ local debian_build(name,
     'cd build',
     'cmake .. -DCMAKE_CXX_FLAGS=-fdiagnostics-color=always -DCMAKE_BUILD_TYPE=' + build_type + ' ' +
     (if werror then '-DWARNINGS_AS_ERRORS=ON ' else '') +
-    '-DBUILD_SHARED_LIBS=ON ' +
+    (if shared_libs then '-DBUILD_SHARED_LIBS=ON ' else '') +
     '-DUSE_LTO=' + (if lto then 'ON ' else 'OFF ') +
     '-DWITH_TESTS=' + (if tests then 'ON ' else 'OFF ') +
     cmake_extra,
@@ -173,6 +174,7 @@ local full_llvm(version) = debian_build(
   docker_base + 'debian-sid-clang',
   deps=['clang-' + version, ' lld-' + version, ' libc++-' + version + '-dev', 'libc++abi-' + version + '-dev']
        + default_deps_nocxx,
+  shared_libs=false,
   cmake_extra='-DCMAKE_C_COMPILER=clang-' + version +
               ' -DCMAKE_CXX_COMPILER=clang++-' + version +
               ' -DCMAKE_CXX_FLAGS="-stdlib=libc++ -fcolor-diagnostics" ' +
