@@ -114,6 +114,19 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 
 add_subdirectory(external)
+
+if(NOT TARGET nettle::nettle)
+    if(BUILD_STATIC_DEPS)
+        message(FATAL_ERROR "Internal error: nettle::nettle target (expected via libquic BUILD_STATIC_DEPS) not found")
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(NETTLE REQUIRED IMPORTED_TARGET nettle)
+        add_library(nettle INTERFACE)
+        target_link_libraries(nettle INTERFACE PkgConfig::NETTLE)
+        add_library(nettle::nettle ALIAS nettle)
+    endif()
+endif()
+
 add_subdirectory(src)
 add_subdirectory(proto)
 
