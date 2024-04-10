@@ -342,11 +342,6 @@ local static_build(name,
   debian_build('Debian 11', docker_base + 'debian-bullseye', extra_setup=debian_backports('bullseye', ['cmake'])),
   debian_build('Ubuntu latest', docker_base + 'ubuntu-rolling'),
   debian_build('Ubuntu LTS', docker_base + 'ubuntu-lts'),
-  debian_build('Ubuntu bionic',
-               docker_base + 'ubuntu-bionic',
-               deps=['g++-8'] + libngtcp2_deps,
-               kitware_repo='bionic',
-               cmake_extra='-DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8'),
 
   // ARM builds (ARM64 and armhf)
   debian_build('Debian sid (ARM64)', docker_base + 'debian-sid', arch='arm64', jobs=4),
@@ -370,11 +365,13 @@ local static_build(name,
                'libsession-util-windows-x64-TAG.zip',
                deps=['g++-mingw-w64-x86-64-posix'],
                cmake_extra='-DCMAKE_CXX_FLAGS=-fdiagnostics-color=always -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw-x86-64-toolchain.cmake'),
+  /*  currently broken:
   static_build('Static Windows x86',
                docker_base + 'debian-win32-cross',
                'libsession-util-windows-x86-TAG.zip',
                deps=['g++-mingw-w64-i686-posix'],
                cmake_extra='-DCMAKE_CXX_FLAGS=-fdiagnostics-color=always -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw-i686-toolchain.cmake'),
+  */
   debian_pipeline(
     'Static Android',
     docker_base + 'android',
