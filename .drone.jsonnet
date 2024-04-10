@@ -10,16 +10,15 @@ local submodules = {
 
 local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 
-local libngtcp2_deps = ['libngtcp2-dev', 'libngtcp2-crypto-gnutls-dev'];
+local libngtcp2_deps = ['libgnutls28-dev', 'libngtcp2-dev', 'libngtcp2-crypto-gnutls-dev'];
 
 local default_deps_nocxx = [
   'nlohmann-json3-dev',
-  'libgnutls28-dev',
 ] + libngtcp2_deps;
 
 local default_deps = ['g++'] + default_deps_nocxx;
 
-local default_test_deps = ['libngtcp2-crypto-gnutls8', 'libngtcp2-16', 'libgnutls30'];
+local default_test_deps = libngtcp2_deps;
 
 local docker_base = 'registry.oxen.rocks/';
 
@@ -345,7 +344,7 @@ local static_build(name,
   debian_build('Ubuntu LTS', docker_base + 'ubuntu-lts'),
   debian_build('Ubuntu bionic',
                docker_base + 'ubuntu-bionic',
-               deps=['g++-8', 'libgnutls28-dev'] + libngtcp2_deps,
+               deps=['g++-8'] + libngtcp2_deps,
                kitware_repo='bionic',
                cmake_extra='-DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8'),
 
