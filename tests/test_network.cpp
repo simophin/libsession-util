@@ -57,8 +57,8 @@ TEST_CASE("Network error handling", "[network]") {
                     result = {success, timeout, status_code, response, changes};
                 });
 
-        CHECK(result.success == false);
-        CHECK(result.timeout == false);
+        CHECK_FALSE(result.success);
+        CHECK_FALSE(result.timeout);
         CHECK(result.status_code == code);
         CHECK_FALSE(result.response.has_value());
         CHECK(result.changes.type == ServiceNodeChangeType::none);
@@ -78,8 +78,8 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(result.changes.type == ServiceNodeChangeType::update_node);
@@ -89,7 +89,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.nodes[0].x25519_pubkey == target.x25519_pubkey);
     CHECK(result.changes.nodes[0].ed25519_pubkey == target.ed25519_pubkey);
     CHECK(result.changes.nodes[0].failure_count == 1);
-    CHECK(result.changes.nodes[0].invalid == false);
+    CHECK_FALSE(result.changes.nodes[0].invalid);
     CHECK(result.changes.path_failure_count == 0);
 
     // Check general error handling with no provided path (too many failures)
@@ -120,14 +120,14 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(result.changes.type == ServiceNodeChangeType::update_node);
     REQUIRE(result.changes.nodes.size() == 1);
     CHECK(result.changes.nodes[0].failure_count == 10);
-    CHECK(result.changes.nodes[0].invalid == true);
+    CHECK(result.changes.nodes[0].invalid);
     CHECK(result.changes.path_failure_count == 0);
 
     // Check general error handling with a path but no response (first failure)
@@ -147,14 +147,14 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
     REQUIRE(result.changes.nodes.size() == 1);
     CHECK(result.changes.nodes[0].failure_count == 0);
-    CHECK(result.changes.nodes[0].invalid == false);
+    CHECK_FALSE(result.changes.nodes[0].invalid);
     CHECK(result.changes.path_failure_count == 1);
 
     // Check general error handling with a path but no response (too many path failures)
@@ -183,16 +183,16 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
     REQUIRE(result.changes.nodes.size() == 2);
     CHECK(result.changes.nodes[0].failure_count == 1);
-    CHECK(result.changes.nodes[0].invalid == true);
+    CHECK(result.changes.nodes[0].invalid);
     CHECK(result.changes.nodes[1].failure_count == 1);
-    CHECK(result.changes.nodes[1].invalid == false);
+    CHECK_FALSE(result.changes.nodes[1].invalid);
     CHECK(result.changes.path_failure_count == 10);
 
     // Check general error handling with a path but no response (too many path & node failures)
@@ -221,16 +221,16 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
     REQUIRE(result.changes.nodes.size() == 2);
     CHECK(result.changes.nodes[0].failure_count == 1);
-    CHECK(result.changes.nodes[0].invalid == true);
+    CHECK(result.changes.nodes[0].invalid);
     CHECK(result.changes.nodes[1].failure_count == 10);
-    CHECK(result.changes.nodes[1].invalid == true);
+    CHECK(result.changes.nodes[1].invalid);
     CHECK(result.changes.path_failure_count == 10);
 
     // Check general error handling with a path and a random response (first failure)
@@ -251,14 +251,14 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK(result.response == response);
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
     REQUIRE(result.changes.nodes.size() == 1);
     CHECK(result.changes.nodes[0].failure_count == 0);
-    CHECK(result.changes.nodes[0].invalid == false);
+    CHECK_FALSE(result.changes.nodes[0].invalid);
     CHECK(result.changes.path_failure_count == 1);
 
     // Check general error handling with a path and specific node failure (first failure)
@@ -288,18 +288,18 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK(result.response == response);
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
     REQUIRE(result.changes.nodes.size() == 2);
     CHECK(result.changes.nodes[0].ed25519_pubkey == target.ed25519_pubkey);
     CHECK(result.changes.nodes[0].failure_count == 0);
-    CHECK(result.changes.nodes[0].invalid == false);
+    CHECK_FALSE(result.changes.nodes[0].invalid);
     CHECK(result.changes.nodes[1].ed25519_pubkey == ed25519_pubkey::from_bytes(ed_pk2));
     CHECK(result.changes.nodes[1].failure_count == 1);
-    CHECK(result.changes.nodes[1].invalid == false);
+    CHECK_FALSE(result.changes.nodes[1].invalid);
     CHECK(result.changes.path_failure_count == 0);
 
     // Check general error handling with a path and specific node failure (too many failures)
@@ -329,18 +329,18 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK(result.response == response);
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
     REQUIRE(result.changes.nodes.size() == 2);
     CHECK(result.changes.nodes[0].ed25519_pubkey == target.ed25519_pubkey);
     CHECK(result.changes.nodes[0].failure_count == 0);
-    CHECK(result.changes.nodes[0].invalid == false);
+    CHECK_FALSE(result.changes.nodes[0].invalid);
     CHECK(result.changes.nodes[1].ed25519_pubkey == ed25519_pubkey::from_bytes(ed_pk2));
     CHECK(result.changes.nodes[1].failure_count == 10);
-    CHECK(result.changes.nodes[1].invalid == true);
+    CHECK(result.changes.nodes[1].invalid);
     CHECK(result.changes.path_failure_count == 0);
 
     // Check a 421 with no swarm data throws (no good way to handle this case)
@@ -356,8 +356,8 @@ TEST_CASE("Network error handling", "[network]") {
                     service_node_changes changes) {
                 result = {success, timeout, status_code, response, changes};
             });
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(result.changes.type == ServiceNodeChangeType::update_node);
 
@@ -377,8 +377,8 @@ TEST_CASE("Network error handling", "[network]") {
                     service_node_changes changes) {
                 result = {success, timeout, status_code, response, changes};
             });
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
 
@@ -396,8 +396,8 @@ TEST_CASE("Network error handling", "[network]") {
                     service_node_changes changes) {
                 result = {success, timeout, status_code, response, changes};
             });
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(result.changes.type == ServiceNodeChangeType::update_path);
 
@@ -423,8 +423,8 @@ TEST_CASE("Network error handling", "[network]") {
                 result = {success, timeout, status_code, response, changes};
             });
 
-    CHECK(result.success == false);
-    CHECK(result.timeout == false);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(result.changes.type == ServiceNodeChangeType::replace_swarm);
     REQUIRE(result.changes.nodes.size() == 1);
@@ -433,7 +433,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.nodes[0].x25519_pubkey == target.x25519_pubkey);
     CHECK(result.changes.nodes[0].ed25519_pubkey == target.ed25519_pubkey);
     CHECK(result.changes.nodes[0].failure_count == 0);
-    CHECK(result.changes.nodes[0].invalid == false);
+    CHECK_FALSE(result.changes.nodes[0].invalid);
     CHECK(result.changes.path_failure_count == 0);
 }
 
@@ -466,8 +466,8 @@ TEST_CASE("Network direct request", "[send_request][network]") {
                     service_node_changes changes) {
                 result = {success, timeout, status_code, response, changes};
             });
-    CHECK(result.success == true);
-    CHECK(result.timeout == false);
+    CHECK(result.success);
+    CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 200);
     CHECK(result.changes.type == ServiceNodeChangeType::none);
     REQUIRE(result.response.has_value());
@@ -508,8 +508,8 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
                size_t response_size,
                network_service_node_changes changes,
                void*) {
-                CHECK(success == true);
-                CHECK(timeout == false);
+                CHECK(success);
+                CHECK_FALSE(timeout);
                 CHECK(status_code == 200);
                 CHECK(changes.type == SERVICE_NODE_CHANGE_TYPE_NONE);
                 REQUIRE(response_size != 0);
