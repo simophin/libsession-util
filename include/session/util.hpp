@@ -369,4 +369,20 @@ std::vector<ustring_view> to_view_vector(const Container& c) {
     return to_view_vector(c.begin(), c.end());
 }
 
+/// Splits a string on some delimiter string and returns a vector of string_view's pointing into the
+/// pieces of the original string.  The pieces are valid only as long as the original string remains
+/// valid.  Leading and trailing empty substrings are not removed.  If delim is empty you get back a
+/// vector of string_views each viewing one character.  If `trim` is true then leading and trailing
+/// empty values will be suppressed.
+///
+///     auto v = split("ab--c----de", "--"); // v is {"ab", "c", "", "de"}
+///     auto v = split("abc", ""); // v is {"a", "b", "c"}
+///     auto v = split("abc", "c"); // v is {"ab", ""}
+///     auto v = split("abc", "c", true); // v is {"ab"}
+///     auto v = split("-a--b--", "-"); // v is {"", "a", "", "b", "", ""}
+///     auto v = split("-a--b--", "-", true); // v is {"a", "", "b"}
+///
+std::vector<std::string_view> split(
+        std::string_view str, std::string_view delim, bool trim = false);
+
 }  // namespace session

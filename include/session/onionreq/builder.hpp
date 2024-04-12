@@ -8,11 +8,6 @@
 
 namespace session::onionreq {
 
-struct onion_path {
-    std::vector<session::network::service_node> nodes;
-    uint8_t failure_count;
-};
-
 struct SnodeDestination {
     session::network::service_node node;
     std::optional<std::vector<session::network::service_node>> swarm;

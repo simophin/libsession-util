@@ -8,7 +8,9 @@
 #include <oxen/log.hpp>
 #include <oxen/log/ring_buffer_sink.hpp>
 #include <oxen/quic.hpp>
+#include <oxen/quic/opt.hpp>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -29,27 +31,460 @@ using namespace std::literals;
 
 namespace session::network {
 
-class Timeout : public std::exception {};
+namespace {
 
-// The number of times a path can fail before it's replaced.
-const uint16_t path_failure_threshold = 3;
+    inline auto log_cat = oxen::log::Cat("network");
 
-// The number of times a snode can fail before it's replaced.
-const uint16_t snode_failure_threshold = 3;
+    class Timeout : public std::exception {};
 
-constexpr auto node_not_found_prefix = "Next node not found: "sv;
-constexpr auto ALPN = "oxenstorage"sv;
-const ustring uALPN{reinterpret_cast<const unsigned char*>(ALPN.data()), ALPN.size()};
-std::shared_ptr<oxen::log::RingBufferSink> buffer;
+    const std::chrono::seconds default_timeout = 5s;
 
-void send_request(const request_info info, network_response_callback_t handle_response);
+    // The number of times a path can fail before it's replaced.
+    const uint16_t path_failure_threshold = 3;
 
-void add_network_logger(std::function<void(const std::string&)> callback) {
+    // The number of times a snode can fail before it's replaced.
+    const uint16_t snode_failure_threshold = 3;
+
+    constexpr auto node_not_found_prefix = "Next node not found: "sv;
+    constexpr auto ALPN = "oxenstorage"sv;
+    const ustring uALPN{reinterpret_cast<const unsigned char*>(ALPN.data()), ALPN.size()};
+
+    std::array<uint8_t, 4> split_ipv4(std::string_view ip) {
+        std::array<uint8_t, 4> quad;
+        auto nums = split(ip, ".");
+        if (nums.size() != 4)
+            throw "Invalid IPv4 address";
+        for (int i = 0; i < 4; i++) {
+            auto end = nums[i].data() + nums[i].size();
+            if (auto [p, ec] = std::from_chars(nums[i].data(), end, quad[i]);
+                ec != std::errc{} || p != end)
+                throw "Invalid malformed IPv4 address";
+        }
+
+        return quad;
+    }
+}  // namespace
+
+Network::Network(const session::onionreq::ed25519_seckey ed25519_seckey) {
+    creds = GNUTLSCreds::make_from_ed_seckey(std::string(ed25519_seckey.view()));
+    endpoint = net.endpoint(Address{"0.0.0.0", 0}, opt::outbound_alpns{{uALPN}});
+}
+
+void Network::add_logger(std::function<void(const std::string&)> callback) {
     buffer = std::make_shared<oxen::log::RingBufferSink>(100UL, callback);
     oxen::log::add_sink(buffer);
 }
 
-void handle_errors(
+void Network::add_path(std::vector<session::network::service_node> nodes, uint8_t failure_count) {
+    if (nodes.empty())
+        throw std::invalid_argument{"No nodes in the path"};
+
+    auto existing_path = net.call_get([this, node = nodes.front()]() -> std::optional<onion_path> {
+        auto target_path = std::find_if(paths.begin(), paths.end(), [node](const auto& path) {
+            return !path.nodes.empty() && node == path.nodes.front();
+        });
+
+        if (target_path == paths.end())
+            return std::nullopt;
+
+        return *target_path;
+    });
+
+    if (existing_path)
+        throw std::invalid_argument{"Cannot have multiple paths with the same starting node"};
+
+    auto c = get_connection(nodes.front());
+    net.call([this, c, nodes, failure_count]() mutable {
+        paths.emplace_back(onion_path{std::move(c), std::move(nodes), failure_count});
+    });
+}
+
+void Network::remove_path(session::network::service_node node) {
+    auto it = std::find_if(paths.begin(), paths.end(), [&node](const auto& path) {
+        return path.nodes[0] == node;
+    });
+
+    if (it != paths.end())
+        paths.erase(it);
+}
+
+void Network::remove_all_paths() {
+    paths.clear();
+}
+
+std::shared_ptr<oxen::quic::connection_interface> Network::get_connection(
+        const service_node target) {
+    std::stringstream ss;
+    for (size_t i = 0; i < target.ip.size(); ++i) {
+        if (i != 0)
+            ss << ".";
+        ss << static_cast<int>(target.ip[i]);
+    }
+    auto remote = RemoteAddress{target.ed25519_pubkey.view(), ss.str(), target.quic_port};
+
+    return endpoint->connect(
+            remote,
+            creds,
+            oxen::quic::opt::keep_alive{10s},
+            [this, &target](connection_interface& conn, uint64_t) {
+                auto target_path =
+                        std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+                            return !path.nodes.empty() && target == path.nodes.front();
+                        });
+
+                if (target_path != paths.end() && target_path->conn &&
+                    conn.reference_id() == target_path->conn->reference_id())
+                    target_path->conn.reset();
+            });
+}
+
+std::shared_ptr<oxen::quic::BTRequestStream> Network::get_btstream(const service_node target) {
+    auto has_target_path = net.call_get([this, &target]() -> bool {
+        auto target_path = std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+            return !path.nodes.empty() && target == path.nodes.front();
+        });
+
+        return target_path != paths.end();
+    });
+
+    // If we are targeting one of the paths then wait for `default_timeout` to give it a chance to
+    // create an active connection
+    std::chrono::milliseconds wait_time_ms = 0ms;
+    while (has_target_path && wait_time_ms < default_timeout) {
+        auto result = net.call_get(
+                [this, &target]() -> std::pair<std::shared_ptr<oxen::quic::BTRequestStream>, bool> {
+                    auto target_path =
+                            std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+                                return !path.nodes.empty() && target == path.nodes.front();
+                            });
+
+                    if (target_path != paths.end() && target_path->conn &&
+                        target_path->conn->remote_key() != to_usv(target.ed25519_pubkey.view())) {
+                        if (auto str =
+                                    target_path->conn->maybe_stream<oxen::quic::BTRequestStream>(0))
+                            return {str, true};
+
+                        return {nullptr, true};
+                    }
+
+                    return {nullptr, false};
+                });
+
+        // If we were able to get a valid connection then return it
+        if (result.first)
+            return result.first;
+
+        // Otherwise if there was no connection at all then return nullptr immediately so a new
+        // connection gets created (this can happen if the `conn` times out or fails initially so we
+        // don't want to bother looping in that case)
+        if (!result.second)
+            break;
+
+        std::this_thread::sleep_for(100ms);
+        wait_time_ms += 100ms;
+    }
+
+    // We weren't able to get an existing connection so we need to create a new one
+    auto c = get_connection(target);
+    net.call([this, c, &target]() mutable {
+        auto target_path = std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+            return !path.nodes.empty() && target == path.nodes.front();
+        });
+
+        if (target_path == paths.end())
+            return;
+
+        target_path->conn = std::move(c);
+    });
+    std::__1::shared_ptr<oxen::quic::BTRequestStream> str =
+            c->open_stream<oxen::quic::BTRequestStream>();
+
+    return str;
+}
+
+void Network::send_request(const request_info info, network_response_callback_t handle_response) {
+    try {
+        std::promise<std::string> prom;
+        bstring_view payload = {};
+
+        if (info.body)
+            payload = bstring_view{
+                    reinterpret_cast<const std::byte*>(info.body->data()), info.body->size()};
+
+        get_btstream(info.target)->command(info.endpoint, payload, [&prom](message resp) {
+            try {
+                if (resp.timed_out)
+                    throw Timeout{};
+
+                std::string body = resp.body_str();
+                if (resp.is_error() && !body.empty())
+                    throw std::runtime_error{"Failed to fetch response with error: " + body};
+                else if (resp.is_error())
+                    throw std::runtime_error{"Failed to fetch response"};
+
+                prom.set_value(body);
+            } catch (...) {
+                prom.set_exception(std::current_exception());
+            }
+        });
+
+        // Default to a 200 success if the response is empty but didn't timeout or error
+        std::string response = prom.get_future().get();
+        int16_t status_code = 200;
+        std::string response_data;
+
+        try {
+            nlohmann::json response_json = nlohmann::json::parse(response);
+
+            if (response_json.is_array() && response_json.size() == 2) {
+                status_code = response_json[0].get<int16_t>();
+                response_data = response_json[1].dump();
+            } else
+                response_data = response;
+        } catch (...) {
+            response_data = response;
+        }
+
+        // If we have a status code that is not in the 2xx range, return the error
+        if (status_code < 200 || status_code > 299)
+            return handle_errors(status_code, response_data, info, handle_response);
+
+        handle_response(true, false, status_code, response_data, service_node_changes{});
+    } catch (const Timeout&) {
+        handle_response(false, true, -1, "Request timed out", service_node_changes{});
+    } catch (const std::exception& e) {
+        handle_response(false, false, -1, e.what(), service_node_changes{});
+    }
+}
+
+void Network::send_request(
+        const session::network::service_node target,
+        const std::string endpoint,
+        const std::optional<ustring> body,
+        const std::optional<std::vector<session::network::service_node>> swarm,
+        network_response_callback_t handle_response) {
+    send_request({target, endpoint, body, swarm, std::nullopt, false}, handle_response);
+}
+
+template <typename Destination>
+std::optional<std::vector<session::network::service_node>> swarm_for_destination(
+        const Destination) {
+    return std::nullopt;
+}
+
+template <>
+std::optional<std::vector<session::network::service_node>> swarm_for_destination(
+        const SnodeDestination destination) {
+    return destination.swarm;
+}
+
+// The SnodeDestination runs via V3 onion requests
+void Network::process_snode_response(
+        const Builder builder,
+        const std::string response,
+        const request_info info,
+        network_response_callback_t handle_response) {
+    try {
+        std::string base64_iv_and_ciphertext;
+
+        try {
+            nlohmann::json response_json = nlohmann::json::parse(response);
+
+            if (!response_json.contains("result") || !response_json["result"].is_string())
+                throw std::runtime_error{"JSON missing result field."};
+
+            base64_iv_and_ciphertext = response_json["result"].get<std::string>();
+        } catch (...) {
+            base64_iv_and_ciphertext = response;
+        }
+
+        if (!oxenc::is_base64(base64_iv_and_ciphertext))
+            throw std::runtime_error{"Invalid base64 encoded IV and ciphertext."};
+
+        ustring iv_and_ciphertext;
+        oxenc::from_base64(
+                base64_iv_and_ciphertext.begin(),
+                base64_iv_and_ciphertext.end(),
+                std::back_inserter(iv_and_ciphertext));
+        auto parser = ResponseParser(builder);
+        auto result = parser.decrypt(iv_and_ciphertext);
+        auto result_json = nlohmann::json::parse(result);
+        int16_t status_code;
+        std::string body;
+
+        if (result_json.contains("status_code") && result_json["status_code"].is_number())
+            status_code = result_json["status_code"].get<int16_t>();
+        else if (result_json.contains("status") && result_json["status"].is_number())
+            status_code = result_json["status"].get<int16_t>();
+        else
+            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
+
+        if (result_json.contains("body") && result_json["body"].is_string())
+            body = result_json["body"].get<std::string>();
+        else
+            body = result_json.dump();
+
+        // If we got a non 2xx status code, return the error
+        if (status_code < 200 || status_code > 299)
+            return handle_errors(status_code, body, info, handle_response);
+
+        handle_response(true, false, status_code, body, service_node_changes{});
+    } catch (const std::exception& e) {
+        handle_response(false, false, -1, e.what(), service_node_changes{});
+    }
+}
+
+// The ServerDestination runs via V4 onion requests
+void Network::process_server_response(
+        const Builder builder,
+        const std::string response,
+        const request_info info,
+        network_response_callback_t handle_response) {
+    try {
+        ustring response_data = {to_unsigned(response.data()), response.size()};
+        auto parser = ResponseParser(builder);
+        auto result = parser.decrypt(response_data);
+
+        // Process the bencoded response
+        oxenc::bt_list_consumer result_bencode{result};
+
+        if (result_bencode.is_finished() || !result_bencode.is_string())
+            throw std::runtime_error{"Invalid bencoded response"};
+
+        auto response_info_string = result_bencode.consume_string();
+        int16_t status_code;
+        nlohmann::json response_info_json = nlohmann::json::parse(response_info_string);
+
+        if (response_info_json.contains("code") && response_info_json["code"].is_number())
+            status_code = response_info_json["code"].get<int16_t>();
+        else
+            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
+
+        // If we have a status code that is not in the 2xx range, return the error
+        if (status_code < 200 || status_code > 299) {
+            if (result_bencode.is_finished())
+                return handle_errors(status_code, std::nullopt, info, handle_response);
+
+            return handle_errors(
+                    status_code, result_bencode.consume_string(), info, handle_response);
+        }
+
+        // If there is no body just return the success status
+        if (result_bencode.is_finished())
+            return handle_response(true, false, status_code, std::nullopt, service_node_changes{});
+
+        // Otherwise return the result
+        handle_response(
+                true, false, status_code, result_bencode.consume_string(), service_node_changes{});
+    } catch (const std::exception& e) {
+        handle_response(false, false, -1, e.what(), service_node_changes{});
+    }
+}
+
+template <typename Destination>
+std::vector<onion_path> valid_paths_for_destination(
+        const std::vector<onion_path> paths, const Destination /*destination*/) {
+    return paths;
+}
+
+template <>
+std::vector<onion_path> valid_paths_for_destination(
+        const std::vector<onion_path> paths, const SnodeDestination destination) {
+    std::vector<onion_path> valid_paths = paths;
+    valid_paths.erase(
+            std::remove_if(
+                    valid_paths.begin(),
+                    valid_paths.end(),
+                    [&destination](const onion_path& path) {
+                        return std::any_of(
+                                path.nodes.begin(),
+                                path.nodes.end(),
+                                [&destination](const service_node& node) {
+                                    return node == destination.node;
+                                });
+                    }),
+            valid_paths.end());
+    return valid_paths;
+}
+
+template <typename Destination>
+void Network::send_onion_request(
+        const Destination destination,
+        const std::optional<ustring> body,
+        const bool is_retry,
+        network_response_callback_t handle_response) {
+    // Select a random path
+    auto paths = net.call_get([this]() -> std::vector<onion_path> { return this->paths; });
+    auto valid_paths = valid_paths_for_destination(paths, destination);
+    onion_path path;
+
+    if (valid_paths.empty()) {
+        handle_response(
+                false,
+                false,
+                -1,
+                (paths.empty() ? "No onion paths" : "No valid onion paths"),
+                service_node_changes{ServiceNodeChangeType::invalid_path});
+        return;
+    }
+
+    if (valid_paths.size() == 1)
+        path = valid_paths.front();
+    else {
+        std::random_device rd;
+        std::uniform_int_distribution<uint32_t> dist(0, valid_paths.size() - 1);
+        uint32_t random_index = dist(rd);
+        path = valid_paths[random_index];
+    }
+
+    try {
+        // Construct the onion request
+        auto builder = Builder();
+        builder.set_destination(destination);
+
+        for (const auto& node : path.nodes)
+            builder.add_hop({node.ed25519_pubkey, node.x25519_pubkey});
+
+        auto payload = builder.generate_payload(body);
+        auto onion_req_payload = builder.build(payload);
+
+        request_info info = {
+                path.nodes[0],
+                "onion_req",
+                onion_req_payload,
+                swarm_for_destination(destination),
+                path,
+                is_retry};
+
+        send_request(
+                info,
+                [this,
+                 builder = std::move(builder),
+                 info,
+                 destination = std::move(destination),
+                 callback = std::move(handle_response)](
+                        bool success,
+                        bool timeout,
+                        int16_t status_code,
+                        std::optional<std::string> response,
+                        service_node_changes) {
+                    if (!success || timeout ||
+                        !ResponseParser::response_long_enough(builder.enc_type, response->size()))
+                        return handle_errors(status_code, response, info, callback);
+
+                    if constexpr (std::is_same_v<Destination, SnodeDestination>)
+                        process_snode_response(builder, *response, info, callback);
+                    else if constexpr (std::is_same_v<Destination, ServerDestination>)
+                        process_server_response(builder, *response, info, callback);
+                    else
+                        callback(false, false, -1, "Invalid destination.", service_node_changes{});
+                });
+    } catch (const std::exception& e) {
+        handle_response(false, false, -1, e.what(), service_node_changes{});
+    }
+}
+
+void Network::handle_errors(
         const int16_t status_code,
         const std::optional<std::string> response,
         const request_info info,
@@ -102,16 +537,13 @@ void handle_errors(
 
                     if (info.path)
                         return send_onion_request(
-                                *info.path,
                                 SnodeDestination{*random_node, *info.swarm},
                                 info.body,
-                                info.ed_sk,
                                 true,
                                 handle_response);
 
                     return send_request(
-                            {info.ed_sk,
-                             *random_node,
+                            {*random_node,
                              info.endpoint,
                              info.body,
                              info.swarm,
@@ -131,14 +563,15 @@ void handle_errors(
 
                 std::vector<session::network::service_node> swarm;
 
-                for (auto snode : snodes)
+                for (auto snode : snodes) {
                     swarm.emplace_back(
-                            snode["ip"].get<std::string>(),
+                            split_ipv4(snode["ip"].get<std::string>()),
                             snode["port_omq"].get<uint16_t>(),
                             x25519_pubkey::from_hex(snode["pubkey_x25519"].get<std::string>()),
                             ed25519_pubkey::from_hex(snode["pubkey_ed25519"].get<std::string>()),
                             0,
                             false);
+                }
 
                 if (swarm.empty())
                     throw std::invalid_argument{"No snodes in the response."};
@@ -273,270 +706,17 @@ void handle_errors(
     }
 }
 
-void send_request(const request_info info, network_response_callback_t handle_response) {
-    try {
-        Network net;
-        std::promise<std::string> prom;
-        auto remote = RemoteAddress{
-                info.target.ed25519_pubkey.view(), info.target.ip, info.target.lmq_port};
-        auto creds = GNUTLSCreds::make_from_ed_seckey(std::string(from_unsigned_sv(info.ed_sk)));
-        auto ep = net.endpoint(Address{"0.0.0.0", 0}, opt::outbound_alpns{{uALPN}});
-        auto c = ep->connect(remote, creds);
-        auto s = c->open_stream<BTRequestStream>();
-        bstring_view payload = {};
-
-        if (info.body)
-            payload = bstring_view{
-                    reinterpret_cast<const std::byte*>(info.body->data()), info.body->size()};
-
-        s->command(info.endpoint, payload, [&prom](message resp) {
-            try {
-                if (resp.timed_out)
-                    throw Timeout{};
-
-                std::string body = resp.body_str();
-                if (resp.is_error() && !body.empty())
-                    throw std::runtime_error{"Failed to fetch response with error: " + body};
-                else if (resp.is_error())
-                    throw std::runtime_error{"Failed to fetch response"};
-
-                prom.set_value(body);
-            } catch (...) {
-                prom.set_exception(std::current_exception());
-            }
-        });
-
-        // Default to a 200 success if the response is empty but didn't timeout or error
-        std::string response = prom.get_future().get();
-        int16_t status_code = 200;
-        std::string response_data;
-
-        try {
-            nlohmann::json response_json = nlohmann::json::parse(response);
-
-            if (response_json.is_array() && response_json.size() == 2) {
-                status_code = response_json[0].get<int16_t>();
-                response_data = response_json[1].dump();
-            } else
-                response_data = response;
-        } catch (...) {
-            response_data = response;
-        }
-
-        // If we have a status code that is not in the 2xx range, return the error
-        if (status_code < 200 || status_code > 299)
-            return handle_errors(status_code, response_data, info, handle_response);
-
-        handle_response(true, false, status_code, response_data, service_node_changes{});
-    } catch (const Timeout&) {
-        handle_response(false, true, -1, "Request timed out", service_node_changes{});
-    } catch (const std::exception& e) {
-        handle_response(false, false, -1, e.what(), service_node_changes{});
-    }
-}
-
-void send_request(
-        const ustring_view ed_sk,
-        const session::network::service_node target,
-        const std::string endpoint,
-        const std::optional<ustring> body,
-        const std::optional<std::vector<session::network::service_node>> swarm,
-        network_response_callback_t handle_response) {
-    send_request({ed_sk, target, endpoint, body, swarm, std::nullopt, false}, handle_response);
-}
-
-template <typename Destination>
-std::optional<std::vector<session::network::service_node>> swarm_for_destination(
-        const Destination) {
-    return std::nullopt;
-}
-
-template <>
-std::optional<std::vector<session::network::service_node>> swarm_for_destination(
-        const SnodeDestination destination) {
-    return destination.swarm;
-}
-
-// The SnodeDestination runs via V3 onion requests
-void process_snode_response(
-        const Builder builder,
-        const std::string response,
-        const request_info info,
-        network_response_callback_t handle_response) {
-    try {
-        std::string base64_iv_and_ciphertext;
-
-        try {
-            nlohmann::json response_json = nlohmann::json::parse(response);
-
-            if (!response_json.contains("result") || !response_json["result"].is_string())
-                throw std::runtime_error{"JSON missing result field."};
-
-            base64_iv_and_ciphertext = response_json["result"].get<std::string>();
-        } catch (...) {
-            base64_iv_and_ciphertext = response;
-        }
-
-        if (!oxenc::is_base64(base64_iv_and_ciphertext))
-            throw std::runtime_error{"Invalid base64 encoded IV and ciphertext."};
-
-        ustring iv_and_ciphertext;
-        oxenc::from_base64(
-                base64_iv_and_ciphertext.begin(),
-                base64_iv_and_ciphertext.end(),
-                std::back_inserter(iv_and_ciphertext));
-        auto parser = ResponseParser(builder);
-        auto result = parser.decrypt(iv_and_ciphertext);
-        auto result_json = nlohmann::json::parse(result);
-        int16_t status_code;
-        std::string body;
-
-        if (result_json.contains("status_code") && result_json["status_code"].is_number())
-            status_code = result_json["status_code"].get<int16_t>();
-        else if (result_json.contains("status") && result_json["status"].is_number())
-            status_code = result_json["status"].get<int16_t>();
-        else
-            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
-
-        if (result_json.contains("body") && result_json["body"].is_string())
-            body = result_json["body"].get<std::string>();
-        else
-            body = result_json.dump();
-
-        // If we got a non 2xx status code, return the error
-        if (status_code < 200 || status_code > 299)
-            return handle_errors(status_code, body, info, handle_response);
-
-        handle_response(true, false, status_code, body, service_node_changes{});
-    } catch (const std::exception& e) {
-        handle_response(false, false, -1, e.what(), service_node_changes{});
-    }
-}
-
-// The ServerDestination runs via V4 onion requests
-void process_server_response(
-        const Builder builder,
-        const std::string response,
-        const request_info info,
-        network_response_callback_t handle_response) {
-    try {
-        ustring response_data = {to_unsigned(response.data()), response.size()};
-        auto parser = ResponseParser(builder);
-        auto result = parser.decrypt(response_data);
-
-        // Process the bencoded response
-        oxenc::bt_list_consumer result_bencode{result};
-
-        if (result_bencode.is_finished() || !result_bencode.is_string())
-            throw std::runtime_error{"Invalid bencoded response"};
-
-        auto response_info_string = result_bencode.consume_string();
-        int16_t status_code;
-        nlohmann::json response_info_json = nlohmann::json::parse(response_info_string);
-
-        if (response_info_json.contains("code") && response_info_json["code"].is_number())
-            status_code = response_info_json["code"].get<int16_t>();
-        else
-            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
-
-        // If we have a status code that is not in the 2xx range, return the error
-        if (status_code < 200 || status_code > 299) {
-            if (result_bencode.is_finished())
-                return handle_errors(status_code, std::nullopt, info, handle_response);
-
-            return handle_errors(
-                    status_code, result_bencode.consume_string(), info, handle_response);
-        }
-
-        // If there is no body just return the success status
-        if (result_bencode.is_finished())
-            return handle_response(true, false, status_code, std::nullopt, service_node_changes{});
-
-        // Otherwise return the result
-        handle_response(
-                true, false, status_code, result_bencode.consume_string(), service_node_changes{});
-    } catch (const std::exception& e) {
-        handle_response(false, false, -1, e.what(), service_node_changes{});
-    }
-}
-
-template <typename Destination>
-void send_onion_request(
-        const onion_path path,
-        const Destination destination,
-        const std::optional<ustring> body,
-        const ustring_view ed_sk,
-        const bool is_retry,
-        network_response_callback_t handle_response) {
-    if (path.nodes.empty()) {
-        handle_response(
-                false,
-                false,
-                -1,
-                "No nodes in the path",
-                service_node_changes{ServiceNodeChangeType::invalid_path});
-        return;
-    }
-
-    try {
-        // Construct the onion request
-        auto builder = Builder();
-        builder.set_destination(destination);
-
-        for (const auto& node : path.nodes)
-            builder.add_hop({node.ed25519_pubkey, node.x25519_pubkey});
-
-        auto payload = builder.generate_payload(body);
-        auto onion_req_payload = builder.build(payload);
-
-        request_info info = {
-                ed_sk,
-                path.nodes[0],
-                "onion_req",
-                onion_req_payload,
-                swarm_for_destination(destination),
-                path,
-                is_retry};
-
-        send_request(
-                info,
-                [builder = std::move(builder),
-                 info,
-                 destination = std::move(destination),
-                 callback = std::move(handle_response)](
-                        bool success,
-                        bool timeout,
-                        int16_t status_code,
-                        std::optional<std::string> response,
-                        service_node_changes) {
-                    if (!success || timeout ||
-                        !ResponseParser::response_long_enough(builder.enc_type, response->size()))
-                        return handle_errors(status_code, response, info, callback);
-
-                    if constexpr (std::is_same_v<Destination, SnodeDestination>)
-                        process_snode_response(builder, *response, info, callback);
-                    else if constexpr (std::is_same_v<Destination, ServerDestination>)
-                        process_server_response(builder, *response, info, callback);
-                    else
-                        callback(false, false, -1, "Invalid destination.", service_node_changes{});
-                });
-    } catch (const std::exception& e) {
-        handle_response(false, false, -1, e.what(), service_node_changes{});
-    }
-}
-
 std::vector<network_service_node> convert_service_nodes(
         const std::vector<session::network::service_node> nodes) {
     std::vector<network_service_node> converted_nodes;
     for (const auto& node : nodes) {
         network_service_node converted_node;
-        strncpy(converted_node.ip, node.ip.c_str(), sizeof(converted_node.ip) - 1);
-        converted_node.ip[sizeof(converted_node.ip) - 1] = '\0';  // Ensure null termination
+        std::memcpy(converted_node.ip, node.ip.data(), sizeof(converted_node.ip));
         strncpy(converted_node.x25519_pubkey_hex, node.x25519_pubkey.hex().c_str(), 64);
         strncpy(converted_node.ed25519_pubkey_hex, node.ed25519_pubkey.hex().c_str(), 64);
         converted_node.x25519_pubkey_hex[64] = '\0';   // Ensure null termination
         converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
-        converted_node.lmq_port = node.lmq_port;
+        converted_node.quic_port = node.quic_port;
         converted_node.failure_count = node.failure_count;
         converted_node.invalid = node.invalid;
         converted_nodes.push_back(converted_node);
@@ -547,17 +727,103 @@ std::vector<network_service_node> convert_service_nodes(
 
 }  // namespace session::network
 
+namespace {
+
+inline session::network::Network& unbox(network_object* network_) {
+    assert(network_ && network_->internals);
+    return *static_cast<session::network::Network*>(network_->internals);
+}
+
+inline bool set_error(char* error, const std::exception& e) {
+    if (!error)
+        return false;
+
+    std::string msg = e.what();
+    if (msg.size() > 255)
+        msg.resize(255);
+    std::memcpy(error, msg.c_str(), msg.size() + 1);
+    return false;
+}
+
+}  // namespace
+
 extern "C" {
 
 using namespace session::network;
 
-LIBSESSION_C_API void network_add_logger(void (*callback)(const char*, size_t)) {
+LIBSESSION_C_API bool network_init(
+        network_object** network, const unsigned char* ed25519_secretkey_bytes, char* error) {
+    try {
+        auto n = std::make_unique<session::network::Network>(
+                ed25519_seckey::from_bytes({ed25519_secretkey_bytes, 64}));
+        auto n_object = std::make_unique<network_object>();
+
+        n_object->internals = n.release();
+        *network = n_object.release();
+        return true;
+    } catch (const std::exception& e) {
+        return set_error(error, e);
+    }
+}
+
+LIBSESSION_C_API void network_free(network_object* network) {
+    delete network;
+}
+
+LIBSESSION_C_API void network_add_logger(
+        network_object* network, void (*callback)(const char*, size_t)) {
     assert(callback);
-    add_network_logger([callback](const std::string& msg) { callback(msg.c_str(), msg.size()); });
+    unbox(network).add_logger(
+            [callback](const std::string& msg) { callback(msg.c_str(), msg.size()); });
+}
+
+LIBSESSION_C_API bool network_add_path(
+        network_object* network, const onion_request_path path, char* error) {
+    try {
+        std::vector<session::network::service_node> nodes;
+        for (size_t i = 0; i < path.nodes_count; i++) {
+            std::array<uint8_t, 4> ip;
+            std::memcpy(ip.data(), path.nodes[i].ip, ip.size());
+            nodes.emplace_back(
+                    ip,
+                    path.nodes[i].quic_port,
+                    x25519_pubkey::from_hex({path.nodes[i].x25519_pubkey_hex, 64}),
+                    ed25519_pubkey::from_hex({path.nodes[i].ed25519_pubkey_hex, 64}),
+                    path.nodes[i].failure_count,
+                    false);
+        }
+
+        unbox(network).add_path(nodes, path.failure_count);
+        return true;
+    } catch (const std::exception& e) {
+        return set_error(error, e);
+    }
+}
+
+LIBSESSION_C_API bool network_remove_path(
+        network_object* network, const network_service_node node, char* error) {
+    try {
+        std::array<uint8_t, 4> ip;
+        std::memcpy(ip.data(), node.ip, ip.size());
+        unbox(network).remove_path(session::network::service_node{
+                ip,
+                node.quic_port,
+                x25519_pubkey::from_hex({node.x25519_pubkey_hex, 64}),
+                ed25519_pubkey::from_hex({node.ed25519_pubkey_hex, 64}),
+                node.failure_count,
+                false});
+        return true;
+    } catch (const std::exception& e) {
+        return set_error(error, e);
+    }
+}
+
+LIBSESSION_C_API void network_remove_all_paths(network_object* network) {
+    unbox(network).remove_all_paths();
 }
 
 LIBSESSION_C_API void network_send_request(
-        const unsigned char* ed25519_secretkey_bytes,
+        network_object* network,
         const network_service_node destination,
         const char* endpoint,
         const unsigned char* body_,
@@ -573,7 +839,7 @@ LIBSESSION_C_API void network_send_request(
                 network_service_node_changes changes,
                 void*),
         void* ctx) {
-    assert(ed25519_secretkey_bytes && endpoint && callback);
+    assert(endpoint && callback);
 
     std::optional<ustring> body;
     if (body_size > 0)
@@ -585,21 +851,26 @@ LIBSESSION_C_API void network_send_request(
         swarm = std::vector<session::network::service_node>{};
         swarm->reserve(swarm_count);
 
-        for (size_t i = 0; i < swarm_count; i++)
+        for (size_t i = 0; i < swarm_count; i++) {
+            std::array<uint8_t, 4> ip;
+            std::memcpy(ip.data(), swarm_[i].ip, ip.size());
             swarm->emplace_back(
-                    swarm_[i].ip,
-                    swarm_[i].lmq_port,
+                    ip,
+                    swarm_[i].quic_port,
                     x25519_pubkey::from_hex({swarm_[i].x25519_pubkey_hex, 64}),
                     ed25519_pubkey::from_hex({swarm_[i].ed25519_pubkey_hex, 64}),
                     swarm_[i].failure_count,
                     false);
+        }
     }
 
-    send_request(
-            {ed25519_secretkey_bytes, 64},
+    std::array<uint8_t, 4> ip;
+    std::memcpy(ip.data(), destination.ip, ip.size());
+
+    unbox(network).send_request(
             session::network::service_node{
-                    destination.ip,
-                    destination.lmq_port,
+                    ip,
+                    destination.quic_port,
                     x25519_pubkey::from_hex({destination.x25519_pubkey_hex, 64}),
                     ed25519_pubkey::from_hex({destination.ed25519_pubkey_hex, 64}),
                     destination.failure_count,
@@ -633,8 +904,7 @@ LIBSESSION_C_API void network_send_request(
 }
 
 LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
-        const onion_request_path path_,
-        const unsigned char* ed25519_secretkey_bytes,
+        network_object* network,
         const onion_request_service_node_destination node,
         const unsigned char* body_,
         size_t body_size,
@@ -647,21 +917,9 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                 network_service_node_changes changes,
                 void*),
         void* ctx) {
-    assert(ed25519_secretkey_bytes && callback);
+    assert(callback);
 
     try {
-        std::vector<session::network::service_node> nodes;
-        for (size_t i = 0; i < path_.nodes_count; i++)
-            nodes.emplace_back(
-                    path_.nodes[i].ip,
-                    path_.nodes[i].lmq_port,
-                    x25519_pubkey::from_hex({path_.nodes[i].x25519_pubkey_hex, 64}),
-                    ed25519_pubkey::from_hex({path_.nodes[i].ed25519_pubkey_hex, 64}),
-                    path_.nodes[i].failure_count,
-                    false);
-
-        session::onionreq::onion_path path = {nodes, path_.failure_count};
-
         std::optional<ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
@@ -672,28 +930,32 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
             swarm = std::vector<session::network::service_node>{};
             swarm->reserve(node.swarm_count);
 
-            for (size_t i = 0; i < node.swarm_count; i++)
+            for (size_t i = 0; i < node.swarm_count; i++) {
+                std::array<uint8_t, 4> ip;
+                std::memcpy(ip.data(), node.swarm[i].ip, ip.size());
                 swarm->emplace_back(
-                        node.swarm[i].ip,
-                        node.swarm[i].lmq_port,
+                        ip,
+                        node.swarm[i].quic_port,
                         x25519_pubkey::from_hex({node.swarm[i].x25519_pubkey_hex, 64}),
                         ed25519_pubkey::from_hex({node.swarm[i].ed25519_pubkey_hex, 64}),
                         node.swarm[i].failure_count,
                         false);
+            }
         }
 
-        send_onion_request(
-                path,
+        std::array<uint8_t, 4> ip;
+        std::memcpy(ip.data(), node.ip, ip.size());
+
+        unbox(network).send_onion_request(
                 SnodeDestination{
-                        {node.ip,
-                         node.lmq_port,
+                        {ip,
+                         node.quic_port,
                          x25519_pubkey::from_hex({node.x25519_pubkey_hex, 64}),
                          ed25519_pubkey::from_hex({node.ed25519_pubkey_hex, 64}),
                          node.failure_count,
                          false},
                         swarm},
                 body,
-                {ed25519_secretkey_bytes, 64},
                 false,
                 [callback, ctx](
                         bool success,
@@ -731,8 +993,7 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
 }
 
 LIBSESSION_C_API void network_send_onion_request_to_server_destination(
-        const onion_request_path path_,
-        const unsigned char* ed25519_secretkey_bytes,
+        network_object* network,
         const char* method,
         const char* protocol,
         const char* host,
@@ -756,21 +1017,9 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                 network_service_node_changes changes,
                 void*),
         void* ctx) {
-    assert(ed25519_secretkey_bytes && method && protocol && host && endpoint && x25519_pubkey &&
-           callback);
+    assert(method && protocol && host && endpoint && x25519_pubkey && callback);
 
     try {
-        std::vector<session::network::service_node> nodes;
-        for (size_t i = 0; i < path_.nodes_count; i++)
-            nodes.emplace_back(
-                    path_.nodes[i].ip,
-                    path_.nodes[i].lmq_port,
-                    x25519_pubkey::from_hex({path_.nodes[i].x25519_pubkey_hex, 64}),
-                    ed25519_pubkey::from_hex({path_.nodes[i].ed25519_pubkey_hex, 64}),
-                    path_.nodes[i].failure_count,
-                    false);
-
-        session::onionreq::onion_path path = {nodes, path_.failure_count};
         std::optional<std::vector<std::pair<std::string, std::string>>> headers;
         if (headers_size > 0) {
             headers = std::vector<std::pair<std::string, std::string>>{};
@@ -791,8 +1040,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
         if (body_size > 0)
             body = {body_, body_size};
 
-        send_onion_request(
-                path,
+        unbox(network).send_onion_request(
                 ServerDestination{
                         protocol,
                         host,
@@ -803,7 +1051,6 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                         headers,
                         query_params},
                 body,
-                {ed25519_secretkey_bytes, 64},
                 false,
                 [callback, ctx](
                         bool success,

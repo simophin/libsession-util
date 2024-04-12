@@ -23,8 +23,8 @@ typedef struct onion_request_builder_object {
 } onion_request_builder_object;
 
 typedef struct onion_request_service_node_destination {
-    char ip[40];  // IPv4 is 15 chars, IPv6 is 39 chars, + null terminator.
-    uint16_t lmq_port;
+    uint8_t ip[4];
+    uint16_t quic_port;
     char x25519_pubkey_hex[65];   // The 64-byte x25519 pubkey in hex + null terminator.
     char ed25519_pubkey_hex[65];  // The 64-byte ed25519 pubkey in hex + null terminator.
 
@@ -33,12 +33,6 @@ typedef struct onion_request_service_node_destination {
     const network_service_node* swarm;
     const size_t swarm_count;
 } onion_request_service_node_destination;
-
-typedef struct onion_request_path {
-    const network_service_node* nodes;
-    const size_t nodes_count;
-    uint8_t failure_count;
-} onion_request_path;
 
 /// API: groups/onion_request_builder_init
 ///
@@ -55,14 +49,6 @@ LIBSESSION_EXPORT void onion_request_builder_init(onion_request_builder_object**
 ///
 /// Wrapper around session::onionreq::Builder::onion_request_builder_set_enc_type.
 ///
-/// Declaration:
-/// ```cpp
-/// void onion_request_builder_set_enc_type(
-///     [in]    onion_request_builder_object*  builder
-///     [in]    ENCRYPT_TYPE                   enc_type
-/// );
-/// ```
-///
 /// Inputs:
 /// - `builder` -- [in] Pointer to the builder object
 /// - `enc_type` -- [in] The encryption type to use in the onion request
@@ -74,26 +60,17 @@ LIBSESSION_EXPORT void onion_request_builder_set_enc_type(
 /// Wrapper around session::onionreq::Builder::set_snode_destination.  ed25519_pubkey and
 /// x25519_pubkey are both hex strings and must both be exactly 64 characters.
 ///
-/// Declaration:
-/// ```cpp
-/// void onion_request_builder_set_snode_destination(
-///     [in]    onion_request_builder_object*  builder
-///     [in]    const char*                    ed25519_pubkey,
-///     [in]    const char*                    x25519_pubkey
-/// );
-/// ```
-///
 /// Inputs:
 /// - `builder` -- [in] Pointer to the builder object
 /// - `ip` -- [in] The IP address for the snode destination
-/// - `lmq_port` -- [in] The LMQ port request for the snode destination
+/// - `quic_port` -- [in] The Quic port request for the snode destination
 /// - `ed25519_pubkey` -- [in] The ed25519 public key for the snode destination
 /// - `x25519_pubkey` -- [in] The x25519 public key for the snode destination
 /// - `failure_count` -- [in] The number of times requests to this service node have failed
 LIBSESSION_EXPORT void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
-        const char* ip,
-        const uint16_t lmq_port,
+        const uint8_t ip[4],
+        const uint16_t quic_port,
         const char* x25519_pubkey,
         const char* ed25519_pubkey,
         const uint8_t failure_count);
