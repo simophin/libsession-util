@@ -30,21 +30,22 @@ TEST_CASE("Network error handling", "[network]") {
     auto x_pk = "d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72"_hexbytes;
     auto x_pk2 = "aa654f00fc39fc69fd0db829410ca38177d7732a8d2f0934ab3872ac56d5aa74"_hexbytes;
     auto target = service_node{
-            "0.0.0.0",
+            {0, 0, 0, 0},
             0,
             x25519_pubkey::from_bytes(x_pk),
             ed25519_pubkey::from_bytes(ed_pk),
             0,
             false};
     auto mock_request =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, std::nullopt, false};
+            request_info{target, "test", std::nullopt, std::nullopt, std::nullopt, false};
     Result result;
+    auto network = Network(ed25519_seckey::from_bytes(ed_sk));
 
     // Check the handling of the codes which make no changes
     auto codes_with_no_changes = {400, 404, 406, 425};
 
     for (auto code : codes_with_no_changes) {
-        handle_errors(
+        network.handle_errors(
                 code,
                 std::nullopt,
                 mock_request,
@@ -65,7 +66,7 @@ TEST_CASE("Network error handling", "[network]") {
     }
 
     // Check general error handling with no provided path (first failure)
-    handle_errors(
+    network.handle_errors(
             500,
             std::nullopt,
             mock_request,
@@ -85,7 +86,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.type == ServiceNodeChangeType::update_node);
     REQUIRE(result.changes.nodes.size() == 1);
     CHECK(result.changes.nodes[0].ip == target.ip);
-    CHECK(result.changes.nodes[0].lmq_port == target.lmq_port);
+    CHECK(result.changes.nodes[0].quic_port == target.quic_port);
     CHECK(result.changes.nodes[0].x25519_pubkey == target.x25519_pubkey);
     CHECK(result.changes.nodes[0].ed25519_pubkey == target.ed25519_pubkey);
     CHECK(result.changes.nodes[0].failure_count == 1);
@@ -94,9 +95,8 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check general error handling with no provided path (too many failures)
     auto mock_request2 = request_info{
-            ed_sk,
             service_node{
-                    "0.0.0.0",
+                    {0, 0, 0, 0},
                     0,
                     x25519_pubkey::from_bytes(x_pk),
                     ed25519_pubkey::from_bytes(ed_pk),
@@ -107,7 +107,7 @@ TEST_CASE("Network error handling", "[network]") {
             std::nullopt,
             std::nullopt,
             false};
-    handle_errors(
+    network.handle_errors(
             500,
             std::nullopt,
             mock_request2,
@@ -131,10 +131,9 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.path_failure_count == 0);
 
     // Check general error handling with a path but no response (first failure)
-    auto path = onion_path{{target}, 0};
-    auto mock_request3 =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, path, false};
-    handle_errors(
+    auto path = onion_path{nullptr, {target}, 0};
+    auto mock_request3 = request_info{target, "test", std::nullopt, std::nullopt, path, false};
+    network.handle_errors(
             500,
             std::nullopt,
             mock_request3,
@@ -159,18 +158,18 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check general error handling with a path but no response (too many path failures)
     path = onion_path{
+            nullptr,
             {target,
              service_node{
-                     "0.0.0.0",
+                     {0, 0, 0, 0},
                      0,
                      x25519_pubkey::from_bytes(x_pk),
                      ed25519_pubkey::from_bytes(ed_pk),
                      0,
                      false}},
             9};
-    auto mock_request4 =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, path, false};
-    handle_errors(
+    auto mock_request4 = request_info{target, "test", std::nullopt, std::nullopt, path, false};
+    network.handle_errors(
             500,
             std::nullopt,
             mock_request4,
@@ -197,18 +196,18 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check general error handling with a path but no response (too many path & node failures)
     path = onion_path{
+            nullptr,
             {target,
              service_node{
-                     "0.0.0.0",
+                     {0, 0, 0, 0},
                      0,
                      x25519_pubkey::from_bytes(x_pk),
                      ed25519_pubkey::from_bytes(ed_pk),
                      9,
                      false}},
             9};
-    auto mock_request5 =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, path, false};
-    handle_errors(
+    auto mock_request5 = request_info{target, "test", std::nullopt, std::nullopt, path, false};
+    network.handle_errors(
             500,
             std::nullopt,
             mock_request5,
@@ -234,11 +233,10 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.path_failure_count == 10);
 
     // Check general error handling with a path and a random response (first failure)
-    path = onion_path{{target}, 0};
-    auto mock_request6 =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, path, false};
+    path = onion_path{nullptr, {target}, 0};
+    auto mock_request6 = request_info{target, "test", std::nullopt, std::nullopt, path, false};
     auto response = std::string{"Test"};
-    handle_errors(
+    network.handle_errors(
             500,
             response,
             mock_request6,
@@ -263,19 +261,19 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check general error handling with a path and specific node failure (first failure)
     path = onion_path{
+            nullptr,
             {target,
              service_node{
-                     "0.0.0.0",
+                     {0, 0, 0, 0},
                      0,
                      x25519_pubkey::from_bytes(x_pk2),
                      ed25519_pubkey::from_bytes(ed_pk2),
                      0,
                      false}},
             0};
-    auto mock_request7 =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, path, false};
+    auto mock_request7 = request_info{target, "test", std::nullopt, std::nullopt, path, false};
     response = std::string{"Next node not found: "} + ed25519_pubkey::from_bytes(ed_pk2).hex();
-    handle_errors(
+    network.handle_errors(
             500,
             response,
             mock_request7,
@@ -304,19 +302,19 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check general error handling with a path and specific node failure (too many failures)
     path = onion_path{
+            nullptr,
             {target,
              service_node{
-                     "0.0.0.0",
+                     {0, 0, 0, 0},
                      0,
                      x25519_pubkey::from_bytes(x_pk2),
                      ed25519_pubkey::from_bytes(ed_pk2),
                      9,
                      false}},
             0};
-    auto mock_request8 =
-            request_info{ed_sk, target, "test", std::nullopt, std::nullopt, path, false};
+    auto mock_request8 = request_info{target, "test", std::nullopt, std::nullopt, path, false};
     response = std::string{"Next node not found: "} + ed25519_pubkey::from_bytes(ed_pk2).hex();
-    handle_errors(
+    network.handle_errors(
             500,
             response,
             mock_request8,
@@ -344,7 +342,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.changes.path_failure_count == 0);
 
     // Check a 421 with no swarm data throws (no good way to handle this case)
-    handle_errors(
+    network.handle_errors(
             421,
             std::nullopt,
             mock_request,
@@ -364,8 +362,8 @@ TEST_CASE("Network error handling", "[network]") {
     // Check the retry request of a 421 with no response data throws (no good way to handle this
     // case)
     auto mock_request9 = request_info{
-            ed_sk, target, "test", std::nullopt, std::vector<service_node>{target}, path, true};
-    handle_errors(
+            target, "test", std::nullopt, std::vector<service_node>{target}, path, true};
+    network.handle_errors(
             421,
             std::nullopt,
             mock_request9,
@@ -384,7 +382,7 @@ TEST_CASE("Network error handling", "[network]") {
 
     // Check the retry request of a 421 with non-swarm response data throws (no good way to handle
     // this case)
-    handle_errors(
+    network.handle_errors(
             421,
             "Test",
             mock_request9,
@@ -410,7 +408,7 @@ TEST_CASE("Network error handling", "[network]") {
              {"pubkey_ed25519", x25519_pubkey::from_bytes(ed_pk).hex()}});
     nlohmann::json swarm_json{{"snodes", snodes}};
     response = swarm_json.dump();
-    handle_errors(
+    network.handle_errors(
             421,
             response,
             mock_request9,
@@ -428,8 +426,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.status_code == 421);
     CHECK(result.changes.type == ServiceNodeChangeType::replace_swarm);
     REQUIRE(result.changes.nodes.size() == 1);
-    CHECK(result.changes.nodes[0].ip == "1.1.1.1");
-    CHECK(result.changes.nodes[0].lmq_port == 1);
+    CHECK(result.changes.nodes[0].ip == std::array<uint8_t, 4>{{1, 1, 1, 1}});
+    CHECK(result.changes.nodes[0].quic_port == 1);
     CHECK(result.changes.nodes[0].x25519_pubkey == target.x25519_pubkey);
     CHECK(result.changes.nodes[0].ed25519_pubkey == target.ed25519_pubkey);
     CHECK(result.changes.nodes[0].failure_count == 0);
@@ -442,7 +440,7 @@ TEST_CASE("Network direct request", "[send_request][network]") {
             "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab78862834829a"
             "87e0afadfed763fa8785e893dbde7f2c001ff1071aa55005c347f"_hexbytes;
     auto test_service_node = service_node{
-            "144.76.164.202",
+            {144, 76, 164, 202},
             35400,
             x25519_pubkey::from_bytes(
                     "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45"_hexbytes),
@@ -450,22 +448,26 @@ TEST_CASE("Network direct request", "[send_request][network]") {
                     "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes),
             0,
             false};
-    Result result;
+    auto network = Network(ed25519_seckey::from_bytes(ed_sk));
+    std::promise<Result> result_promise;
 
-    send_request(
-            ed_sk,
+    network.send_request(
             test_service_node,
             "info",
             std::nullopt,
             std::nullopt,
-            [&result](
+            [&result_promise](
                     bool success,
                     bool timeout,
                     int16_t status_code,
                     std::optional<std::string> response,
                     service_node_changes changes) {
-                result = {success, timeout, status_code, response, changes};
+                result_promise.set_value({success, timeout, status_code, response, changes});
             });
+
+    // Wait for the result to be set
+    auto result = result_promise.get_future().get();
+
     CHECK(result.success);
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 200);
@@ -483,9 +485,12 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
     auto ed_sk =
             "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab78862834829a"
             "87e0afadfed763fa8785e893dbde7f2c001ff1071aa55005c347f"_hexbytes;
+    network_object* network;
+    network_init(&network, ed_sk.data(), nullptr);
+    std::array<uint8_t, 4> target_ip = {144, 76, 164, 202};
     auto test_service_node = network_service_node{};
-    test_service_node.lmq_port = 35400;
-    std::strcpy(test_service_node.ip, "144.76.164.202");
+    test_service_node.quic_port = 35400;
+    std::copy(target_ip.begin(), target_ip.end(), test_service_node.ip);
     std::strcpy(
             test_service_node.x25519_pubkey_hex,
             "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45");
@@ -494,7 +499,7 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9");
 
     network_send_request(
-            ed_sk.data(),
+            network,
             test_service_node,
             "info",
             nullptr,
@@ -507,7 +512,7 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
                const char* c_response,
                size_t response_size,
                network_service_node_changes changes,
-               void*) {
+               void* ctx) {
                 CHECK(success);
                 CHECK_FALSE(timeout);
                 CHECK(status_code == 200);
@@ -521,6 +526,7 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
                 CHECK(response.contains("hf"));
                 CHECK(response.contains("t"));
                 CHECK(response.contains("version"));
+                network_free(static_cast<network_object*>(ctx));
             },
-            nullptr);
+            network);
 }

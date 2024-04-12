@@ -297,16 +297,18 @@ LIBSESSION_C_API void onion_request_builder_set_enc_type(
 
 LIBSESSION_C_API void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
-        const char* ip,
-        const uint16_t lmq_port,
+        const uint8_t ip[4],
+        const uint16_t quic_port,
         const char* x25519_pubkey,
         const char* ed25519_pubkey,
         const uint8_t failure_count) {
     assert(builder && ip && x25519_pubkey && ed25519_pubkey);
 
+    std::array<uint8_t, 4> target_ip;
+    std::memcpy(target_ip.data(), ip, target_ip.size());
     auto node = session::network::service_node{
-            ip,
-            lmq_port,
+            target_ip,
+            quic_port,
             session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
             session::onionreq::ed25519_pubkey::from_hex({ed25519_pubkey, 64}),
             failure_count,
