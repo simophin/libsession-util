@@ -78,6 +78,23 @@ LIBSESSION_EXPORT void network_free(network_object* network);
 LIBSESSION_EXPORT void network_add_logger(
         network_object* network, void (*callback)(const char*, size_t));
 
+/// API: network/network_replace_key
+///
+/// Replaces the secret key used to make network connections. Note: This will result in existing path
+/// connections being removed and new ones created with the updated key on the next use.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object
+/// - `ed25519_seckey` -- [in] new ed25519 secret key to be used.
+/// - `error` -- [out] the pointer to a buffer in which we will write an error string if an error
+/// occurs; error messages are discarded if this is given as NULL.  If non-NULL this must be a
+/// buffer of at least 256 bytes.
+///
+/// Outputs:
+/// - `bool` -- Returns true on success; returns false and write the exception message as a C-string
+/// into `error` (if not NULL) on failure.
+LIBSESSION_EXPORT bool network_replace_key(network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error);
+
 /// API: network/network_add_path
 ///
 /// Adds a path to the list on the network object that is randomly selected from when making an

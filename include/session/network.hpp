@@ -69,6 +69,15 @@ class Network {
     /// - `callback` -- [in] callback to be called when a new message should be logged.
     void add_logger(std::function<void(const std::string&)> callback);
 
+    /// API: network/replace_key
+    ///
+    /// Replaces the secret key used to make network connections. Note: This will result in existing path
+    /// connections being removed and new ones created with the updated key on the next use.
+    ///
+    /// Inputs:
+    /// - `ed25519_seckey` -- [in] new ed25519 secret key to be used.
+    void replace_key(const session::onionreq::ed25519_seckey ed25519_seckey);
+
     /// API: network/add_path
     ///
     /// Adds a path to the list on the network object that is randomly selected from when making an

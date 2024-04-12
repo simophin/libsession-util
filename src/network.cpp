@@ -75,6 +75,16 @@ void Network::add_logger(std::function<void(const std::string&)> callback) {
     oxen::log::add_sink(buffer);
 }
 
+void Network::replace_key(const session::onionreq::ed25519_seckey ed25519_seckey) {
+    creds = GNUTLSCreds::make_from_ed_seckey(std::string(ed25519_seckey.view()));
+
+    // Since the key is getting replaced we need to remove any connections from the paths
+    net.call([this]() mutable {
+        for (auto& path : paths)
+            path.conn.reset();
+    });
+}
+
 void Network::add_path(std::vector<session::network::service_node> nodes, uint8_t failure_count) {
     if (nodes.empty())
         throw std::invalid_argument{"No nodes in the path"};
@@ -775,6 +785,16 @@ LIBSESSION_C_API void network_add_logger(
     assert(callback);
     unbox(network).add_logger(
             [callback](const std::string& msg) { callback(msg.c_str(), msg.size()); });
+}
+
+LIBSESSION_C_API bool network_replace_key(network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error) {
+    try {
+        unbox(network).replace_key(ed25519_seckey::from_bytes({ed25519_secretkey_bytes, 64}));
+        return true;
+    }
+    catch (const std::exception& e) {
+        return set_error(error, e);
+    }
 }
 
 LIBSESSION_C_API bool network_add_path(
