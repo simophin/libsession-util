@@ -80,8 +80,8 @@ LIBSESSION_EXPORT void network_add_logger(
 
 /// API: network/network_replace_key
 ///
-/// Replaces the secret key used to make network connections. Note: This will result in existing path
-/// connections being removed and new ones created with the updated key on the next use.
+/// Replaces the secret key used to make network connections. Note: This will result in existing
+/// path connections being removed and new ones created with the updated key on the next use.
 ///
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object
@@ -93,7 +93,8 @@ LIBSESSION_EXPORT void network_add_logger(
 /// Outputs:
 /// - `bool` -- Returns true on success; returns false and write the exception message as a C-string
 /// into `error` (if not NULL) on failure.
-LIBSESSION_EXPORT bool network_replace_key(network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error);
+LIBSESSION_EXPORT bool network_replace_key(
+        network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error);
 
 /// API: network/network_add_path
 ///
@@ -133,8 +134,8 @@ LIBSESSION_EXPORT bool network_remove_path(
 
 /// API: network/network_remove_all_paths
 ///
-/// Removes all paths from the list on the network object that are randomly selected from when making an
-/// onion request.
+/// Removes all paths from the list on the network object that are randomly selected from when
+/// making an onion request.
 ///
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object

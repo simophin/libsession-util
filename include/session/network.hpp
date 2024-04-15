@@ -71,8 +71,8 @@ class Network {
 
     /// API: network/replace_key
     ///
-    /// Replaces the secret key used to make network connections. Note: This will result in existing path
-    /// connections being removed and new ones created with the updated key on the next use.
+    /// Replaces the secret key used to make network connections. Note: This will result in existing
+    /// path connections being removed and new ones created with the updated key on the next use.
     ///
     /// Inputs:
     /// - `ed25519_seckey` -- [in] new ed25519 secret key to be used.
@@ -85,13 +85,14 @@ class Network {
     ///
     /// Inputs:
     /// - `nodes` -- [in] nodes which make up the path to be added.
-    /// - `failure_count` -- [in] number of times the path has previously failed to complete a request.
+    /// - `failure_count` -- [in] number of times the path has previously failed to complete a
+    /// request.
     void add_path(std::vector<session::network::service_node> nodes, uint8_t failure_count);
 
     /// API: network/remove_path
     ///
-    /// Removes a path from the list on the network object that is randomly selected from when making an
-    /// onion request.
+    /// Removes a path from the list on the network object that is randomly selected from when
+    /// making an onion request.
     ///
     /// Inputs:
     /// - `node` -- [in] first node in the path to be removed.
@@ -99,8 +100,8 @@ class Network {
 
     /// API: network/remove_all_paths
     ///
-    /// Removes all paths from the list on the network object that are randomly selected from when making an
-    /// onion request.
+    /// Removes all paths from the list on the network object that are randomly selected from when
+    /// making an onion request.
     void remove_all_paths();
 
     /// API: network/send_request

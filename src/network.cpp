@@ -6,10 +6,10 @@
 
 #include <nlohmann/json.hpp>
 #include <oxen/log.hpp>
+#include <oxen/log/format.hpp>
 #include <oxen/log/ring_buffer_sink.hpp>
 #include <oxen/quic.hpp>
 #include <oxen/quic/opt.hpp>
-#include <oxen/log/format.hpp>
 #include <random>
 #include <string>
 #include <string_view>
@@ -202,7 +202,7 @@ std::shared_ptr<oxen::quic::BTRequestStream> Network::get_btstream(const service
 
         target_path->conn = std::move(c);
     });
-    std::__1::shared_ptr<oxen::quic::BTRequestStream> str =
+    std::shared_ptr<oxen::quic::BTRequestStream> str =
             c->open_stream<oxen::quic::BTRequestStream>();
 
     return str;
@@ -783,12 +783,12 @@ LIBSESSION_C_API void network_add_logger(
             [callback](const std::string& msg) { callback(msg.c_str(), msg.size()); });
 }
 
-LIBSESSION_C_API bool network_replace_key(network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error) {
+LIBSESSION_C_API bool network_replace_key(
+        network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error) {
     try {
         unbox(network).replace_key(ed25519_seckey::from_bytes({ed25519_secretkey_bytes, 64}));
         return true;
-    }
-    catch (const std::exception& e) {
+    } catch (const std::exception& e) {
         return set_error(error, e);
     }
 }
