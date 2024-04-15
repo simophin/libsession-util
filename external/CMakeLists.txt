@@ -106,7 +106,7 @@ set(OXENC_BUILD_DOCS OFF CACHE BOOL "")
 system_or_submodule(OXENC oxenc liboxenc>=1.0.10 oxen-encoding)
 
 set(LIBQUIC_BUILD_TESTS OFF CACHE BOOL "")
-system_or_submodule(OXENQUIC quic liboxenquic>=1.0.1 oxen-libquic)
+system_or_submodule(OXENQUIC quic liboxenquic>=1.1.0 oxen-libquic)
 
 if(CMAKE_C_COMPILER_LAUNCHER)
   set(deps_cc "${CMAKE_C_COMPILER_LAUNCHER} ${deps_cc}")
