@@ -99,6 +99,7 @@ target_link_libraries(onionreq
     common
     quic
     PRIVATE
+    oxen::logging
     nlohmann_json::nlohmann_json
     libsodium::sodium-internal
     nettle::nettle

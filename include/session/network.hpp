@@ -1,12 +1,15 @@
 #pragma once
 
-#include <oxen/log/ring_buffer_sink.hpp>
 #include <oxen/quic.hpp>
 
 #include "network_service_node.hpp"
 #include "session/onionreq/builder.hpp"
 #include "session/onionreq/key_types.hpp"
 #include "session/types.hpp"
+
+namespace oxen::log {
+class RingBufferSink;
+}
 
 namespace session::network {
 
