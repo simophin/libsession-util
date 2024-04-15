@@ -9,8 +9,8 @@
 #include <oxen/log/ring_buffer_sink.hpp>
 #include <oxen/quic.hpp>
 #include <oxen/quic/opt.hpp>
+#include <oxen/log/format.hpp>
 #include <random>
-#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -28,6 +28,7 @@ using namespace session;
 using namespace oxen::quic;
 using namespace session::onionreq;
 using namespace std::literals;
+using namespace oxen::log::literals;
 
 namespace session::network {
 
@@ -90,7 +91,7 @@ void Network::add_path(std::vector<session::network::service_node> nodes, uint8_
         throw std::invalid_argument{"No nodes in the path"};
 
     auto existing_path = net.call_get([this, node = nodes.front()]() -> std::optional<onion_path> {
-        auto target_path = std::find_if(paths.begin(), paths.end(), [node](const auto& path) {
+        auto target_path = std::find_if(paths.begin(), paths.end(), [&node](const auto& path) {
             return !path.nodes.empty() && node == path.nodes.front();
         });
 
@@ -124,21 +125,16 @@ void Network::remove_all_paths() {
 
 std::shared_ptr<oxen::quic::connection_interface> Network::get_connection(
         const service_node target) {
-    std::stringstream ss;
-    for (size_t i = 0; i < target.ip.size(); ++i) {
-        if (i != 0)
-            ss << ".";
-        ss << static_cast<int>(target.ip[i]);
-    }
-    auto remote = RemoteAddress{target.ed25519_pubkey.view(), ss.str(), target.quic_port};
+    auto remote_ip = "{}"_format(fmt::join(target.ip, "."));
+    auto remote = RemoteAddress{target.ed25519_pubkey.view(), remote_ip, target.quic_port};
 
     return endpoint->connect(
             remote,
             creds,
             oxen::quic::opt::keep_alive{10s},
-            [this, &target](connection_interface& conn, uint64_t) {
+            [this, target](connection_interface& conn, uint64_t) {
                 auto target_path =
-                        std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+                        std::find_if(paths.begin(), paths.end(), [&target](const auto& path) {
                             return !path.nodes.empty() && target == path.nodes.front();
                         });
 
@@ -150,7 +146,7 @@ std::shared_ptr<oxen::quic::connection_interface> Network::get_connection(
 
 std::shared_ptr<oxen::quic::BTRequestStream> Network::get_btstream(const service_node target) {
     auto has_target_path = net.call_get([this, &target]() -> bool {
-        auto target_path = std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+        auto target_path = std::find_if(paths.begin(), paths.end(), [&target](const auto& path) {
             return !path.nodes.empty() && target == path.nodes.front();
         });
 
@@ -164,7 +160,7 @@ std::shared_ptr<oxen::quic::BTRequestStream> Network::get_btstream(const service
         auto result = net.call_get(
                 [this, &target]() -> std::pair<std::shared_ptr<oxen::quic::BTRequestStream>, bool> {
                     auto target_path =
-                            std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+                            std::find_if(paths.begin(), paths.end(), [&target](const auto& path) {
                                 return !path.nodes.empty() && target == path.nodes.front();
                             });
 
@@ -197,7 +193,7 @@ std::shared_ptr<oxen::quic::BTRequestStream> Network::get_btstream(const service
     // We weren't able to get an existing connection so we need to create a new one
     auto c = get_connection(target);
     net.call([this, c, &target]() mutable {
-        auto target_path = std::find_if(paths.begin(), paths.end(), [target](const auto& path) {
+        auto target_path = std::find_if(paths.begin(), paths.end(), [&target](const auto& path) {
             return !path.nodes.empty() && target == path.nodes.front();
         });
 
@@ -405,7 +401,7 @@ std::vector<onion_path> valid_paths_for_destination(
             std::remove_if(
                     valid_paths.begin(),
                     valid_paths.end(),
-                    [&destination](const onion_path& path) {
+                    [destination](const onion_path& path) {
                         return std::any_of(
                                 path.nodes.begin(),
                                 path.nodes.end(),
