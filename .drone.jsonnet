@@ -347,9 +347,6 @@ local static_build(name,
   debian_build('Debian sid (ARM64)', docker_base + 'debian-sid', arch='arm64', jobs=4),
   debian_build('Debian stable (armhf)', docker_base + 'debian-stable/arm32v7', arch='arm64', jobs=4),
 
-  // Windows builds (x64)
-  windows_cross_pipeline('Windows', docker_base + 'debian-win32-cross'),
-
   // Macos builds:
   mac_builder('macOS Intel (Release)'),
   mac_builder('macOS Arm64 (Release)', arch='arm64'),
