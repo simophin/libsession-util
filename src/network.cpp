@@ -656,7 +656,7 @@ void Network::handle_errors(
             auto updated_path = *info.path;
             bool found_invalid_node = false;
 
-            if (response && starts_with(*response, node_not_found_prefix)) {
+            if (response && response->starts_with(node_not_found_prefix)) {
                 std::string_view ed25519PublicKey{response->data() + node_not_found_prefix.size()};
 
                 if (ed25519PublicKey.size() == 64 && oxenc::is_hex(ed25519PublicKey)) {
