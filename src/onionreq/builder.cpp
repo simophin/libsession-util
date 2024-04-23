@@ -4,6 +4,7 @@
 #include <oxenc/bt.h>
 #include <oxenc/endian.h>
 #include <oxenc/hex.h>
+#include <oxenc/variant.h>
 #include <sodium/crypto_aead_xchacha20poly1305.h>
 #include <sodium/crypto_auth_hmacsha256.h>
 #include <sodium/crypto_box.h>
@@ -23,6 +24,9 @@
 #include "session/onionreq/key_types.hpp"
 #include "session/util.hpp"
 #include "session/xed25519.hpp"
+
+using namespace std::literals;
+using session::ustring_view;
 
 namespace session::onionreq {
 
@@ -44,46 +48,34 @@ EncryptType parse_enc_type(std::string_view enc_type) {
     throw std::runtime_error{"Invalid encryption type " + std::string{enc_type}};
 }
 
-template <typename Destination>
-void Builder::set_destination(Destination /*destination*/) {
-    throw std::runtime_error{"Invalid destination."};
-}
-
-template <>
-void Builder::set_destination(SnodeDestination destination) {
+void Builder::set_destination(network_destination destination) {
     destination_x25519_public_key.reset();
     ed25519_public_key_.reset();
-    destination_x25519_public_key.emplace(destination.node.x25519_pubkey);
-    ed25519_public_key_.emplace(destination.node.ed25519_pubkey);
-}
 
-template <>
-void Builder::set_destination(ServerDestination destination) {
-    destination_x25519_public_key.reset();
+    if (auto* dest = std::get_if<SnodeDestination>(&destination)) {
+        destination_x25519_public_key.emplace(dest->node.x25519_pubkey);
+        ed25519_public_key_.emplace(dest->node.ed25519_pubkey);
+    } else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
+        host_.emplace(dest->host);
+        endpoint_.emplace(dest->endpoint);
+        protocol_.emplace(dest->protocol);
+        method_.emplace(dest->method);
 
-    host_.emplace(destination.host);
-    target_.emplace("/oxen/v4/lsrpc");  // All servers support V4 onion requests
-    endpoint_.emplace(destination.endpoint);
-    protocol_.emplace(destination.protocol);
-    method_.emplace(destination.method);
+        if (dest->port)
+            port_.emplace(*dest->port);
 
-    if (destination.port)
-        port_.emplace(*destination.port);
+        if (dest->headers)
+            headers_.emplace(*dest->headers);
 
-    if (destination.headers)
-        headers_.emplace(*destination.headers);
-
-    if (destination.query_params)
-        headers_.emplace(*destination.query_params);
-
-    destination_x25519_public_key.emplace(destination.x25519_pubkey);
+        destination_x25519_public_key.emplace(dest->x25519_pubkey);
+    } else
+        throw std::invalid_argument{"Invalid destination type."};
 }
 
 ustring Builder::generate_payload(std::optional<ustring> body) const {
     // If we don't have the data required for a server request, then assume it's targeting a
     // service node and, therefore, the `body` is the payload
-    if (!host_ || !target_ || !endpoint_ || !protocol_ || !method_ ||
-        !destination_x25519_public_key)
+    if (!host_ || !endpoint_ || !protocol_ || !method_ || !destination_x25519_public_key)
         return body.value_or(ustring{});
 
     // Otherwise generate the payload for a server request
@@ -99,32 +91,14 @@ ustring Builder::generate_payload(std::optional<ustring> body) const {
     if (body && !headers_json.contains("Content-Type"))
         headers_json["Content-Type"] = "application/json";
 
-    // Need to ensure the endpoint has a leading forward slash so add it if it's missing
-    auto endpoint = *endpoint_;
-
-    if (!endpoint.empty() && endpoint.front() != '/')
-        endpoint = '/' + endpoint;
-
-    // If we have query parameters, add them to the endpoint to be included in the payload
-    if (query_params_ && !query_params_->empty()) {
-        std::string query_string = "";
-
-        for (auto& query : *query_params_)
-            query_string += query.first + "=" + query.second + "&";
-
-        // Drop the extra '&' from the end
-        endpoint += "?" + query_string.substr(0, query_string.size() - 1);
-    }
-
     // Structure the request information
     nlohmann::json request_info{
-            {"method", *method_}, {"endpoint", endpoint}, {"headers", headers_json}};
-    auto request_info_dump = request_info.dump();
-    std::vector<std::string> payload{request_info_dump};
+            {"method", *method_}, {"endpoint", *endpoint_}, {"headers", headers_json}};
+    std::vector<std::string> payload{request_info.dump()};
 
     // If we were given a body, add it to the payload
     if (body.has_value())
-        payload.emplace_back(std::string(from_unsigned(body->data()), body->size()));
+        payload.emplace_back(from_unsigned_sv(*body));
 
     auto result = oxenc::bt_serialize(payload);
     return {to_unsigned(result.data()), result.size()};
@@ -181,10 +155,10 @@ ustring Builder::build(ustring payload) {
 
         // The data we send to the destination differs depending on whether the destination is a
         // server or a service node
-        if (host_ && target_ && protocol_ && destination_x25519_public_key) {
+        if (host_ && protocol_ && destination_x25519_public_key) {
             final_route = {
                     {"host", *host_},
-                    {"target", *target_},
+                    {"target", "/oxen/v4/lsrpc"},  // All servers support V4 onion requests
                     {"method", "POST"},
                     {"protocol", *protocol_},
                     {"port", port_.value_or(*protocol_ == "https" ? 443 : 80)},
@@ -214,7 +188,7 @@ ustring Builder::build(ustring payload) {
                 throw std::runtime_error{"Destination not set: No destination ed25519 public key"};
             throw std::runtime_error{
                     "Destination not set: " + host_.value_or("N/A") + ", " +
-                    target_.value_or("N/A") + ", " + protocol_.value_or("N/A")};
+                    protocol_.value_or("N/A")};
         }
 
         // Save these because we need them again to decrypt the final response:
@@ -331,10 +305,9 @@ LIBSESSION_C_API void onion_request_builder_set_server_destination(
             host,
             endpoint,
             session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
-            method,
             port,
             std::nullopt,
-            std::nullopt});
+            method});
 }
 
 LIBSESSION_C_API void onion_request_builder_add_hop(

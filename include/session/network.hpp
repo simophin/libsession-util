@@ -1,5 +1,7 @@
 #pragma once
 
+#include <spdlog/pattern_formatter.h>
+
 #include <oxen/quic.hpp>
 
 #include "network_service_node.hpp"
@@ -7,62 +9,82 @@
 #include "session/onionreq/key_types.hpp"
 #include "session/types.hpp"
 
-namespace oxen::log {
-class RingBufferSink;
-}
-
 namespace session::network {
 
-enum class ServiceNodeChangeType {
-    none = 0,
-    invalid_path = 1,
-    replace_swarm = 2,
-    update_path = 3,
-    update_node = 4,
+enum class ConnectionStatus {
+    unknown = 0,
+    connecting = 1,
+    connected = 2,
+    disconnected = 3,
+};
+
+struct connection_info {
+    session::network::service_node node;
+    std::shared_ptr<oxen::quic::connection_interface> conn;
+    std::shared_ptr<oxen::quic::BTRequestStream> stream;
+
+    bool is_valid() const { return conn && stream && !stream->is_closing(); };
 };
 
 struct onion_path {
-    std::shared_ptr<oxen::quic::connection_interface> conn;
+    connection_info conn_info;
     std::vector<session::network::service_node> nodes;
     uint8_t failure_count;
-};
 
-struct service_node_changes {
-    ServiceNodeChangeType type = ServiceNodeChangeType::none;
-    std::vector<session::network::service_node> nodes = {};
-    uint8_t path_failure_count = 0;
-    bool path_invalid = false;
+    bool operator==(const onion_path& other) const {
+        return nodes == other.nodes && failure_count == other.failure_count;
+    }
 };
 
 struct request_info {
-    const service_node target;
-    const std::string endpoint;
-    const std::optional<ustring> body;
-    const std::optional<std::vector<service_node>> swarm;
-    const std::optional<onion_path> path;
-    const bool is_retry;
+    service_node target;
+    std::string endpoint;
+    std::optional<ustring> body;
+    std::optional<std::string> swarm_pubkey;
+    onion_path path;
+    bool is_retry;
 };
 
 using network_response_callback_t = std::function<void(
-        bool success,
-        bool timeout,
-        int16_t status_code,
-        std::optional<std::string> response,
-        service_node_changes changes)>;
+        bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
 
 class Network {
   private:
+    const bool use_testnet;
+    const bool should_cache_to_disk;
+    const std::string cache_path;
+
+    // Disk thread state
+    std::mutex snode_cache_mutex;  // This guards all the below:
+    std::condition_variable snode_cache_cv;
+    bool shut_down_disk_thread = false;
+    bool need_write = false;
+    bool need_pool_write = false;
+    bool need_swarm_write = false;
+    bool need_clear_cache = false;
+
+    // Values persisted to disk
+    std::vector<service_node> snode_pool;
+    std::chrono::system_clock::time_point last_snode_pool_update;
+    std::unordered_map<std::string, std::vector<service_node>> swarm_cache;
+
+    ConnectionStatus status;
     oxen::quic::Network net;
-    std::shared_ptr<oxen::quic::GNUTLSCreds> creds;
     std::vector<onion_path> paths;
+    std::shared_ptr<oxen::quic::Loop> get_snode_pool_loop;
+    std::shared_ptr<oxen::quic::Loop> build_paths_loop;
 
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
-    std::shared_ptr<oxen::log::RingBufferSink> buffer;
+    spdlog::pattern_formatter formatter;
 
   public:
-    // Constructs a new network for the given credentials, all requests should be made via a single
-    // Network instance.
-    Network(const session::onionreq::ed25519_seckey ed25519_seckey);
+    std::function<void(ConnectionStatus status)> status_changed;
+    std::function<void(std::vector<std::vector<service_node>> paths)> paths_changed;
+
+    // Constructs a new network with the given cache path and a flag indicating whether it should
+    // use testnet or mainnet, all requests should be made via a single Network instance.
+    Network(std::optional<std::string> cache_path, bool use_testnet, bool pre_build_paths);
+    ~Network();
 
     /// API: network/add_logger
     ///
@@ -72,40 +94,37 @@ class Network {
     /// - `callback` -- [in] callback to be called when a new message should be logged.
     void add_logger(std::function<void(const std::string&)> callback);
 
-    /// API: network/replace_key
+    /// API: network/clear_cache
     ///
-    /// Replaces the secret key used to make network connections. Note: This will result in existing
-    /// path connections being removed and new ones created with the updated key on the next use.
+    /// Clears the cached from memory and from disk (if a cache path was provided during
+    /// initialization).
+    void clear_cache();
+
+    /// API: network/get_swarm
+    ///
+    /// Retrieves the swarm for the given pubkey.  If there is already an entry in the cache for the
+    /// swarm then that will be returned, otherwise a network request will be made to retrieve the
+    /// swarm and save it to the cache.
     ///
     /// Inputs:
-    /// - `ed25519_seckey` -- [in] new ed25519 secret key to be used.
-    void replace_key(const session::onionreq::ed25519_seckey ed25519_seckey);
+    /// 'swarm_pubkey_hex' - [in] includes the prefix.
+    /// 'callback' - [in] callback to be called with the retrieved swarm (in the case of an error
+    /// the callback will be called with an empty list).
+    void get_swarm(
+            std::string swarm_pubkey_hex,
+            std::function<void(std::vector<service_node> swarm)> callback);
 
-    /// API: network/add_path
+    /// API: network/get_random_nodes
     ///
-    /// Adds a path to the list on the network object that is randomly selected from when making an
-    /// onion request.
+    /// Retrieves a number of random nodes from the snode pool.  If the are no nodes in the pool a
+    /// new pool will be populated and the nodes will be retrieved from that.
     ///
     /// Inputs:
-    /// - `nodes` -- [in] nodes which make up the path to be added.
-    /// - `failure_count` -- [in] number of times the path has previously failed to complete a
-    /// request.
-    void add_path(std::vector<session::network::service_node> nodes, uint8_t failure_count);
-
-    /// API: network/remove_path
-    ///
-    /// Removes a path from the list on the network object that is randomly selected from when
-    /// making an onion request.
-    ///
-    /// Inputs:
-    /// - `node` -- [in] first node in the path to be removed.
-    void remove_path(session::network::service_node node);
-
-    /// API: network/remove_all_paths
-    ///
-    /// Removes all paths from the list on the network object that are randomly selected from when
-    /// making an onion request.
-    void remove_all_paths();
+    /// 'count' - [in] the number of nodes to retrieve.
+    /// 'callback' - [in] callback to be called with the retrieved nodes (in the case of an error
+    /// the callback will be called with an empty list).
+    void get_random_nodes(
+            uint16_t count, std::function<void(std::vector<service_node> nodes)> callback);
 
     /// API: network/send_request
     ///
@@ -113,77 +132,118 @@ class Network {
     ///
     /// Inputs:
     /// - `info` -- [in] wrapper around all of the information required to send a request.
-    /// - `handle_response` -- [in] callback to be called with the result of the request.
-    void send_request(const request_info info, network_response_callback_t handle_response);
-
-    /// API: network/send_request
-    ///
-    /// Sends a request directly to the provided service node.
-    ///
-    /// Inputs:
-    /// - `target` -- [in] the address information for the service node to send the request to.
-    /// - `endpoint` -- [in] endpoint for the request.
-    /// - `body` -- [in] data to send to the specified endpoint.
-    /// - `swarm` -- [in] current swarm information for the destination service node. Set to NULL if
-    /// not used.
+    /// - `conn` -- [in] connection information used to send the request.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void send_request(
-            const session::network::service_node target,
-            const std::string endpoint,
-            const std::optional<ustring> body,
-            const std::optional<std::vector<session::network::service_node>> swarm,
-            network_response_callback_t handle_response);
+            request_info info, connection_info conn, network_response_callback_t handle_response);
 
     /// API: network/send_onion_request
     ///
     /// Sends a request via onion routing to the provided service node or server destination.
     ///
     /// Inputs:
-    /// - `path` -- [in] the path of service nodes that the request should be routed through.
     /// - `destination` -- [in] service node or server destination information.
     /// - `body` -- [in] data to send to the specified destination.
     /// - `is_retry` -- [in] flag indicating whether this request is a retry. Generally only used
     /// for internal purposes for cases which should retry automatically (like receiving a `421`) in
     /// order to prevent subsequent retries.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
-    template <typename Destination>
     void send_onion_request(
-            const Destination destination,
-            const std::optional<ustring> body,
-            const bool is_retry,
+            onionreq::network_destination destination,
+            std::optional<ustring> body,
+            bool is_retry,
             network_response_callback_t handle_response);
+
+    /// API: network/validate_response
+    ///
+    /// Processes a quic response to extract the status code and body or throw if it errored or
+    /// received a non-successful status code.
+    ///
+    /// Inputs:
+    /// - `resp` -- [in] the quic response.
+    /// - `is_bencoded` -- [in] flag indicating whether the response will be bencoded or JSON.
+    ///
+    /// Returns:
+    /// - `std::pair<uint16_t, std::string>` -- the status code and response body (for a bencoded
+    /// response this is just the direct response body from quic as it simplifies consuming the
+    /// response elsewhere).
+    std::pair<uint16_t, std::string> validate_response(oxen::quic::message resp, bool is_bencoded);
 
     /// API: network/handle_errors
     ///
     /// Processes a non-success response to automatically perform any standard operations based on
-    /// the errors returned from the service node network.
+    /// the errors returned from the service node network (ie. updating the service node cache,
+    /// dropping nodes and/or onion request paths).
     ///
     /// Inputs:
-    /// - `status_code` -- [in] the status code returned from the network.
-    /// - `response` -- [in, optional] response data returned from the network.
     /// - `info` -- [in] the information for the request that was made.
-    /// - `handle_response` -- [in] callback to be called with updated response information after
-    /// processing the error.
+    /// - `status_code` -- [in, optional] the status code returned from the network.
+    /// - `response` -- [in, optional] response data returned from the network.
+    /// - `handle_response` -- [in, optional] callback to be called with updated response
+    /// information after processing the error.
     void handle_errors(
-            const int16_t status_code,
-            const std::optional<std::string> response,
-            const request_info info,
-            network_response_callback_t handle_response);
+            request_info info,
+            std::optional<int16_t> status_code,
+            std::optional<std::string> response,
+            std::optional<network_response_callback_t> handle_response);
 
   private:
-    std::shared_ptr<oxen::quic::connection_interface> get_connection(const service_node target);
-
-    /// API: network/get_btstream
+    /// API: network/update_status
     ///
-    /// Retrieves the `BTRequestStream` for the given target if there is an existing stream,
-    /// otherwise creates a new stream.
+    /// Internal function to update the connection status and trigger the `status_changed` hook if
+    /// provided, this method ignores invalid or unchanged status changes.
     ///
     /// Inputs:
-    /// - `target` -- [in] the service node we plan to send a request to.
+    /// 'updated_status' - [in] the updated connection status.
+    void update_status(ConnectionStatus updated_status);
+
+    /// API: network/start_disk_write_thread
     ///
-    /// Outputs:
-    /// - a shared pointer to the `BTRequestStream` for the target service node.
-    std::shared_ptr<oxen::quic::BTRequestStream> get_btstream(const service_node target);
+    /// Starts the disk write thread which monitors a number of private variables and persists the
+    /// snode pool and swarm caches to disk if a `cache_path` was provided during initialization.
+    void start_disk_write_thread();
+
+    /// API: network/load_cache_from_disk
+    ///
+    /// Loads the snode pool and swarm caches from disk if a `cache_path` was provided and cached
+    /// data exists.
+    void load_cache_from_disk();
+
+    connection_info get_connection_info(
+            service_node target,
+            std::optional<oxen::quic::connection_established_callback> conn_established_cb);
+
+    void with_snode_pool(std::function<void(std::vector<service_node>)> callback);
+    void with_path(
+            std::optional<service_node> excluded_node,
+            std::function<void(std::optional<onion_path> path)> callback);
+    void build_paths_if_needed(
+            std::optional<service_node> excluded_node,
+            std::function<void(std::vector<onion_path> updated_paths)> callback);
+
+    void get_service_nodes_recursive(
+            std::optional<int> limit,
+            std::vector<service_node> nodes,
+            std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
+                    callback);
+    void find_valid_guard_node_recursive(
+            std::vector<service_node> unused_nodes,
+            std::function<
+                    void(std::optional<connection_info> valid_guard_node,
+                         std::vector<service_node> unused_nodes)> callback);
+
+    void get_version(
+            service_node node,
+            std::optional<std::chrono::milliseconds> timeout,
+            std::function<
+                    void(std::vector<int> version,
+                         connection_info info,
+                         std::optional<std::string> error)> callback);
+    void get_service_nodes(
+            std::optional<int> limit,
+            service_node node,
+            std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
+                    callback);
 
     /// API: network/process_snode_response
     ///
@@ -196,9 +256,9 @@ class Network {
     /// - `handle_response` -- [in] callback to be called with updated response information after
     /// processing the error.
     void process_snode_response(
-            const session::onionreq::Builder builder,
-            const std::string response,
-            const request_info info,
+            session::onionreq::Builder builder,
+            std::string response,
+            request_info info,
             network_response_callback_t handle_response);
 
     /// API: network/process_server_response
@@ -212,9 +272,9 @@ class Network {
     /// - `handle_response` -- [in] callback to be called with updated response information after
     /// processing the error.
     void process_server_response(
-            const session::onionreq::Builder builder,
-            const std::string response,
-            const request_info info,
+            session::onionreq::Builder builder,
+            std::string response,
+            request_info info,
             network_response_callback_t handle_response);
 };
 

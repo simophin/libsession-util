@@ -11,31 +11,33 @@ extern "C" {
 #include "network_service_node.h"
 #include "onionreq/builder.h"
 
+typedef enum CONNECTION_STATUS {
+    CONNECTION_STATUS_UNKNOWN = 0,
+    CONNECTION_STATUS_CONNECTING = 1,
+    CONNECTION_STATUS_CONNECTED = 2,
+    CONNECTION_STATUS_DISCONNECTED = 3,
+} CONNECTION_STATUS;
+
 typedef struct network_object {
     // Internal opaque object pointer; calling code should leave this alone.
     void* internals;
 } network_object;
 
-typedef enum SERVICE_NODE_CHANGE_TYPE {
-    SERVICE_NODE_CHANGE_TYPE_NONE = 0,
-    SERVICE_NODE_CHANGE_TYPE_INVALID_PATH = 1,
-    SERVICE_NODE_CHANGE_TYPE_REPLACE_SWARM = 2,
-    SERVICE_NODE_CHANGE_TYPE_UPDATE_PATH = 3,
-    SERVICE_NODE_CHANGE_TYPE_UPDATE_NODE = 4,
-} SERVICE_NODE_CHANGE_TYPE;
-
-typedef struct network_service_node_changes {
-    SERVICE_NODE_CHANGE_TYPE type;
-    network_service_node* nodes;
-    size_t nodes_count;
-    uint8_t failure_count;
-    bool invalid;
-} network_service_node_changes;
+typedef struct network_server_destination {
+    const char* method;
+    const char* protocol;
+    const char* host;
+    const char* endpoint;
+    uint16_t port;
+    const char* x25519_pubkey;
+    const char** headers;
+    const char** header_values;
+    size_t headers_size;
+} network_server_destination;
 
 typedef struct onion_request_path {
     const network_service_node* nodes;
     const size_t nodes_count;
-    uint8_t failure_count;
 } onion_request_path;
 
 /// API: network/network_init
@@ -47,8 +49,11 @@ typedef struct onion_request_path {
 ///
 /// Inputs:
 /// - `network` -- [out] Pointer to the network object
-/// - `ed25519_secretkey_bytes` -- [in] must be the 64-byte libsodium "secret key" value.  This
-/// field cannot be null.
+/// - `cache_path` -- [in] Path where the snode cache files should be stored.  Should be
+/// NULL-terminated.
+/// - `use_testnet` -- [in] Flag indicating whether the network should connect to testnet or
+/// mainnet.
+/// - `pre_build_paths` -- [in] Flag indicating whether the network should pre-build it's paths.
 /// - `error` -- [out] the pointer to a buffer in which we will write an error string if an error
 /// occurs; error messages are discarded if this is given as NULL.  If non-NULL this must be a
 /// buffer of at least 256 bytes.
@@ -57,8 +62,11 @@ typedef struct onion_request_path {
 /// - `bool` -- Returns true on success; returns false and write the exception message as a C-string
 /// into `error` (if not NULL) on failure.
 LIBSESSION_EXPORT bool network_init(
-        network_object** network, const unsigned char* ed25519_secretkey_bytes, char* error)
-        __attribute__((warn_unused_result));
+        network_object** network,
+        const char* cache_path,
+        bool use_testnet,
+        bool pre_build_paths,
+        char* error) __attribute__((warn_unused_result));
 
 /// API: network/network_free
 ///
@@ -78,101 +86,48 @@ LIBSESSION_EXPORT void network_free(network_object* network);
 LIBSESSION_EXPORT void network_add_logger(
         network_object* network, void (*callback)(const char*, size_t));
 
-/// API: network/network_replace_key
+/// API: network/network_clear_cache
 ///
-/// Replaces the secret key used to make network connections. Note: This will result in existing
-/// path connections being removed and new ones created with the updated key on the next use.
+/// Clears the cached from memory and from disk (if a cache path was provided during
+/// initialization).
+LIBSESSION_EXPORT void network_clear_cache(network_object* network);
+
+/// API: network/network_set_status_changed_callback
+///
+/// Registers a callback to be called whenever the network connection status changes.
 ///
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object
-/// - `ed25519_seckey` -- [in] new ed25519 secret key to be used.
-/// - `error` -- [out] the pointer to a buffer in which we will write an error string if an error
-/// occurs; error messages are discarded if this is given as NULL.  If non-NULL this must be a
-/// buffer of at least 256 bytes.
-///
-/// Outputs:
-/// - `bool` -- Returns true on success; returns false and write the exception message as a C-string
-/// into `error` (if not NULL) on failure.
-LIBSESSION_EXPORT bool network_replace_key(
-        network_object* network, const unsigned char* ed25519_secretkey_bytes, char* error);
-
-/// API: network/network_add_path
-///
-/// Adds a path to the list on the network object that is randomly selected from when making an
-/// onion request.
-///
-/// Inputs:
-/// - `network` -- [in] Pointer to the network object
-/// - `path` -- [in] the path of service nodes to be added as an option to the network.
-/// - `error` -- [out] the pointer to a buffer in which we will write an error string if an error
-/// occurs; error messages are discarded if this is given as NULL.  If non-NULL this must be a
-/// buffer of at least 256 bytes.
-///
-/// Outputs:
-/// - `bool` -- Returns true on success; returns false and write the exception message as a C-string
-/// into `error` (if not NULL) on failure.
-LIBSESSION_EXPORT bool network_add_path(
-        network_object* network, const onion_request_path path, char* error);
-
-/// API: network/network_remove_path
-///
-/// Removes a path from the list on the network object that is randomly selected from when making an
-/// onion request.
-///
-/// Inputs:
-/// - `network` -- [in] Pointer to the network object
-/// - `path` -- [in] the path of service nodes to be removed from the network.
-/// - `error` -- [out] the pointer to a buffer in which we will write an error string if an error
-/// occurs; error messages are discarded if this is given as NULL.  If non-NULL this must be a
-/// buffer of at least 256 bytes.
-///
-/// Outputs:
-/// - `bool` -- Returns true on success; returns false and write the exception message as a C-string
-/// into `error` (if not NULL) on failure.
-LIBSESSION_EXPORT bool network_remove_path(
-        network_object* network, const network_service_node node, char* error);
-
-/// API: network/network_remove_all_paths
-///
-/// Removes all paths from the list on the network object that are randomly selected from when
-/// making an onion request.
-///
-/// Inputs:
-/// - `network` -- [in] Pointer to the network object
-LIBSESSION_EXPORT void network_remove_all_paths(network_object* network);
-
-/// API: network/network_send_request
-///
-/// Sends a request directly to the provided service node.
-///
-/// Inputs:
-/// - `network` -- [in] Pointer to the network object.
-/// - `destination` -- [in] address information about the service node the request should be sent
-/// to.
-/// - `endpoint` -- [in] endpoint for the request.
-/// - `body` -- [in] data to send to the specified endpoint.
-/// - `body_size` -- [in] size of the `body`.
-/// - `swarm` -- [in] current swarm information for the destination service node. Set to NULL if not
-/// used.
-/// - `swarm_count` -- [in] number of service nodes included in the `swarm`.
-/// - `callback` -- [in] callback to be called with the result of the request.
+/// - `callback` -- [in] callback to be called when the network connection status changes.
 /// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
-LIBSESSION_EXPORT void network_send_request(
+LIBSESSION_EXPORT void network_set_status_changed_callback(
+        network_object* network, void (*callback)(CONNECTION_STATUS status, void* ctx), void* ctx);
+
+/// API: network/network_set_paths_changed_callback
+///
+/// Registers a callback to be called whenever the onion request paths are updated.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object
+/// - `callback` -- [in] callback to be called when the onion request paths are updated.  NOTE: The
+/// `paths` value will be freed immediately after the callback is triggered so the data needs to be
+/// copied if it needs to live longer than this.
+/// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
+LIBSESSION_EXPORT void network_set_paths_changed_callback(
         network_object* network,
-        const network_service_node destination,
-        const char* endpoint,
-        const unsigned char* body,
-        size_t body_size,
-        const network_service_node* swarm,
-        const size_t swarm_count,
-        void (*callback)(
-                bool success,
-                bool timeout,
-                int16_t status_code,
-                const char* response,
-                size_t response_size,
-                network_service_node_changes changes,
-                void*),
+        void (*callback)(onion_request_path* paths, size_t paths_len, void* ctx),
+        void* ctx);
+
+LIBSESSION_EXPORT void network_get_swarm(
+        network_object* network,
+        const char* swarm_pubkey_hex,
+        void (*callback)(network_service_node*, size_t, void*),
+        void* ctx);
+
+LIBSESSION_EXPORT void network_get_random_nodes(
+        network_object* network,
+        uint16_t count,
+        void (*callback)(network_service_node*, size_t, void*),
         void* ctx);
 
 /// API: network/network_send_onion_request_to_snode_destination
@@ -188,16 +143,16 @@ LIBSESSION_EXPORT void network_send_request(
 /// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
 LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
         network_object* network,
-        const onion_request_service_node_destination node,
+        const network_service_node node,
         const unsigned char* body,
         size_t body_size,
+        const char* swarm_pubkey_hex,
         void (*callback)(
                 bool success,
                 bool timeout,
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
-                network_service_node_changes changes,
                 void*),
         void* ctx);
 
@@ -229,18 +184,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
 /// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
 LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
         network_object* network,
-        const char* method,
-        const char* protocol,
-        const char* host,
-        const char* endpoint,
-        uint16_t port,
-        const char* x25519_pubkey,
-        const char** query_param_keys,
-        const char** query_param_values,
-        size_t query_params_size,
-        const char** headers,
-        const char** header_values,
-        size_t headers_size,
+        const network_server_destination server,
         const unsigned char* body,
         size_t body_size,
         void (*callback)(
@@ -249,7 +193,6 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
                 int16_t status_code,
                 const char* response,
                 size_t response_size,
-                network_service_node_changes changes,
                 void*),
         void* ctx);
 

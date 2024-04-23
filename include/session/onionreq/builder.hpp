@@ -10,7 +10,7 @@ namespace session::onionreq {
 
 struct SnodeDestination {
     session::network::service_node node;
-    std::optional<std::vector<session::network::service_node>> swarm;
+    std::optional<std::string> swarm_pubkey;
 };
 
 struct ServerDestination {
@@ -18,30 +18,28 @@ struct ServerDestination {
     std::string host;
     std::string endpoint;
     session::onionreq::x25519_pubkey x25519_pubkey;
-    std::string method;
     std::optional<uint16_t> port;
     std::optional<std::vector<std::pair<std::string, std::string>>> headers;
-    std::optional<std::vector<std::pair<std::string, std::string>>> query_params;
+    std::string method;
 
     ServerDestination(
             std::string protocol,
             std::string host,
             std::string endpoint,
             session::onionreq::x25519_pubkey x25519_pubkey,
-            std::string method = "GET",
-            std::optional<uint16_t> port = std::nullopt,
-            std::optional<std::vector<std::pair<std::string, std::string>>> headers = std::nullopt,
-            std::optional<std::vector<std::pair<std::string, std::string>>> query_params =
-                    std::nullopt) :
+            std::optional<uint16_t> port,
+            std::optional<std::vector<std::pair<std::string, std::string>>> headers,
+            std::string method = "GET") :
             protocol{std::move(protocol)},
             host{std::move(host)},
             endpoint{std::move(endpoint)},
             x25519_pubkey{std::move(x25519_pubkey)},
-            method{std::move(method)},
             port{std::move(port)},
             headers{std::move(headers)},
-            query_params{std::move(query_params)} {}
+            method{std::move(method)} {}
 };
+
+using network_destination = std::variant<SnodeDestination, ServerDestination>;
 
 enum class EncryptType {
     aes_gcm,
@@ -71,9 +69,9 @@ class Builder {
 
     void set_enc_type(EncryptType enc_type_) { enc_type = enc_type_; }
 
-    template <typename Destination>
-    void set_destination(Destination destination);
-
+    void set_destination(network_destination destination);
+    std::optional<session::network::service_node> node_for_destination(
+            network_destination destination);
     void add_hop(std::pair<ed25519_pubkey, x25519_pubkey> keys) { hops_.push_back(keys); }
 
     ustring generate_payload(std::optional<ustring> body) const;
@@ -89,7 +87,6 @@ class Builder {
     // Proxied request values
 
     std::optional<std::string> host_ = std::nullopt;
-    std::optional<std::string> target_ = std::nullopt;
     std::optional<std::string> endpoint_ = std::nullopt;
     std::optional<std::string> protocol_ = std::nullopt;
     std::optional<std::string> method_ = std::nullopt;

@@ -22,18 +22,6 @@ typedef struct onion_request_builder_object {
     ENCRYPT_TYPE enc_type;
 } onion_request_builder_object;
 
-typedef struct onion_request_service_node_destination {
-    uint8_t ip[4];
-    uint16_t quic_port;
-    char x25519_pubkey_hex[65];   // The 64-byte x25519 pubkey in hex + null terminator.
-    char ed25519_pubkey_hex[65];  // The 64-byte ed25519 pubkey in hex + null terminator.
-
-    uint8_t failure_count;
-    bool invalid;
-    const network_service_node* swarm;
-    const size_t swarm_count;
-} onion_request_service_node_destination;
-
 /// API: groups/onion_request_builder_init
 ///
 /// Constructs an onion request builder and sets a pointer to it in `builder`.
