@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <memory>
+#include <oxen/log.hpp>
 #include <session/config.hpp>
 #include <session/util.hpp>
 #include <stdexcept>
@@ -26,9 +27,6 @@ static constexpr bool is_dict_subtype = is_one_of<T, config::scalar, config::set
 template <typename T>
 static constexpr bool is_dict_value =
         is_dict_subtype<T> || is_one_of<T, dict_value, int64_t, std::string>;
-
-// Levels for the logging callback
-enum class LogLevel { debug = 0, info, warning, error };
 
 /// Our current config state
 enum class ConfigState : int {
@@ -188,7 +186,7 @@ class ConfigBase : public ConfigSig {
     void set_state(ConfigState s);
 
     // Invokes the `logger` callback if set, does nothing if there is no logger.
-    void log(LogLevel lvl, std::string msg) {
+    void log(oxen::log::Level lvl, std::string msg) {
         if (logger)
             logger(lvl, std::move(msg));
     }
@@ -830,7 +828,7 @@ class ConfigBase : public ConfigSig {
     const DictFieldRoot data{*this};
 
     // If set then we log things by calling this callback
-    std::function<void(LogLevel lvl, std::string msg)> logger;
+    std::function<void(oxen::log::Level lvl, std::string msg)> logger;
 
     /// API: base/ConfigBase::storage_namespace
     ///

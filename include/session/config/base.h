@@ -10,6 +10,7 @@ extern "C" {
 
 #include "../config.h"
 #include "../export.h"
+#include "../log_level.h"
 
 // Config object base type: this type holds the internal object and is initialized by the various
 // config-dependent settings (e.g. config_user_profile_init) then passed to the various functions.
@@ -42,13 +43,6 @@ typedef struct config_object {
 /// - `conf` -- [in] Pointer to config_object object
 LIBSESSION_EXPORT void config_free(config_object* conf);
 
-typedef enum config_log_level {
-    LOG_LEVEL_DEBUG = 0,
-    LOG_LEVEL_INFO,
-    LOG_LEVEL_WARNING,
-    LOG_LEVEL_ERROR
-} config_log_level;
-
 /// API: base/config_set_logger
 ///
 /// Sets a logging function; takes the log function pointer and a context pointer (which can be NULL
@@ -58,7 +52,7 @@ typedef enum config_log_level {
 ///
 /// The logging function must have signature:
 ///
-/// void log(config_log_level lvl, const char* msg, void* ctx);
+/// void log(LOG_LEVEL lvl, const char* msg, void* ctx);
 ///
 /// Can be called with callback set to NULL to clear an existing logger.
 ///
@@ -68,7 +62,7 @@ typedef enum config_log_level {
 /// ```cpp
 /// VOID config_set_logger(
 ///     [in, out]   config_object*                                  conf,
-///     [in]        void(*)(config_log_level, const char*, void*)   callback,
+///     [in]        void(*)(LOG_LEVEL, const char*, void*)   callback,
 ///     [in]        void*                                           ctx
 /// );
 /// ```
@@ -78,7 +72,7 @@ typedef enum config_log_level {
 /// - `callback` -- [in] Callback function
 /// - `ctx` --- [in, optional] Pointer to an optional context. Set to NULL if unused
 LIBSESSION_EXPORT void config_set_logger(
-        config_object* conf, void (*callback)(config_log_level, const char*, void*), void* ctx);
+        config_object* conf, void (*callback)(LOG_LEVEL, const char*, void*), void* ctx);
 
 /// API: base/config_storage_namespace
 ///

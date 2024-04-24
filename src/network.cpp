@@ -339,12 +339,14 @@ void Network::clear_cache() {
 
 // MARK: Logging
 
-void Network::add_logger(std::function<void(const std::string&)> callback) {
+void Network::add_logger(
+        std::function<void(oxen::log::Level lvl, const std::string& name, const std::string& msg)>
+                callback) {
     auto sink = std::make_shared<spdlog::sinks::callback_sink_mt>(
             [this, cb = std::move(callback)](const spdlog::details::log_msg& msg) {
                 spdlog::memory_buf_t buf;
                 formatter.format(msg, buf);
-                cb(to_string(buf));
+                cb(msg.level, to_string(msg.logger_name), to_string(buf));
             });
     oxen::log::add_sink(sink);
 }
@@ -373,15 +375,12 @@ void Network::update_status(ConnectionStatus updated_status) {
 connection_info Network::get_connection_info(
         service_node target,
         std::optional<oxen::quic::connection_established_callback> conn_established_cb) {
-    auto remote_ip = "{}"_format(fmt::join(target.ip, "."));
-    auto remote =
-            oxen::quic::RemoteAddress{target.ed25519_pubkey.view(), remote_ip, target.quic_port};
     auto connection_key_pair = ed25519::ed25519_key_pair();
     auto creds = oxen::quic::GNUTLSCreds::make_from_ed_seckey(
             std::string(connection_key_pair.second.begin(), connection_key_pair.second.end()));
 
     auto c = endpoint->connect(
-            remote,
+            target,
             creds,
             oxen::quic::opt::keep_alive{10s},
             conn_established_cb,
@@ -397,7 +396,7 @@ connection_info Network::get_connection_info(
                     target_path->conn_info.conn.reset();
                     target_path->conn_info.stream.reset();
                     handle_errors(
-                            {target, "", std::nullopt, std::nullopt, *target_path, false},
+                            {target, "", std::nullopt, std::nullopt, *target_path, 0ms, false},
                             std::nullopt,
                             std::nullopt,
                             std::nullopt);
@@ -409,7 +408,7 @@ connection_info Network::get_connection_info(
 
 // MARK: Snode Pool and Onion Path
 
-void Network::with_snode_pool(std::function<void(std::vector<service_node>)> callback) {
+void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)> callback) {
     get_snode_pool_loop->call([this, cb = std::move(callback)]() mutable {
         auto current_pool_info = net.call_get(
                 [this]() -> std::pair<
@@ -461,7 +460,7 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node>)> cal
                 std::shuffle(target_pool.begin(), target_pool.end(), rng);
                 std::promise<std::vector<service_node>> prom;
 
-                get_service_nodes(256, target_pool.front(), handle_nodes_response(prom));
+                get_service_nodes(target_pool.front(), 256, handle_nodes_response(prom));
 
                 // We want to block the `get_snode_pool_loop` until we have retrieved the snode pool
                 // so we don't double up on requests
@@ -502,9 +501,9 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node>)> cal
             std::promise<std::vector<service_node>> prom3;
 
             // Kick off 3 concurrent requests
-            get_service_nodes_recursive(std::nullopt, first_nodes, handle_nodes_response(prom1));
-            get_service_nodes_recursive(std::nullopt, second_nodes, handle_nodes_response(prom2));
-            get_service_nodes_recursive(std::nullopt, third_nodes, handle_nodes_response(prom3));
+            get_service_nodes_recursive(first_nodes, std::nullopt, handle_nodes_response(prom1));
+            get_service_nodes_recursive(second_nodes, std::nullopt, handle_nodes_response(prom2));
+            get_service_nodes_recursive(third_nodes, std::nullopt, handle_nodes_response(prom3));
 
             // We want to block the `get_snode_pool_loop` until we have retrieved the snode pool
             // so we don't double up on requests
@@ -513,10 +512,10 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node>)> cal
             auto third_result_nodes = prom3.get_future().get();
 
             auto compare_nodes = [](const auto& a, const auto& b) {
-                if (a.ip == b.ip) {
-                    return a.quic_port < b.quic_port;
+                if (a.host() == b.host()) {
+                    return a.port() < b.port();
                 }
-                return a.ip < b.ip;
+                return a.host() < b.host();
             };
 
             // Sort the vectors (so make it easier to find the
@@ -648,6 +647,7 @@ void Network::build_paths_if_needed(
         build_paths_loop->call([this, excluded_node, pool, cb = std::move(cb)]() mutable {
             auto current_paths =
                     net.call_get([this]() -> std::vector<onion_path> { return paths; });
+
             // No need to do anything if we already have enough paths
             if (current_paths.size() >= target_path_count)
                 return cb(current_paths);
@@ -658,6 +658,7 @@ void Network::build_paths_if_needed(
             // Get the possible guard nodes
             oxen::log::info(log_cat, "Building paths.");
             std::vector<service_node> nodes_to_exclude;
+            std::vector<service_node> possible_guard_nodes;
 
             if (excluded_node)
                 nodes_to_exclude.push_back(*excluded_node);
@@ -665,7 +666,6 @@ void Network::build_paths_if_needed(
             for (auto& path : paths)
                 nodes_to_exclude.insert(
                         nodes_to_exclude.end(), path.nodes.begin(), path.nodes.end());
-            std::vector<service_node> possible_guard_nodes;
 
             if (nodes_to_exclude.empty())
                 possible_guard_nodes = pool;
@@ -772,7 +772,7 @@ void Network::build_paths_if_needed(
                             path.begin(),
                             path.end(),
                             std::back_inserter(node_descriptions),
-                            [](service_node& node) { return node.pretty_description(); });
+                            [](service_node& node) { return node.to_string(); });
                     auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
                     oxen::log::info(
                             log_cat, "Built new onion request path: [{}]", path_description);
@@ -806,8 +806,8 @@ void Network::build_paths_if_needed(
 // MARK: Multi-request logic
 
 void Network::get_service_nodes_recursive(
-        std::optional<int> limit,
         std::vector<service_node> target_nodes,
+        std::optional<int> limit,
         std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                 callback) {
     if (target_nodes.empty())
@@ -815,8 +815,8 @@ void Network::get_service_nodes_recursive(
 
     auto target_node = target_nodes.front();
     get_service_nodes(
-            limit,
             target_node,
+            limit,
             [this, limit, target_nodes, cb = std::move(callback)](
                     std::vector<service_node> nodes, std::optional<std::string> error) {
                 // If we got nodes then stop looping and return them
@@ -826,74 +826,66 @@ void Network::get_service_nodes_recursive(
                 // Loop if we didn't get any nodes
                 std::vector<service_node> remaining_nodes(
                         target_nodes.begin() + 1, target_nodes.end());
-                get_service_nodes_recursive(limit, remaining_nodes, cb);
+                get_service_nodes_recursive(remaining_nodes, limit, cb);
             });
 }
 
 void Network::find_valid_guard_node_recursive(
-        std::vector<service_node> unused_nodes,
+        std::vector<service_node> target_nodes,
         std::function<
                 void(std::optional<connection_info> valid_guard_node,
                      std::vector<service_node> unused_nodes)> callback) {
-    if (unused_nodes.empty())
+    if (target_nodes.empty())
         return callback(std::nullopt, {});
 
-    auto target_node = unused_nodes.front();
-    oxen::log::info(log_cat, "Testing guard snode: {}", target_node.pretty_description());
+    auto target_node = target_nodes.front();
+    oxen::log::info(log_cat, "Testing guard snode: {}", target_node.to_string());
 
     get_version(
             target_node,
             3s,
-            [this, target_node, unused_nodes, cb = std::move(callback)](
+            [this, target_node, target_nodes, cb = std::move(callback)](
                     std::vector<int> version,
                     connection_info info,
                     std::optional<std::string> error) {
                 std::vector<service_node> remaining_nodes(
-                        unused_nodes.begin() + 1, unused_nodes.end());
+                        target_nodes.begin() + 1, target_nodes.end());
 
-                // Log the error and loop after a slight delay (don't want to drain the pool
-                // too quickly if the network goes down)
-                if (error) {
+                try {
+                    if (error)
+                        throw std::runtime_error{*error};
+
+                    // Ensure the node meets the minimum version requirements after a slight
+                    // delay (don't want to drain the pool if the network goes down)
+                    std::vector<int> min_version = parse_version("2.0.7");
+                    if (version < min_version)
+                        throw std::runtime_error{
+                                "Outdated node version ({})"_format(fmt::join(version, "."))};
+
+                    oxen::log::info(log_cat, "Guard snode {} valid.", target_node.to_string());
+                    cb(info, remaining_nodes);
+                } catch (const std::exception& e) {
+                    // Log the error and loop after a slight delay (don't want to drain the pool
+                    // too quickly if the network goes down)
                     oxen::log::info(
                             log_cat,
                             "Testing {} failed with error: {}",
-                            target_node.pretty_description(),
-                            *error);
+                            target_node.to_string(),
+                            e.what());
                     std::thread retry_thread([this, remaining_nodes, cb = std::move(cb)] {
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                         find_valid_guard_node_recursive(remaining_nodes, cb);
                     });
                     retry_thread.detach();
-                    return;
                 }
-
-                // Ensure the node meets the minimum version requirements after a slight
-                // delay (don't want to drain the pool if the network goes down)
-                std::vector<int> min_version = parse_version("2.0.7");
-                if (version < min_version) {
-                    oxen::log::info(
-                            log_cat,
-                            "Testing {} failed with error: Outdated node version ({})",
-                            target_node.pretty_description(),
-                            fmt::join(version, "."));
-                    std::thread retry_thread([this, remaining_nodes, cb = std::move(cb)] {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                        find_valid_guard_node_recursive(remaining_nodes, cb);
-                    });
-                    retry_thread.detach();
-                    return;
-                }
-
-                oxen::log::info(log_cat, "Guard snode {} valid.", target_node.pretty_description());
-                cb(info, remaining_nodes);
             });
 }
 
 // MARK: Pre-Defined Requests
 
 void Network::get_service_nodes(
-        std::optional<int> limit,
         service_node node,
+        std::optional<int> limit,
         std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                 callback) {
     auto info = get_connection_info(node, std::nullopt);
@@ -1019,6 +1011,7 @@ void Network::get_swarm(
         send_onion_request(
                 SnodeDestination{node, swarm_pubkey_hex},
                 ustring{oxen::quic::to_usv(payload.dump())},
+                oxen::quic::DEFAULT_TIMEOUT,
                 false,
                 [this, swarm_pubkey_hex, cb = std::move(cb)](
                         bool success, bool timeout, int16_t, std::optional<std::string> response) {
@@ -1087,6 +1080,7 @@ void Network::send_request(
     conn_info.stream->command(
             info.endpoint,
             payload,
+            info.timeout,
             [this, info, cb = std::move(handle_response)](oxen::quic::message resp) {
                 try {
                     auto [status_code, body] = validate_response(resp, false);
@@ -1102,11 +1096,12 @@ void Network::send_request(
 void Network::send_onion_request(
         network_destination destination,
         std::optional<ustring> body,
+        std::chrono::milliseconds timeout,
         bool is_retry,
         network_response_callback_t handle_response) {
     with_path(
             node_for_destination(destination),
-            [this, destination, body, is_retry, cb = std::move(handle_response)](
+            [this, destination, body, timeout, is_retry, cb = std::move(handle_response)](
                     std::optional<onion_path> path) {
                 if (!path)
                     return cb(false, false, -1, "No valid onion paths.");
@@ -1117,7 +1112,9 @@ void Network::send_onion_request(
                     builder.set_destination(destination);
 
                     for (auto& node : path->nodes)
-                        builder.add_hop({node.ed25519_pubkey, node.x25519_pubkey});
+                        builder.add_hop(
+                                {ed25519_pubkey::from_bytes(node.view_remote_key()),
+                                 node.x25519_pubkey});
 
                     auto payload = builder.generate_payload(body);
                     auto onion_req_payload = builder.build(payload);
@@ -1128,6 +1125,7 @@ void Network::send_onion_request(
                             onion_req_payload,
                             swarm_pubkey_for_destination(destination),
                             *path,
+                            timeout,
                             is_retry};
 
                     send_request(
@@ -1385,6 +1383,7 @@ void Network::handle_errors(
                     return send_onion_request(
                             SnodeDestination{*random_node, info.swarm_pubkey},
                             info.body,
+                            info.timeout,
                             true,
                             (*handle_response));
                 }
@@ -1438,11 +1437,12 @@ void Network::handle_errors(
         if (ed25519PublicKey.size() == 64 && oxenc::is_hex(ed25519PublicKey)) {
             session::onionreq::ed25519_pubkey edpk =
                     session::onionreq::ed25519_pubkey::from_hex(ed25519PublicKey);
+            auto edpk_view = to_unsigned_sv(edpk.view());
 
             auto snode_it = std::find_if(
                     updated_path.nodes.begin(),
                     updated_path.nodes.end(),
-                    [&edpk](const auto& node) { return node.ed25519_pubkey == edpk; });
+                    [&edpk_view](const auto& node) { return node.view_remote_key() == edpk_view; });
 
             // Increment the failure count for the snode
             if (snode_it != updated_path.nodes.end()) {
@@ -1534,13 +1534,14 @@ std::vector<network_service_node> convert_service_nodes(
         std::vector<session::network::service_node> nodes) {
     std::vector<network_service_node> converted_nodes;
     for (auto& node : nodes) {
+        auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
         network_service_node converted_node;
-        std::memcpy(converted_node.ip, node.ip.data(), sizeof(converted_node.ip));
+        std::memcpy(converted_node.ip, node.host().data(), sizeof(converted_node.ip));
         strncpy(converted_node.x25519_pubkey_hex, node.x25519_pubkey.hex().c_str(), 64);
-        strncpy(converted_node.ed25519_pubkey_hex, node.ed25519_pubkey.hex().c_str(), 64);
+        strncpy(converted_node.ed25519_pubkey_hex, ed25519_pubkey_hex.c_str(), 64);
         converted_node.x25519_pubkey_hex[64] = '\0';   // Ensure null termination
         converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
-        converted_node.quic_port = node.quic_port;
+        converted_node.quic_port = node.port();
         converted_node.failure_count = node.failure_count;
         converted_node.invalid = node.invalid;
         converted_nodes.push_back(converted_node);
@@ -1605,10 +1606,15 @@ LIBSESSION_C_API void network_free(network_object* network) {
 }
 
 LIBSESSION_C_API void network_add_logger(
-        network_object* network, void (*callback)(const char*, size_t)) {
+        network_object* network,
+        void (*callback)(
+                LOG_LEVEL lvl, const char* name, size_t namelen, const char* msg, size_t msglen)) {
     assert(callback);
     unbox(network).add_logger(
-            [cb = std::move(callback)](const std::string& msg) { cb(msg.c_str(), msg.size()); });
+            [cb = std::move(callback)](
+                    oxen::log::Level lvl, const std::string& name, const std::string& msg) {
+                cb(static_cast<LOG_LEVEL>(lvl), name.c_str(), name.size(), msg.c_str(), msg.size());
+            });
 }
 
 LIBSESSION_C_API void network_clear_cache(network_object* network) {
@@ -1659,7 +1665,7 @@ LIBSESSION_C_API void network_set_paths_changed_callback(
 LIBSESSION_C_API void network_get_swarm(
         network_object* network,
         const char* swarm_pubkey_hex,
-        void (*callback)(network_service_node*, size_t, void*),
+        void (*callback)(network_service_node* nodes, size_t nodes_len, void*),
         void* ctx) {
     assert(swarm_pubkey_hex && callback);
     unbox(network).get_swarm(
@@ -1688,6 +1694,7 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
         const unsigned char* body_,
         size_t body_size,
         const char* swarm_pubkey_hex,
+        int64_t timeout_ms,
         void (*callback)(
                 bool success,
                 bool timeout,
@@ -1712,14 +1719,14 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
 
         unbox(network).send_onion_request(
                 SnodeDestination{
-                        {ip,
+                        {{node.ed25519_pubkey_hex, 64},
+                         {node.x25519_pubkey_hex, 64},
+                         "{}"_format(fmt::join(ip, ".")),
                          node.quic_port,
-                         x25519_pubkey::from_hex({node.x25519_pubkey_hex, 64}),
-                         ed25519_pubkey::from_hex({node.ed25519_pubkey_hex, 64}),
-                         node.failure_count,
-                         false},
+                         node.failure_count},
                         swarm_pubkey},
                 body,
+                std::chrono::milliseconds{timeout_ms},
                 false,
                 [callback, ctx](
                         bool success,
@@ -1739,6 +1746,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
         const network_server_destination server,
         const unsigned char* body_,
         size_t body_size,
+        int64_t timeout_ms,
         void (*callback)(
                 bool success,
                 bool timeout,
@@ -1772,6 +1780,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                         headers,
                         server.method},
                 body,
+                std::chrono::milliseconds{timeout_ms},
                 false,
                 [callback, ctx](
                         bool success,

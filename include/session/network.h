@@ -8,6 +8,7 @@ extern "C" {
 #include <stdint.h>
 
 #include "export.h"
+#include "log_level.h"
 #include "network_service_node.h"
 #include "onionreq/builder.h"
 
@@ -84,7 +85,9 @@ LIBSESSION_EXPORT void network_free(network_object* network);
 /// - `network` -- [in] Pointer to the network object
 /// - `callback` -- [in] callback to be called when a new message should be logged.
 LIBSESSION_EXPORT void network_add_logger(
-        network_object* network, void (*callback)(const char*, size_t));
+        network_object* network,
+        void (*callback)(
+                LOG_LEVEL lvl, const char* name, size_t namelen, const char* msg, size_t msglen));
 
 /// API: network/network_clear_cache
 ///
@@ -118,12 +121,35 @@ LIBSESSION_EXPORT void network_set_paths_changed_callback(
         void (*callback)(onion_request_path* paths, size_t paths_len, void* ctx),
         void* ctx);
 
+/// API: network/network_get_swarm
+///
+/// Retrieves the swarm for the given pubkey.  If there is already an entry in the cache for the
+/// swarm then that will be returned, otherwise a network request will be made to retrieve the
+/// swarm and save it to the cache.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object
+/// - 'swarm_pubkey_hex' - [in] includes the prefix.
+/// - 'callback' - [in] callback to be called with the retrieved swarm (in the case of an error
+/// the callback will be called with an empty list).
+/// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
 LIBSESSION_EXPORT void network_get_swarm(
         network_object* network,
         const char* swarm_pubkey_hex,
-        void (*callback)(network_service_node*, size_t, void*),
+        void (*callback)(network_service_node* nodes, size_t nodes_len, void*),
         void* ctx);
 
+/// API: network/network_get_random_nodes
+///
+/// Retrieves a number of random nodes from the snode pool.  If the are no nodes in the pool a
+/// new pool will be populated and the nodes will be retrieved from that.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object
+/// - 'count' - [in] the number of nodes to retrieve.
+/// - 'callback' - [in] callback to be called with the retrieved nodes (in the case of an error
+/// the callback will be called with an empty list).
+/// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
 LIBSESSION_EXPORT void network_get_random_nodes(
         network_object* network,
         uint16_t count,
@@ -139,6 +165,7 @@ LIBSESSION_EXPORT void network_get_random_nodes(
 /// - `node` -- [in] address information about the service node the request should be sent to.
 /// - `body` -- [in] data to send to the specified node.
 /// - `body_size` -- [in] size of the `body`.
+/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
 /// - `callback` -- [in] callback to be called with the result of the request.
 /// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
 LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
@@ -147,6 +174,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
         const unsigned char* body,
         size_t body_size,
         const char* swarm_pubkey_hex,
+        int64_t timeout_ms,
         void (*callback)(
                 bool success,
                 bool timeout,
@@ -180,13 +208,15 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
 /// - `headers_size` -- [in] The number of headers provided.
 /// - `body` -- [in] data to send to the specified endpoint.
 /// - `body_size` -- [in] size of the `body`.
+/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
 /// - `callback` -- [in] callback to be called with the result of the request.
-/// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
+/// - `ctx` -- [in, optional] Pointer to an optional context.  Set to NULL if unused.
 LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
         network_object* network,
         const network_server_destination server,
         const unsigned char* body,
         size_t body_size,
+        int64_t timeout_ms,
         void (*callback)(
                 bool success,
                 bool timeout,

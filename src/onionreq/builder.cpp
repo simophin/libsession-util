@@ -17,6 +17,7 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <oxen/log/format.hpp>
 
 #include "session/export.h"
 #include "session/onionreq/builder.h"
@@ -26,6 +27,7 @@
 #include "session/xed25519.hpp"
 
 using namespace std::literals;
+using namespace oxen::log::literals;
 using session::ustring_view;
 
 namespace session::onionreq {
@@ -54,7 +56,7 @@ void Builder::set_destination(network_destination destination) {
 
     if (auto* dest = std::get_if<SnodeDestination>(&destination)) {
         destination_x25519_public_key.emplace(dest->node.x25519_pubkey);
-        ed25519_public_key_.emplace(dest->node.ed25519_pubkey);
+        ed25519_public_key_.emplace(ed25519_pubkey::from_bytes(dest->node.view_remote_key()));
     } else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
         host_.emplace(dest->host);
         endpoint_.emplace(dest->endpoint);
@@ -280,11 +282,12 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
 
     std::array<uint8_t, 4> target_ip;
     std::memcpy(target_ip.data(), ip, target_ip.size());
+
     auto node = session::network::service_node{
-            target_ip,
+            {ed25519_pubkey, 64},
+            {x25519_pubkey, 64},
+            "{}"_format(fmt::join(target_ip, ".")),
             quic_port,
-            session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}),
-            session::onionreq::ed25519_pubkey::from_hex({ed25519_pubkey, 64}),
             failure_count,
             false};
     unbox(builder).set_destination(session::onionreq::SnodeDestination{node, std::nullopt});

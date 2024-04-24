@@ -2,6 +2,7 @@
 
 #include <spdlog/pattern_formatter.h>
 
+#include <oxen/log.hpp>
 #include <oxen/quic.hpp>
 
 #include "network_service_node.hpp"
@@ -42,6 +43,7 @@ struct request_info {
     std::optional<ustring> body;
     std::optional<std::string> swarm_pubkey;
     onion_path path;
+    std::chrono::milliseconds timeout;
     bool is_retry;
 };
 
@@ -78,7 +80,10 @@ class Network {
     spdlog::pattern_formatter formatter;
 
   public:
+    // Hook to be notified whenever the network connection status changes.
     std::function<void(ConnectionStatus status)> status_changed;
+
+    // Hook to be notified whenever the onion request paths are updated.
     std::function<void(std::vector<std::vector<service_node>> paths)> paths_changed;
 
     // Constructs a new network with the given cache path and a flag indicating whether it should
@@ -92,7 +97,9 @@ class Network {
     ///
     /// Inputs:
     /// - `callback` -- [in] callback to be called when a new message should be logged.
-    void add_logger(std::function<void(const std::string&)> callback);
+    void add_logger(std::function<
+                    void(oxen::log::Level lvl, const std::string& name, const std::string& msg)>
+                            callback);
 
     /// API: network/clear_cache
     ///
@@ -107,8 +114,8 @@ class Network {
     /// swarm and save it to the cache.
     ///
     /// Inputs:
-    /// 'swarm_pubkey_hex' - [in] includes the prefix.
-    /// 'callback' - [in] callback to be called with the retrieved swarm (in the case of an error
+    /// - 'swarm_pubkey_hex' - [in] includes the prefix.
+    /// - 'callback' - [in] callback to be called with the retrieved swarm (in the case of an error
     /// the callback will be called with an empty list).
     void get_swarm(
             std::string swarm_pubkey_hex,
@@ -120,8 +127,8 @@ class Network {
     /// new pool will be populated and the nodes will be retrieved from that.
     ///
     /// Inputs:
-    /// 'count' - [in] the number of nodes to retrieve.
-    /// 'callback' - [in] callback to be called with the retrieved nodes (in the case of an error
+    /// - 'count' - [in] the number of nodes to retrieve.
+    /// - 'callback' - [in] callback to be called with the retrieved nodes (in the case of an error
     /// the callback will be called with an empty list).
     void get_random_nodes(
             uint16_t count, std::function<void(std::vector<service_node> nodes)> callback);
@@ -144,6 +151,7 @@ class Network {
     /// Inputs:
     /// - `destination` -- [in] service node or server destination information.
     /// - `body` -- [in] data to send to the specified destination.
+    /// - `timeout` -- [in] timeout in milliseconds to use for the request.
     /// - `is_retry` -- [in] flag indicating whether this request is a retry. Generally only used
     /// for internal purposes for cases which should retry automatically (like receiving a `421`) in
     /// order to prevent subsequent retries.
@@ -151,6 +159,7 @@ class Network {
     void send_onion_request(
             onionreq::network_destination destination,
             std::optional<ustring> body,
+            std::chrono::milliseconds timeout,
             bool is_retry,
             network_response_callback_t handle_response);
 
@@ -194,7 +203,7 @@ class Network {
     /// provided, this method ignores invalid or unchanged status changes.
     ///
     /// Inputs:
-    /// 'updated_status' - [in] the updated connection status.
+    /// - 'updated_status' - [in] the updated connection status.
     void update_status(ConnectionStatus updated_status);
 
     /// API: network/start_disk_write_thread
@@ -209,29 +218,117 @@ class Network {
     /// data exists.
     void load_cache_from_disk();
 
+    /// API: network/get_connection_info
+    ///
+    /// Creates a connection and opens a stream to the target service node.
+    ///
+    /// Inputs:
+    /// - `target` -- [in] the target service node to connect to.
+    /// - `conn_established_cb` -- [in, optional] a callback to be passed when creating the
+    /// connection that should be triggered when the connection is established.
     connection_info get_connection_info(
             service_node target,
             std::optional<oxen::quic::connection_established_callback> conn_established_cb);
 
-    void with_snode_pool(std::function<void(std::vector<service_node>)> callback);
+    /// API: network/with_snode_pool
+    ///
+    /// Retrieves the service node pool from the cache.  If the cache is empty it will first be
+    /// populated from the network.
+    ///
+    /// Inputs:
+    /// - `callback` -- [in] callback to be triggered once we have the service node pool.  NOTE: If
+    /// we are unable to retrieve the service node pool the callback will be triggered with an empty
+    /// list.
+    void with_snode_pool(std::function<void(std::vector<service_node> pool)> callback);
+
+    /// API: network/with_path
+    ///
+    /// Retrieves a valid onion request path to perform a request on.  If there aren't currently any
+    /// paths then new paths will be constructed by opening and testing connections to random
+    /// service nodes in the snode pool.
+    ///
+    /// Inputs:
+    /// - `excluded_node` -- [in, optional] node which should not be included in the path.
+    /// - `callback` -- [in] callback to be triggered once we have a valid path, NULL if we are
+    /// unable to find a valid path.
     void with_path(
             std::optional<service_node> excluded_node,
             std::function<void(std::optional<onion_path> path)> callback);
+
+    /// API: network/build_paths_if_needed
+    ///
+    /// Builds onion request paths if needed by opening and testing connections to random service
+    /// nodes in the snode pool.  If we already have enough paths the callback will be triggered
+    /// with the current paths.
+    ///
+    /// Inputs:
+    /// - `excluded_node` -- [in, optional] node which should not be included in the paths.
+    /// - `callback` -- [in] callback to be triggered once we have enough paths.  NOTE: If we are
+    /// unable to create the paths the callback will be triggered with an empty list.
     void build_paths_if_needed(
             std::optional<service_node> excluded_node,
             std::function<void(std::vector<onion_path> updated_paths)> callback);
 
+    /// API: network/get_service_nodes_recursive
+    ///
+    /// A recursive function that will attempt to retrieve service nodes from a given node until it
+    /// successfully retrieves nodes or the list is drained.
+    ///
+    /// Inputs:
+    /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
+    /// drained.
+    /// - `limit` -- [in, optional] the number of service nodes to retrieve.
+    /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If we drain the
+    /// `target_nodes` and haven't gotten a successful response an empty list will be returned along
+    /// with an error string.
     void get_service_nodes_recursive(
+            std::vector<service_node> target_nodes,
             std::optional<int> limit,
-            std::vector<service_node> nodes,
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                     callback);
+
+    /// API: network/find_valid_guard_node_recursive
+    ///
+    /// A recursive function that sends a request to provided nodes until a successful response is
+    /// received or the list is drained.
+    ///
+    /// Inputs:
+    /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
+    /// drained.
+    /// - `callback` -- [in] callback to be triggered once we make a successful request.  NOTE: If
+    /// we drain the `target_nodes` and haven't gotten a successful response a NULL
+    /// `connection_info` and empty will be provided.
     void find_valid_guard_node_recursive(
-            std::vector<service_node> unused_nodes,
+            std::vector<service_node> target_nodes,
             std::function<
                     void(std::optional<connection_info> valid_guard_node,
                          std::vector<service_node> unused_nodes)> callback);
 
+    /// API: network/get_service_nodes
+    ///
+    /// Retrieves all or a random subset of service nodes from the given node.
+    ///
+    /// Inputs:
+    /// - `node` -- [in] node to retrieve the service nodes from.
+    /// - `limit` -- [in, optional] the number of service nodes to retrieve.
+    /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If an error
+    /// occurs an empty list and an error will be returned.
+    void get_service_nodes(
+            service_node node,
+            std::optional<int> limit,
+            std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
+                    callback);
+
+    /// API: network/get_version
+    ///
+    /// Retrieves the version information for a given service node.
+    ///
+    /// Inputs:
+    /// - `node` -- [in] node to retrieve the version from.
+    /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
+    /// `quic::DEFAULT_TIMEOUT` will be used.
+    /// - `callback` -- [in] callback to be triggered with the result of the request.  NOTE: If an
+    /// error occurs an empty list and an error will be returned.
     void get_version(
             service_node node,
             std::optional<std::chrono::milliseconds> timeout,
@@ -239,11 +336,6 @@ class Network {
                     void(std::vector<int> version,
                          connection_info info,
                          std::optional<std::string> error)> callback);
-    void get_service_nodes(
-            std::optional<int> limit,
-            service_node node,
-            std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
-                    callback);
 
     /// API: network/process_snode_response
     ///

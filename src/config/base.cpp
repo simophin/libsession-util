@@ -8,6 +8,7 @@
 #include <sodium/crypto_sign_ed25519.h>
 #include <sodium/utils.h>
 
+#include <oxen/log.hpp>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -132,15 +133,15 @@ std::vector<std::string> ConfigBase::_merge(
                 plaintexts.emplace_back(hash, decrypt(conf, key(i), encryption_domain()));
                 decrypted = true;
             } catch (const decrypt_error&) {
-                log(LogLevel::debug,
+                log(oxen::log::Level::debug,
                     "Failed to decrypt message " + std::to_string(ci) + " using key " +
                             std::to_string(i));
             }
         }
         if (!decrypted)
-            log(LogLevel::warning, "Failed to decrypt message " + std::to_string(ci));
+            log(oxen::log::Level::warn, "Failed to decrypt message " + std::to_string(ci));
     }
-    log(LogLevel::debug,
+    log(oxen::log::Level::debug,
         "successfully decrypted " + std::to_string(plaintexts.size()) + " of " +
                 std::to_string(configs.size()) + " incoming messages");
 
@@ -151,13 +152,13 @@ std::vector<std::string> ConfigBase::_merge(
             plain.resize(plain.size() - p);
         }
         if (plain.empty()) {
-            log(LogLevel::error, "Invalid config message: contains no data");
+            log(oxen::log::Level::err, "Invalid config message: contains no data");
             continue;
         }
 
         // TODO FIXME (see above)
         if (plain[0] == 'm') {
-            log(LogLevel::warning, "multi-part messages not yet supported!");
+            log(oxen::log::Level::warn, "multi-part messages not yet supported!");
             continue;
         }
 
@@ -168,13 +169,13 @@ std::vector<std::string> ConfigBase::_merge(
                 decompressed && !decompressed->empty())
                 plain = std::move(*decompressed);
             else {
-                log(LogLevel::warning, "Invalid config message: decompression failed");
+                log(oxen::log::Level::warn, "Invalid config message: decompression failed");
                 continue;
             }
         }
 
         if (plain[0] != 'd')
-            log(LogLevel::error,
+            log(oxen::log::Level::err,
                 "invalid/unsupported config message with type " +
                         (plain[0] >= 0x20 && plain[0] <= 0x7e
                                  ? "'" + std::string{from_unsigned_sv(plain.substr(0, 1))} + "'"
@@ -193,7 +194,7 @@ std::vector<std::string> ConfigBase::_merge(
             _config->signer,
             config_lags(),
             [&](size_t i, const config_error& e) {
-                log(LogLevel::warning, e.what());
+                log(oxen::log::Level::warn, e.what());
                 assert(i > 0);  // i == 0 means we can't deserialize our own serialization
                 bad_confs.insert(i);
             });
@@ -758,12 +759,12 @@ LIBSESSION_EXPORT void config_clear_sig_keys(config_object* conf) {
 }
 
 LIBSESSION_EXPORT void config_set_logger(
-        config_object* conf, void (*callback)(config_log_level, const char*, void*), void* ctx) {
+        config_object* conf, void (*callback)(LOG_LEVEL, const char*, void*), void* ctx) {
     if (!callback)
         unbox(conf)->logger = nullptr;
     else
-        unbox(conf)->logger = [callback, ctx](LogLevel lvl, std::string msg) {
-            callback(static_cast<config_log_level>(static_cast<int>(lvl)), msg.c_str(), ctx);
+        unbox(conf)->logger = [callback, ctx](oxen::log::Level lvl, std::string msg) {
+            callback(static_cast<LOG_LEVEL>(static_cast<int>(lvl)), msg.c_str(), ctx);
         };
 }
 

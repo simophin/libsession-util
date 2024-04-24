@@ -12,11 +12,13 @@
 using namespace std::literals;
 using namespace oxenc::literals;
 
-void log_msg(config_log_level lvl, const char* msg, void*) {
-    INFO((lvl == LOG_LEVEL_ERROR     ? "ERROR"
-          : lvl == LOG_LEVEL_WARNING ? "Warning"
-          : lvl == LOG_LEVEL_INFO    ? "Info"
-                                     : "debug")
+void log_msg(LOG_LEVEL lvl, const char* msg, void*) {
+    INFO((lvl == LOG_LEVEL_CRITICAL ? "CRITICAL"
+          : lvl == LOG_LEVEL_ERROR  ? "ERROR"
+          : lvl == LOG_LEVEL_WARN   ? "Warning"
+          : lvl == LOG_LEVEL_INFO   ? "Info"
+          : lvl == LOG_LEVEL_DEBUG  ? "debug"
+                                    : "trace")
          << ": " << msg);
 }
 

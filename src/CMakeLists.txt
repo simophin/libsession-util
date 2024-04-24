@@ -82,6 +82,7 @@ target_link_libraries(config
     PRIVATE
     libsodium::sodium-internal
     libzstd::static
+    oxen::logging
 )
 
 add_libsession_util_library(onionreq
