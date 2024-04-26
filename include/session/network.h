@@ -9,7 +9,6 @@ extern "C" {
 
 #include "export.h"
 #include "log_level.h"
-#include "network_service_node.h"
 #include "onionreq/builder.h"
 
 typedef enum CONNECTION_STATUS {
@@ -23,6 +22,12 @@ typedef struct network_object {
     // Internal opaque object pointer; calling code should leave this alone.
     void* internals;
 } network_object;
+
+typedef struct network_service_node {
+    uint8_t ip[4];
+    uint16_t quic_port;
+    char ed25519_pubkey_hex[65];  // The 64-byte ed25519 pubkey in hex + null terminator.
+} network_service_node;
 
 typedef struct network_server_destination {
     const char* method;
@@ -129,7 +134,7 @@ LIBSESSION_EXPORT void network_set_paths_changed_callback(
 ///
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object
-/// - 'swarm_pubkey_hex' - [in] includes the prefix.
+/// - 'swarm_pubkey_hex' - [in] x25519 pubkey for the swarm in hex (64 characters).
 /// - 'callback' - [in] callback to be called with the retrieved swarm (in the case of an error
 /// the callback will be called with an empty list).
 /// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.

@@ -20,8 +20,6 @@
 #include "session/ed25519.hpp"
 #include "session/export.h"
 #include "session/network.h"
-#include "session/network_service_node.h"
-#include "session/network_service_node.hpp"
 #include "session/onionreq/builder.h"
 #include "session/onionreq/builder.hpp"
 #include "session/onionreq/key_types.hpp"
@@ -51,6 +49,9 @@ namespace {
     // The amount of time the snode cache can be used before it needs to be refreshed
     const std::chrono::seconds snode_cache_expiration_duration = 2h;
 
+    // The amount of time a swarm cache can be used before it needs to be refreshed
+    const std::chrono::seconds swarm_cache_expiration_duration = (24h * 7);
+
     // The smallest size the snode pool can get to before we need to fetch more.
     const uint16_t min_snode_pool_count = 12;
 
@@ -76,26 +77,47 @@ namespace {
     constexpr auto ALPN = "oxenstorage"sv;
     const ustring uALPN{reinterpret_cast<const unsigned char*>(ALPN.data()), ALPN.size()};
 
+    service_node node_from_json(nlohmann::json json) {
+        return {oxenc::from_hex(json["pubkey_ed25519"].get<std::string>()),
+                json["ip"].get<std::string>(),
+                json["port_omq"].get<uint16_t>()};
+    }
+
+    std::pair<service_node, uint8_t> node_from_disk(std::string_view str) {
+        auto parts = split(str, "|");
+        if (parts.size() != 4)
+            throw std::invalid_argument("Invalid service node serialisation: " + std::string(str));
+
+        return {
+                {
+                        oxenc::from_hex(parts[2]),                                 // ed25519_pubkey
+                        std::string(parts[0]),                                     // ip
+                        static_cast<uint16_t>(std::stoul(std::string{parts[1]})),  // port
+                },
+                std::stoul(std::string{parts[3]})  // failure_count
+        };
+    }
+
     const std::vector<service_node> seed_nodes_testnet{
-            service_node{"144.76.164.202|35400|"
-                         "80adaead94db3b0402a6057869bdbe63204a28e93589fd95a035480ed6c03b45|"
-                         "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"sv}};
+            node_from_disk("144.76.164.202|35400|"
+                           "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9|0"sv)
+                    .first};
     const std::vector<service_node> seed_nodes_mainnet{
-            service_node{"144.76.164.202|20200|"
-                         "be83fe1221fdd85e4d9d2b62e2a34ba82eaf73da45700185d25aff4575ec6018|"
-                         "1f000f09a7b07828dcb72af7cd16857050c10c02bd58afb0e38111fb6cda1fef"sv},
-            service_node{"88.99.102.229|20201|"
-                         "05c8c236cf6c4013b8ca930a343fdc62c413ba038a16bb12e75632e0179d404a|"
-                         "1f101f0acee4db6f31aaa8b4df134e85ca8a4878efaef7f971e88ab144c1a7ce"sv},
-            service_node{"195.16.73.17|20202|"
-                         "22ced8efd4e5faf15531e9b9244b2c1de299342892b97d19268c4db69ab6350f|"
-                         "1f202f00f4d2d4acc01e20773999a291cf3e3136c325474d159814e06199919f"sv},
-            service_node{"104.194.11.120|20203|"
-                         "330ad0d67b58f39a6f46fbeaf5c3622860dfa584e9d787f70c3702031712767a|"
-                         "1f303f1d7523c46fa5398826740d13282d26b5de90fbae5749442f66afb6d78b"sv},
-            service_node{"104.194.8.115|20204|"
-                         "929c5fc60efa1834a2d4a77a4a33387c1c3d5afc2b192c2ba0e040b29388b216|"
-                         "1f604f1c858a121a681d8f9b470ef72e6946ee1b9c5ad15a35e16b50c28db7b0"sv}};
+            node_from_disk("144.76.164.202|20200|"
+                           "1f000f09a7b07828dcb72af7cd16857050c10c02bd58afb0e38111fb6cda1fef|0"sv)
+                    .first,
+            node_from_disk("88.99.102.229|20201|"
+                           "1f101f0acee4db6f31aaa8b4df134e85ca8a4878efaef7f971e88ab144c1a7ce|0"sv)
+                    .first,
+            node_from_disk("195.16.73.17|20202|"
+                           "1f202f00f4d2d4acc01e20773999a291cf3e3136c325474d159814e06199919f|0"sv)
+                    .first,
+            node_from_disk("104.194.11.120|20203|"
+                           "1f303f1d7523c46fa5398826740d13282d26b5de90fbae5749442f66afb6d78b|0"sv)
+                    .first,
+            node_from_disk("104.194.8.115|20204|"
+                           "1f604f1c858a121a681d8f9b470ef72e6946ee1b9c5ad15a35e16b50c28db7b0|0"sv)
+                    .first};
 
     /// rng type that uses llarp::randint(), which is cryptographically secure
     struct CSRNG {
@@ -130,19 +152,42 @@ namespace {
         return result;
     }
 
-    std::optional<session::network::service_node> node_for_destination(
-            network_destination destination) {
-        if (auto* dest = std::get_if<SnodeDestination>(&destination))
-            return dest->node;
+    std::string node_to_disk(
+            service_node node, std::unordered_map<std::string, uint8_t> failure_counts) {
+        auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
+
+        return fmt::format(
+                "{}|{}|{}|{}",
+                node.host(),
+                node.port(),
+                ed25519_pubkey_hex,
+                failure_counts.try_emplace(node.to_string(), 0).first->second);
+    }
+
+    session::onionreq::x25519_pubkey compute_xpk(ustring_view ed25519_pk) {
+        std::array<unsigned char, 32> xpk;
+        if (0 != crypto_sign_ed25519_pk_to_curve25519(xpk.data(), ed25519_pk.data()))
+            throw std::runtime_error{
+                    "An error occured while attempting to convert Ed25519 pubkey to X25519; "
+                    "is the pubkey valid?"};
+        return session::onionreq::x25519_pubkey::from_bytes({xpk.data(), 32});
+    }
+
+    std::optional<service_node> node_for_destination(network_destination destination) {
+        if (auto* dest = std::get_if<oxen::quic::RemoteAddress>(&destination))
+            return *dest;
 
         return std::nullopt;
     }
 
-    std::optional<std::string> swarm_pubkey_for_destination(network_destination destination) {
-        if (auto* dest = std::get_if<SnodeDestination>(&destination))
-            return dest->swarm_pubkey;
+    session::onionreq::x25519_pubkey pubkey_for_destination(network_destination destination) {
+        if (auto* dest = std::get_if<oxen::quic::RemoteAddress>(&destination))
+            return compute_xpk(dest->view_remote_key());
 
-        return std::nullopt;
+        if (auto* dest = std::get_if<ServerDestination>(&destination))
+            return dest->x25519_pubkey;
+
+        throw std::runtime_error{"Invalid destination."};
     }
 }  // namespace
 
@@ -214,40 +259,77 @@ void Network::load_cache_from_disk() {
     if (std::filesystem::exists(cache_path + file_snode_pool)) {
         std::ifstream file{cache_path + file_snode_pool};
         std::vector<service_node> loaded_pool;
+        std::unordered_map<std::string, uint8_t> loaded_failure_count;
         std::string line;
 
         while (std::getline(file, line)) {
             try {
-                loaded_pool.push_back(std::string_view(line));
+                auto [node, failure_count] = node_from_disk(line);
+                loaded_pool.push_back(node);
+                loaded_failure_count[node.to_string()] = failure_count;
             } catch (...) {
                 oxen::log::warning(log_cat, "Skipping invalid entry in snode pool cache.");
             }
         }
 
         snode_pool = loaded_pool;
+        snode_failure_counts = loaded_failure_count;
     }
 
     // Load the swarm cache
     auto swarm_path = (cache_path + swarm_dir);
+    auto time_now = std::chrono::system_clock::now();
     std::unordered_map<std::string, std::vector<service_node>> loaded_cache;
+    std::vector<std::string> caches_to_remove;
 
     for (auto& entry : std::filesystem::directory_iterator(swarm_path)) {
+        // If the pubkey was valid then process the content
         std::ifstream file{entry.path()};
         std::vector<service_node> nodes;
         std::string line;
+        bool checked_swarm_expiration = false;
+        std::chrono::seconds swarm_lifetime = 0s;
 
         while (std::getline(file, line)) {
             try {
-                nodes.push_back(std::string_view(line));
+                // If we haven't checked if the swarm cache has expired then do so, removing
+                // any expired/invalid caches
+                if (!checked_swarm_expiration && line.find('|') != std::string::npos) {
+                    auto swarm_last_updated =
+                            std::chrono::system_clock::from_time_t(std::stoi(line));
+                    swarm_lifetime = std::chrono::duration_cast<std::chrono::seconds>(
+                            time_now - swarm_last_updated);
+                    checked_swarm_expiration = true;
+
+                    if (swarm_lifetime < swarm_cache_expiration_duration)
+                        throw std::runtime_error{"Expired swarm cache."};
+                }
+
+                // Otherwise try to parse as a node
+                nodes.push_back(node_from_disk(line).first);
             } catch (...) {
-                oxen::log::warning(log_cat, "Skipping invalid entry in snode pool cache.");
+                oxen::log::warning(log_cat, "Skipping invalid or expired entry in swarm cache.");
+
+                // The cache is invalid, we should remove it
+                if (!checked_swarm_expiration) {
+                    caches_to_remove.emplace_back(entry.path());
+                    break;
+                }
             }
         }
 
-        loaded_cache[entry.path().filename()] = nodes;
+        // If we got nodes the add it to the cache, otherwise we want to remove it
+        if (!nodes.empty())
+            loaded_cache[entry.path().filename()] = nodes;
+        else
+            caches_to_remove.emplace_back(entry.path());
     }
 
     swarm_cache = loaded_cache;
+
+    // Remove any expired cache files
+    for (auto& cache_path : caches_to_remove)
+        std::filesystem::remove_all(cache_path);
 
     oxen::log::info(
             log_cat,
@@ -255,6 +337,7 @@ void Network::load_cache_from_disk() {
             snode_pool.size(),
             swarm_cache.size());
 }
+
 void Network::start_disk_write_thread() {
     std::unique_lock lock{snode_cache_mutex};
     while (true) {
@@ -264,6 +347,7 @@ void Network::start_disk_write_thread() {
             // Make local copies so that we can release the lock and not
             // worry about other threads wanting to change things:
             auto snode_pool_write = snode_pool;
+            auto snode_failure_counts_write = snode_failure_counts;
             auto last_pool_update_write = last_snode_pool_update;
             auto swarm_cache_write = swarm_cache;
 
@@ -279,7 +363,7 @@ void Network::start_disk_write_thread() {
                     std::filesystem::remove(pool_path + "_new");
                     std::ofstream file{pool_path + "_new"};
                     for (auto& snode : snode_pool_write)
-                        file << snode.serialise() << '\n';
+                        file << node_to_disk(snode, snode_failure_counts_write) << '\n';
 
                     std::filesystem::remove(pool_path);
                     std::filesystem::rename(pool_path + "_new", pool_path);
@@ -293,12 +377,19 @@ void Network::start_disk_write_thread() {
 
                 // Write the swarm cache to disk
                 if (need_swarm_write) {
+                    auto time_now = std::chrono::system_clock::now();
+
                     for (auto& [key, swarm] : swarm_cache_write) {
                         auto swarm_path = cache_path + swarm_dir + "/" + key;
                         std::filesystem::remove(swarm_path + "_new");
                         std::ofstream swarm_file{swarm_path + "_new"};
+
+                        // Write the timestamp to the file
+                        swarm_file << std::chrono::system_clock::to_time_t(time_now) << '\n';
+
+                        // Write the nodes to the file
                         for (auto& snode : swarm)
-                            swarm_file << snode.serialise() << '\n';
+                            swarm_file << node_to_disk(snode, snode_failure_counts_write) << '\n';
 
                         std::filesystem::remove(cache_path + swarm_dir + "/" + key);
                         std::filesystem::rename(swarm_path + "_new", swarm_path);
@@ -896,10 +987,7 @@ void Network::get_service_nodes(
     nlohmann::json params{
             {"active_only", true},
             {"fields",
-             {{"public_ip", true},
-              {"pubkey_ed25519", true},
-              {"pubkey_x25519", true},
-              {"storage_lmq_port", true}}}};
+             {{"public_ip", true}, {"pubkey_ed25519", true}, {"storage_lmq_port", true}}}};
 
     if (limit)
         params["limit"] = *limit;
@@ -927,8 +1015,13 @@ void Network::get_service_nodes(
                     std::vector<service_node> result;
                     auto node = result_dict.consume_list_consumer();
 
-                    while (!node.is_finished())
-                        result.emplace_back(node.consume_dict_consumer());
+                    while (!node.is_finished()) {
+                        auto node_consumer = node.consume_dict_consumer();
+                        result.emplace_back(
+                                oxenc::from_hex(node_consumer.consume_string()),  // pubkey_ed25519
+                                node_consumer.consume_string(),                   // public_ip
+                                node_consumer.consume_integer<uint16_t>());  // storage_lmq_port
+                    }
 
                     // Output the result
                     cb(result, std::nullopt);
@@ -978,13 +1071,13 @@ void Network::get_version(
 }
 
 void Network::get_swarm(
-        std::string swarm_pubkey_hex,
+        session::onionreq::x25519_pubkey swarm_pubkey,
         std::function<void(std::vector<service_node> swarm)> callback) {
     auto cached_swarm =
-            net.call_get([this, swarm_pubkey_hex]() -> std::optional<std::vector<service_node>> {
-                if (!swarm_cache.contains(swarm_pubkey_hex))
+            net.call_get([this, swarm_pubkey]() -> std::optional<std::vector<service_node>> {
+                if (!swarm_cache.contains(swarm_pubkey.hex()))
                     return std::nullopt;
-                return swarm_cache[swarm_pubkey_hex];
+                return swarm_cache[swarm_pubkey.hex()];
             });
 
     // If we have a cached swarm then return it
@@ -992,8 +1085,7 @@ void Network::get_swarm(
         return callback(*cached_swarm);
 
     // Pick a random node from the snode pool to fetch the swarm from
-    with_snode_pool([this, swarm_pubkey_hex, cb = std::move(callback)](
-                            std::vector<service_node> pool) {
+    with_snode_pool([this, swarm_pubkey, cb = std::move(callback)](std::vector<service_node> pool) {
         if (pool.empty())
             return cb({});
 
@@ -1002,18 +1094,19 @@ void Network::get_swarm(
         std::shuffle(updated_pool.begin(), updated_pool.end(), rng);
         auto node = updated_pool.front();
 
-        nlohmann::json params{{"pubkey", swarm_pubkey_hex}};
+        nlohmann::json params{{"pubkey", "05" + swarm_pubkey.hex()}};
         nlohmann::json payload{
                 {"method", "get_swarm"},
                 {"params", params},
         };
 
         send_onion_request(
-                SnodeDestination{node, swarm_pubkey_hex},
+                node,
                 ustring{oxen::quic::to_usv(payload.dump())},
+                swarm_pubkey,
                 oxen::quic::DEFAULT_TIMEOUT,
                 false,
-                [this, swarm_pubkey_hex, cb = std::move(cb)](
+                [this, swarm_pubkey, cb = std::move(cb)](
                         bool success, bool timeout, int16_t, std::optional<std::string> response) {
                     if (!success || timeout || !response)
                         return cb({});
@@ -1028,16 +1121,16 @@ void Network::get_swarm(
                             throw std::runtime_error{"JSON missing swarm field."};
 
                         for (auto& snode : response_json["snodes"])
-                            swarm.emplace_back(snode);
+                            swarm.emplace_back(node_from_json(snode));
                     } catch (...) {
                         return cb({});
                     }
 
                     // Update the cache
-                    net.call([this, swarm_pubkey_hex, swarm]() mutable {
+                    net.call([this, swarm_pubkey, swarm]() mutable {
                         {
                             std::lock_guard lock{snode_cache_mutex};
-                            swarm_cache[swarm_pubkey_hex] = swarm;
+                            swarm_cache[swarm_pubkey.hex()] = swarm;
                             need_swarm_write = true;
                             need_write = true;
                         }
@@ -1046,6 +1139,19 @@ void Network::get_swarm(
 
                     cb(swarm);
                 });
+    });
+}
+
+void Network::set_swarm(
+        session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm) {
+    net.call([this, swarm_pubkey, swarm]() mutable {
+        {
+            std::lock_guard lock{snode_cache_mutex};
+            swarm_cache[swarm_pubkey.hex()] = swarm;
+            need_swarm_write = true;
+            need_write = true;
+        }
+        snode_cache_cv.notify_one();
     });
 }
 
@@ -1096,13 +1202,19 @@ void Network::send_request(
 void Network::send_onion_request(
         network_destination destination,
         std::optional<ustring> body,
+        std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
         std::chrono::milliseconds timeout,
         bool is_retry,
         network_response_callback_t handle_response) {
     with_path(
             node_for_destination(destination),
-            [this, destination, body, timeout, is_retry, cb = std::move(handle_response)](
-                    std::optional<onion_path> path) {
+            [this,
+             destination,
+             body,
+             swarm_pubkey,
+             timeout,
+             is_retry,
+             cb = std::move(handle_response)](std::optional<onion_path> path) {
                 if (!path)
                     return cb(false, false, -1, "No valid onion paths.");
 
@@ -1110,11 +1222,12 @@ void Network::send_onion_request(
                     // Construct the onion request
                     auto builder = Builder();
                     builder.set_destination(destination);
+                    builder.set_destination_pubkey(pubkey_for_destination(destination));
 
                     for (auto& node : path->nodes)
                         builder.add_hop(
                                 {ed25519_pubkey::from_bytes(node.view_remote_key()),
-                                 node.x25519_pubkey});
+                                 compute_xpk(node.view_remote_key())});
 
                     auto payload = builder.generate_payload(body);
                     auto onion_req_payload = builder.build(payload);
@@ -1123,7 +1236,7 @@ void Network::send_onion_request(
                             path->nodes[0],
                             "onion_req",
                             onion_req_payload,
-                            swarm_pubkey_for_destination(destination),
+                            swarm_pubkey,
                             *path,
                             timeout,
                             is_retry};
@@ -1145,7 +1258,7 @@ void Network::send_onion_request(
                                             builder.enc_type, response->size()))
                                     return handle_errors(info, status_code, response, cb);
 
-                                if (std::holds_alternative<SnodeDestination>(destination))
+                                if (std::holds_alternative<service_node>(destination))
                                     process_snode_response(builder, *response, info, cb);
                                 else if (std::holds_alternative<ServerDestination>(destination))
                                     process_server_response(builder, *response, info, cb);
@@ -1354,7 +1467,7 @@ void Network::handle_errors(
 
                 auto cached_swarm = net.call_get(
                         [this, swarm_pubkey = *info.swarm_pubkey]() -> std::vector<service_node> {
-                            return swarm_cache[swarm_pubkey];
+                            return swarm_cache[swarm_pubkey.hex()];
                         });
 
                 if (cached_swarm.empty())
@@ -1381,8 +1494,9 @@ void Network::handle_errors(
                         throw std::invalid_argument{"No other nodes in the swarm."};
 
                     return send_onion_request(
-                            SnodeDestination{*random_node, info.swarm_pubkey},
+                            *random_node,
                             info.body,
+                            info.swarm_pubkey,
                             info.timeout,
                             true,
                             (*handle_response));
@@ -1400,7 +1514,7 @@ void Network::handle_errors(
                 std::vector<session::network::service_node> swarm;
 
                 for (auto snode : snodes)
-                    swarm.emplace_back(snode);
+                    swarm.emplace_back(node_from_json(snode));
 
                 if (swarm.empty())
                     throw std::invalid_argument{"No snodes in the response."};
@@ -1409,7 +1523,7 @@ void Network::handle_errors(
                 net.call([this, swarm_pubkey = *info.swarm_pubkey, swarm]() mutable {
                     {
                         std::lock_guard lock{snode_cache_mutex};
-                        swarm_cache[swarm_pubkey] = swarm;
+                        swarm_cache[swarm_pubkey.hex()] = swarm;
                         need_swarm_write = true;
                         need_write = true;
                     }
@@ -1428,6 +1542,8 @@ void Network::handle_errors(
     }
 
     // Check if we got an error specifying the specific node that failed
+    auto updated_failure_counts = net.call_get(
+            [this]() -> std::unordered_map<std::string, uint8_t> { return snode_failure_counts; });
     auto updated_path = info.path;
     bool found_invalid_node = false;
 
@@ -1444,13 +1560,13 @@ void Network::handle_errors(
                     updated_path.nodes.end(),
                     [&edpk_view](const auto& node) { return node.view_remote_key() == edpk_view; });
 
-            // Increment the failure count for the snode
+            // If we found an invalid node then store it to increment the failure count
             if (snode_it != updated_path.nodes.end()) {
-                snode_it->failure_count += 1;
                 found_invalid_node = true;
 
-                if (snode_it->failure_count >= snode_failure_threshold)
-                    snode_it->invalid = true;
+                auto failure_count =
+                        updated_failure_counts.try_emplace(snode_it->to_string(), 0).first->second;
+                updated_failure_counts[snode_it->to_string()] = failure_count + 1;
             }
         }
     }
@@ -1458,21 +1574,20 @@ void Network::handle_errors(
     // If we didn't find the specific node or the paths connection was closed then increment the
     // path failure count
     if (!found_invalid_node || !updated_path.conn_info.is_valid()) {
-        // Increment the path failure count
         updated_path.failure_count += 1;
 
         // If the path has failed too many times we want to drop the guard snode
         // (marking it as invalid) and increment the failure count of each node in the
         // path
         if (updated_path.failure_count >= path_failure_threshold) {
-            updated_path.nodes[0].invalid = true;
-
             for (auto& it : updated_path.nodes) {
-                it.failure_count += 1;
-
-                if (it.failure_count >= snode_failure_threshold)
-                    it.invalid = true;
+                auto failure_count =
+                        updated_failure_counts.try_emplace(it.to_string(), 0).first->second;
+                updated_failure_counts[it.to_string()] = failure_count + 1;
             }
+
+            // Set the failure count of the guard node to match the threshold so we drop it
+            updated_failure_counts[updated_path.nodes[0].to_string()] = snode_failure_threshold;
         }
     }
 
@@ -1480,9 +1595,10 @@ void Network::handle_errors(
     net.call([this,
               swarm_pubkey = info.swarm_pubkey,
               old_path = info.path,
+              updated_failure_counts,
               updated_path]() mutable {
-        // Drop the path if it's guard node is invalid
-        if (updated_path.nodes[0].invalid) {
+        // Drop the path if invalid
+        if (updated_path.failure_count >= path_failure_threshold) {
             oxen::log::info(log_cat, "Dropping path.");
             paths.erase(std::remove(paths.begin(), paths.end(), old_path), paths.end());
         } else
@@ -1496,21 +1612,22 @@ void Network::handle_errors(
             std::lock_guard lock{snode_cache_mutex};
 
             for (size_t i = 0; i < updated_path.nodes.size(); ++i)
-                if (updated_path.nodes[i].invalid) {
+                if (updated_failure_counts.try_emplace(updated_path.nodes[i].to_string(), 0)
+                            .first->second >= snode_failure_threshold) {
                     snode_pool.erase(
                             std::remove(snode_pool.begin(), snode_pool.end(), old_path.nodes[i]),
                             snode_pool.end());
 
                     if (swarm_pubkey)
-                        if (swarm_cache.contains(*swarm_pubkey)) {
-                            auto updated_swarm = swarm_cache[*swarm_pubkey];
+                        if (swarm_cache.contains(swarm_pubkey->hex())) {
+                            auto updated_swarm = swarm_cache[swarm_pubkey->hex()];
                             updated_swarm.erase(
                                     std::remove(
                                             updated_swarm.begin(),
                                             updated_swarm.end(),
                                             old_path.nodes[i]),
                                     updated_swarm.end());
-                            swarm_cache[*swarm_pubkey] = updated_swarm;
+                            swarm_cache[swarm_pubkey->hex()] = updated_swarm;
                         }
                 } else
                     std::replace(
@@ -1519,8 +1636,9 @@ void Network::handle_errors(
                             old_path.nodes[i],
                             updated_path.nodes[i]);
 
+            snode_failure_counts = updated_failure_counts;
             need_pool_write = true;
-            need_swarm_write = (swarm_pubkey && swarm_cache.contains(*swarm_pubkey));
+            need_swarm_write = (swarm_pubkey && swarm_cache.contains(swarm_pubkey->hex()));
             need_write = true;
         }
         snode_cache_cv.notify_one();
@@ -1530,6 +1648,36 @@ void Network::handle_errors(
         (*handle_response)(false, false, status_code, response);
 }
 
+uint8_t Network::get_failure_count(service_node node) {
+    return net.call_get([this, node]() -> uint8_t {
+        return snode_failure_counts.try_emplace(node.to_string(), 0).first->second;
+    });
+}
+
+void Network::set_failure_count(service_node node, uint8_t failure_count) {
+    net.call([this, node, failure_count]() mutable {
+        snode_failure_counts[node.to_string()] = failure_count;
+    });
+}
+
+void Network::set_paths(std::vector<onion_path> paths_) {
+    net.call([this, paths_]() mutable { paths = paths_; });
+}
+
+uint8_t Network::get_failure_count(onion_path path) {
+    auto current_paths = net.call_get([this, path]() -> std::vector<onion_path> { return paths; });
+
+    auto target_path =
+            std::find_if(current_paths.begin(), current_paths.end(), [&path](const auto& path_it) {
+                return path_it.nodes[0] == path.nodes[0];
+            });
+
+    if (target_path != current_paths.end())
+        return target_path->failure_count;
+
+    return 0;
+}
+
 std::vector<network_service_node> convert_service_nodes(
         std::vector<session::network::service_node> nodes) {
     std::vector<network_service_node> converted_nodes;
@@ -1537,13 +1685,9 @@ std::vector<network_service_node> convert_service_nodes(
         auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
         network_service_node converted_node;
         std::memcpy(converted_node.ip, node.host().data(), sizeof(converted_node.ip));
-        strncpy(converted_node.x25519_pubkey_hex, node.x25519_pubkey.hex().c_str(), 64);
         strncpy(converted_node.ed25519_pubkey_hex, ed25519_pubkey_hex.c_str(), 64);
-        converted_node.x25519_pubkey_hex[64] = '\0';   // Ensure null termination
         converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
         converted_node.quic_port = node.port();
-        converted_node.failure_count = node.failure_count;
-        converted_node.invalid = node.invalid;
         converted_nodes.push_back(converted_node);
     }
 
@@ -1669,7 +1813,8 @@ LIBSESSION_C_API void network_get_swarm(
         void* ctx) {
     assert(swarm_pubkey_hex && callback);
     unbox(network).get_swarm(
-            swarm_pubkey_hex, [cb = std::move(callback), ctx](std::vector<service_node> nodes) {
+            x25519_pubkey::from_hex({swarm_pubkey_hex, 64}),
+            [cb = std::move(callback), ctx](std::vector<service_node> nodes) {
                 auto c_nodes = session::network::convert_service_nodes(nodes);
                 cb(c_nodes.data(), c_nodes.size(), ctx);
             });
@@ -1710,22 +1855,20 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
         if (body_size > 0)
             body = {body_, body_size};
 
-        std::optional<std::string> swarm_pubkey;
+        std::optional<x25519_pubkey> swarm_pubkey;
         if (swarm_pubkey_hex)
-            swarm_pubkey = std::string(swarm_pubkey_hex);
+            swarm_pubkey = x25519_pubkey::from_hex({swarm_pubkey_hex, 64});
 
         std::array<uint8_t, 4> ip;
         std::memcpy(ip.data(), node.ip, ip.size());
 
         unbox(network).send_onion_request(
-                SnodeDestination{
-                        {{node.ed25519_pubkey_hex, 64},
-                         {node.x25519_pubkey_hex, 64},
-                         "{}"_format(fmt::join(ip, ".")),
-                         node.quic_port,
-                         node.failure_count},
-                        swarm_pubkey},
+                service_node{
+                        oxenc::from_hex({node.ed25519_pubkey_hex, 64}),
+                        "{}"_format(fmt::join(ip, ".")),
+                        node.quic_port},
                 body,
+                swarm_pubkey,
                 std::chrono::milliseconds{timeout_ms},
                 false,
                 [callback, ctx](
@@ -1780,6 +1923,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                         headers,
                         server.method},
                 body,
+                std::nullopt,
                 std::chrono::milliseconds{timeout_ms},
                 false,
                 [callback, ctx](

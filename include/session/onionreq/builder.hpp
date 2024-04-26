@@ -1,17 +1,12 @@
 #pragma once
 
+#include <oxen/quic/address.hpp>
 #include <string>
 #include <string_view>
 
-#include "../network_service_node.hpp"
 #include "key_types.hpp"
 
 namespace session::onionreq {
-
-struct SnodeDestination {
-    session::network::service_node node;
-    std::optional<std::string> swarm_pubkey;
-};
 
 struct ServerDestination {
     std::string protocol;
@@ -39,7 +34,7 @@ struct ServerDestination {
             method{std::move(method)} {}
 };
 
-using network_destination = std::variant<SnodeDestination, ServerDestination>;
+using network_destination = std::variant<oxen::quic::RemoteAddress, ServerDestination>;
 
 enum class EncryptType {
     aes_gcm,
@@ -70,8 +65,7 @@ class Builder {
     void set_enc_type(EncryptType enc_type_) { enc_type = enc_type_; }
 
     void set_destination(network_destination destination);
-    std::optional<session::network::service_node> node_for_destination(
-            network_destination destination);
+    void set_destination_pubkey(session::onionreq::x25519_pubkey x25519_pubkey);
     void add_hop(std::pair<ed25519_pubkey, x25519_pubkey> keys) { hops_.push_back(keys); }
 
     ustring generate_payload(std::optional<ustring> body) const;

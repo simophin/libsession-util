@@ -17,7 +17,9 @@
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <oxen/log.hpp>
 #include <oxen/log/format.hpp>
+#include <oxen/quic/address.hpp>
 
 #include "session/export.h"
 #include "session/onionreq/builder.h"
@@ -51,13 +53,11 @@ EncryptType parse_enc_type(std::string_view enc_type) {
 }
 
 void Builder::set_destination(network_destination destination) {
-    destination_x25519_public_key.reset();
     ed25519_public_key_.reset();
 
-    if (auto* dest = std::get_if<SnodeDestination>(&destination)) {
-        destination_x25519_public_key.emplace(dest->node.x25519_pubkey);
-        ed25519_public_key_.emplace(ed25519_pubkey::from_bytes(dest->node.view_remote_key()));
-    } else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
+    if (auto* dest = std::get_if<oxen::quic::RemoteAddress>(&destination))
+        ed25519_public_key_.emplace(ed25519_pubkey::from_bytes(dest->view_remote_key()));
+    else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
         host_.emplace(dest->host);
         endpoint_.emplace(dest->endpoint);
         protocol_.emplace(dest->protocol);
@@ -68,10 +68,13 @@ void Builder::set_destination(network_destination destination) {
 
         if (dest->headers)
             headers_.emplace(*dest->headers);
-
-        destination_x25519_public_key.emplace(dest->x25519_pubkey);
     } else
         throw std::invalid_argument{"Invalid destination type."};
+}
+
+void Builder::set_destination_pubkey(session::onionreq::x25519_pubkey x25519_pubkey) {
+    destination_x25519_public_key.reset();
+    destination_x25519_public_key.emplace(x25519_pubkey);
 }
 
 ustring Builder::generate_payload(std::optional<ustring> body) const {
@@ -275,22 +278,16 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
         const uint8_t ip[4],
         const uint16_t quic_port,
-        const char* x25519_pubkey,
-        const char* ed25519_pubkey,
-        const uint8_t failure_count) {
-    assert(builder && ip && x25519_pubkey && ed25519_pubkey);
+        const char* ed25519_pubkey) {
+    assert(builder && ip && ed25519_pubkey);
 
     std::array<uint8_t, 4> target_ip;
     std::memcpy(target_ip.data(), ip, target_ip.size());
 
-    auto node = session::network::service_node{
-            {ed25519_pubkey, 64},
-            {x25519_pubkey, 64},
+    unbox(builder).set_destination(oxen::quic::RemoteAddress(
+            oxenc::from_hex({ed25519_pubkey, 64}),
             "{}"_format(fmt::join(target_ip, ".")),
-            quic_port,
-            failure_count,
-            false};
-    unbox(builder).set_destination(session::onionreq::SnodeDestination{node, std::nullopt});
+            quic_port));
 }
 
 LIBSESSION_C_API void onion_request_builder_set_server_destination(
@@ -301,7 +298,7 @@ LIBSESSION_C_API void onion_request_builder_set_server_destination(
         const char* method,
         uint16_t port,
         const char* x25519_pubkey) {
-    assert(builder && protocol && host && endpoint && x25519_pubkey);
+    assert(builder && protocol && host && endpoint && protocol && x25519_pubkey);
 
     unbox(builder).set_destination(session::onionreq::ServerDestination{
             protocol,
@@ -311,6 +308,14 @@ LIBSESSION_C_API void onion_request_builder_set_server_destination(
             port,
             std::nullopt,
             method});
+}
+
+LIBSESSION_C_API void onion_request_builder_set_destination_pubkey(
+        onion_request_builder_object* builder, const char* x25519_pubkey) {
+    assert(builder && x25519_pubkey);
+
+    unbox(builder).set_destination_pubkey(
+            session::onionreq::x25519_pubkey::from_hex({x25519_pubkey, 64}));
 }
 
 LIBSESSION_C_API void onion_request_builder_add_hop(

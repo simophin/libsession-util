@@ -92,7 +92,6 @@ add_libsession_util_library(onionreq
     onionreq/parser.cpp
     onionreq/response_parser.cpp
     network.cpp
-    network_service_node.cpp
 )
 
 target_link_libraries(onionreq

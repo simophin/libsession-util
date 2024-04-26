@@ -8,7 +8,6 @@ extern "C" {
 #include <stddef.h>
 
 #include "../export.h"
-#include "../network_service_node.h"
 
 typedef enum ENCRYPT_TYPE {
     ENCRYPT_TYPE_AES_GCM = 0,
@@ -53,15 +52,11 @@ LIBSESSION_EXPORT void onion_request_builder_set_enc_type(
 /// - `ip` -- [in] The IP address for the snode destination
 /// - `quic_port` -- [in] The Quic port request for the snode destination
 /// - `ed25519_pubkey` -- [in] The ed25519 public key for the snode destination
-/// - `x25519_pubkey` -- [in] The x25519 public key for the snode destination
-/// - `failure_count` -- [in] The number of times requests to this service node have failed
 LIBSESSION_EXPORT void onion_request_builder_set_snode_destination(
         onion_request_builder_object* builder,
         const uint8_t ip[4],
         const uint16_t quic_port,
-        const char* x25519_pubkey,
-        const char* ed25519_pubkey,
-        const uint8_t failure_count);
+        const char* ed25519_pubkey);
 
 /// API: onion_request_builder_set_server_destination
 ///
@@ -84,6 +79,17 @@ LIBSESSION_EXPORT void onion_request_builder_set_server_destination(
         const char* method,
         uint16_t port,
         const char* x25519_pubkey);
+
+/// API: onion_request_builder_set_destination_pubkey
+///
+/// Wrapper around session::onionreq::Builder::set_destination_pubkey.
+///
+/// Inputs:
+/// - `builder` -- [in] Pointer to the builder object
+/// - `x25519_pubkey` -- [in] The x25519 public key for server (Hex string of exactly 64
+/// characters).
+LIBSESSION_EXPORT void onion_request_builder_set_destination_pubkey(
+        onion_request_builder_object* builder, const char* x25519_pubkey);
 
 /// API: onion_request_builder_add_hop
 ///

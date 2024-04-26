@@ -5,12 +5,15 @@
 #include <oxen/log.hpp>
 #include <oxen/quic.hpp>
 
-#include "network_service_node.hpp"
 #include "session/onionreq/builder.hpp"
 #include "session/onionreq/key_types.hpp"
 #include "session/types.hpp"
 
 namespace session::network {
+
+using service_node = oxen::quic::RemoteAddress;
+using network_response_callback_t = std::function<void(
+        bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
 
 enum class ConnectionStatus {
     unknown = 0,
@@ -20,7 +23,7 @@ enum class ConnectionStatus {
 };
 
 struct connection_info {
-    session::network::service_node node;
+    service_node node;
     std::shared_ptr<oxen::quic::connection_interface> conn;
     std::shared_ptr<oxen::quic::BTRequestStream> stream;
 
@@ -29,7 +32,7 @@ struct connection_info {
 
 struct onion_path {
     connection_info conn_info;
-    std::vector<session::network::service_node> nodes;
+    std::vector<service_node> nodes;
     uint8_t failure_count;
 
     bool operator==(const onion_path& other) const {
@@ -41,14 +44,11 @@ struct request_info {
     service_node target;
     std::string endpoint;
     std::optional<ustring> body;
-    std::optional<std::string> swarm_pubkey;
+    std::optional<session::onionreq::x25519_pubkey> swarm_pubkey;
     onion_path path;
     std::chrono::milliseconds timeout;
     bool is_retry;
 };
-
-using network_response_callback_t = std::function<void(
-        bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
 
 class Network {
   private:
@@ -67,6 +67,7 @@ class Network {
 
     // Values persisted to disk
     std::vector<service_node> snode_pool;
+    std::unordered_map<std::string, uint8_t> snode_failure_counts;
     std::chrono::system_clock::time_point last_snode_pool_update;
     std::unordered_map<std::string, std::vector<service_node>> swarm_cache;
 
@@ -114,12 +115,21 @@ class Network {
     /// swarm and save it to the cache.
     ///
     /// Inputs:
-    /// - 'swarm_pubkey_hex' - [in] includes the prefix.
+    /// - 'swarm_pubkey' - [in] public key for the swarm.
     /// - 'callback' - [in] callback to be called with the retrieved swarm (in the case of an error
     /// the callback will be called with an empty list).
     void get_swarm(
-            std::string swarm_pubkey_hex,
+            session::onionreq::x25519_pubkey swarm_pubkey,
             std::function<void(std::vector<service_node> swarm)> callback);
+
+    /// API: network/set_swarm
+    ///
+    /// Update the nodes to be used for a swarm.  This function should never be called directly.
+    ///
+    /// Inputs:
+    /// - 'swarm_pubkey' - [in] public key for the swarm.
+    /// - `swarm` -- [in] nodes for the swarm.
+    void set_swarm(session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm);
 
     /// API: network/get_random_nodes
     ///
@@ -151,6 +161,8 @@ class Network {
     /// Inputs:
     /// - `destination` -- [in] service node or server destination information.
     /// - `body` -- [in] data to send to the specified destination.
+    /// - `swarm_pubkey` -- [in, optional] pubkey for the swarm the request is associated with.
+    /// Should be NULL if the request is not associated with a swarm.
     /// - `timeout` -- [in] timeout in milliseconds to use for the request.
     /// - `is_retry` -- [in] flag indicating whether this request is a retry. Generally only used
     /// for internal purposes for cases which should retry automatically (like receiving a `421`) in
@@ -159,6 +171,7 @@ class Network {
     void send_onion_request(
             onionreq::network_destination destination,
             std::optional<ustring> body,
+            std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
             std::chrono::milliseconds timeout,
             bool is_retry,
             network_response_callback_t handle_response);
@@ -195,6 +208,40 @@ class Network {
             std::optional<int16_t> status_code,
             std::optional<std::string> response,
             std::optional<network_response_callback_t> handle_response);
+
+    /// API: network/get_failure_count
+    ///
+    /// Retrieves the current failure count for a given node, returns 0 if it is not present.
+    ///
+    /// Inputs:
+    /// - `node` -- [in] the node to get the failure count for.
+    uint8_t get_failure_count(service_node node);
+
+    /// API: network/set_failure_count
+    ///
+    /// Updated the failure count for a given node.
+    ///
+    /// Inputs:
+    /// - `node` -- [in] the node to get the failure count for.
+    /// - `failure_count` -- [in] the failure count to set the node to.
+    void set_failure_count(service_node node, uint8_t failure_count);
+
+    /// API: network/set_paths
+    ///
+    /// Update the paths to be used for sending onion requests.  This function should never be
+    /// called directly.
+    ///
+    /// Inputs:
+    /// - `paths` -- [in] paths to use.
+    void set_paths(std::vector<onion_path> paths);
+
+    /// API: network/get_failure_count
+    ///
+    /// Retrieves the current failure count for a given path, returns 0 if it is not present.
+    ///
+    /// Inputs:
+    /// - `path` -- [in] the path to get the failure count for.
+    uint8_t get_failure_count(onion_path path);
 
   private:
     /// API: network/update_status
