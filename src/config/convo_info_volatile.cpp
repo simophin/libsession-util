@@ -235,10 +235,9 @@ void ConvoInfoVolatile::set_base(const convo::base& c, DictFieldProxy& info) {
 }
 
 void ConvoInfoVolatile::prune_stale(std::chrono::milliseconds prune) {
-    const int64_t cutoff =
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                    (std::chrono::system_clock::now() - PRUNE_HIGH).time_since_epoch())
-                    .count();
+    const int64_t cutoff = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   (std::chrono::system_clock::now() - prune).time_since_epoch())
+                                   .count();
 
     std::vector<std::string> stale;
     for (auto it = begin_1to1(); it != end(); ++it)

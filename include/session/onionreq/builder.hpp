@@ -3,6 +3,7 @@
 #include <oxen/quic/address.hpp>
 #include <string>
 #include <string_view>
+#include <variant>
 
 #include "key_types.hpp"
 

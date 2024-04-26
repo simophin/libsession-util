@@ -1092,7 +1092,7 @@ bool Keys::load_key_message(
         }
     }
 
-    verify_config_sig(d, data, verifier_);
+    verify_config_sig(d, verifier_);
 
     // If this is our pending config or this has a later generation than our pending config then
     // drop our pending status.

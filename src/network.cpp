@@ -88,11 +88,13 @@ namespace {
         if (parts.size() != 4)
             throw std::invalid_argument("Invalid service node serialisation: " + std::string(str));
 
+        uint16_t port = std::stoul(std::string{parts[1]});
+
         return {
                 {
-                        oxenc::from_hex(parts[2]),                                 // ed25519_pubkey
-                        std::string(parts[0]),                                     // ip
-                        static_cast<uint16_t>(std::stoul(std::string{parts[1]})),  // port
+                        oxenc::from_hex(parts[2]),  // ed25519_pubkey
+                        std::string(parts[0]),      // ip
+                        port,                       // port
                 },
                 std::stoul(std::string{parts[3]})  // failure_count
         };

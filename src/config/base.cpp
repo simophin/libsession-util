@@ -205,7 +205,7 @@ std::vector<std::string> ConfigBase::_merge(
     // - confs that failed to parse (we can't understand them, so leave them behind as they may be
     //   some future message).
     int superconf = new_conf->unmerged_index();  // -1 if we had to merge
-    for (int i = 0; i < all_hashes.size(); i++) {
+    for (size_t i = 0; i < all_hashes.size(); i++) {
         if (i != superconf && !bad_confs.count(i) && !all_hashes[i].empty())
             _old_hashes.emplace(all_hashes[i]);
     }

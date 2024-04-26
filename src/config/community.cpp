@@ -277,6 +277,5 @@ LIBSESSION_C_API void community_make_full_url(
     auto full =
             session::config::community::full_url(base_url, room, session::ustring_view{pubkey, 32});
     assert(full.size() <= COMMUNITY_FULL_URL_MAX_LENGTH);
-    size_t pos = 0;
     std::memcpy(full_url, full.data(), full.size() + 1);
 }

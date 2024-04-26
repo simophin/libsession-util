@@ -381,7 +381,6 @@ class MutableConfigMessage : public ConfigMessage {
 /// - throws on failure
 void verify_config_sig(
         oxenc::bt_dict_consumer dict,
-        ustring_view config_msg,
         const ConfigMessage::verify_callable& verifier,
         std::optional<std::array<unsigned char, 64>>* verified_signature = nullptr,
         bool trust_signature = false);

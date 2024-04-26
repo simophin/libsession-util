@@ -105,8 +105,9 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(network.get_failure_count(target) == 3);  // Guard node should be set to failure threshold
-    CHECK(network.get_failure_count(target2) == 1); // Other nodes get their failure count incremented
-    CHECK(network.get_failure_count(path) == 0);    // Path will have been dropped and reset
+    CHECK(network.get_failure_count(target2) ==
+          1);                                     // Other nodes get their failure count incremented
+    CHECK(network.get_failure_count(path) == 0);  // Path will have been dropped and reset
 
     // Check general error handling with a path and specific node failure (first failure)
     path = onion_path{{{target}, nullptr, nullptr}, {target, target2}, 0};
@@ -183,7 +184,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(path) == 0);
 
     // Check the retry request of a 421 with no response data is handled like any other error
-    auto mock_request5 = request_info{target, "test", std::nullopt, x25519_pubkey::from_hex(x_pk_hex), path, 0ms, true};
+    auto mock_request5 = request_info{
+            target, "test", std::nullopt, x25519_pubkey::from_hex(x_pk_hex), path, 0ms, true};
     network.set_paths({path});
     network.set_failure_count(target, 0);
     network.handle_errors(
@@ -250,7 +252,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(target) == 0);
     CHECK(network.get_failure_count(path) == 0);
 
-    network.get_swarm(x25519_pubkey::from_hex(x_pk_hex), [ed_pk](std::vector<service_node> swarm){
+    network.get_swarm(x25519_pubkey::from_hex(x_pk_hex), [ed_pk](std::vector<service_node> swarm) {
         REQUIRE(swarm.size() == 1);
         CHECK(swarm.front().to_string() == "1.1.1.1:1");
         CHECK(oxenc::to_hex(swarm.front().view_remote_key()) == oxenc::to_hex(ed_pk));
