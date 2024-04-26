@@ -598,7 +598,6 @@ ustring Keys::swarm_make_subaccount(std::string_view session_id, bool write, boo
 
     auto X = session_id_pk(session_id);
     auto& c = _sign_sk;
-    auto& C = *_sign_pk;
 
     auto k = subaccount_blind_factor(X);
 
@@ -636,9 +635,6 @@ ustring Keys::swarm_subaccount_token(std::string_view session_id, bool write, bo
     // Similar to the above, but we only care about getting flags || kT
 
     auto X = session_id_pk(session_id);
-    auto& c = _sign_sk;
-    auto& C = *_sign_pk;
-
     auto k = subaccount_blind_factor(X);
 
     // T = |S|

@@ -89,6 +89,7 @@ namespace {
             throw std::invalid_argument("Invalid service node serialisation: " + std::string(str));
 
         uint16_t port = std::stoul(std::string{parts[1]});
+        uint8_t failure_count = std::stoul(std::string{parts[3]});
 
         return {
                 {
@@ -96,7 +97,7 @@ namespace {
                         std::string(parts[0]),      // ip
                         port,                       // port
                 },
-                std::stoul(std::string{parts[3]})  // failure_count
+                failure_count  // failure_count
         };
     }
 
