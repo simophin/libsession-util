@@ -287,7 +287,7 @@ std::optional<community_info> UserGroups::get_community(
         og.load(*info_dict);
         if (!pubkey.empty())
             og.set_pubkey(pubkey);
-        return std::move(og);
+        return og;
     }
     return std::nullopt;
 }

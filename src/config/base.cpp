@@ -233,7 +233,7 @@ std::vector<std::string> ConfigBase::_merge(
         } else {
             _config = std::move(new_conf);
             assert(((old_seqno == 0 && mine.empty()) || _config->unmerged_index() >= 1) &&
-                   _config->unmerged_index() < all_hashes.size());
+                   static_cast<size_t>(_config->unmerged_index()) < all_hashes.size());
             set_state(ConfigState::Clean);
             _curr_hash = all_hashes[_config->unmerged_index()];
         }

@@ -292,6 +292,7 @@ void Network::load_cache_from_disk() {
         std::string line;
         bool checked_swarm_expiration = false;
         std::chrono::seconds swarm_lifetime = 0s;
+        std::string path = entry.path();
 
         while (std::getline(file, line)) {
             try {
@@ -315,7 +316,7 @@ void Network::load_cache_from_disk() {
 
                 // The cache is invalid, we should remove it
                 if (!checked_swarm_expiration) {
-                    caches_to_remove.emplace_back(entry.path());
+                    caches_to_remove.emplace_back(path);
                     break;
                 }
             }
@@ -323,9 +324,9 @@ void Network::load_cache_from_disk() {
 
         // If we got nodes the add it to the cache, otherwise we want to remove it
         if (!nodes.empty())
-            loaded_cache[entry.path().filename()] = nodes;
+            loaded_cache[std::string(entry.path().filename())] = nodes;
         else
-            caches_to_remove.emplace_back(entry.path());
+            caches_to_remove.emplace_back(path);
     }
 
     swarm_cache = loaded_cache;
