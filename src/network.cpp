@@ -1902,7 +1902,8 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                 size_t response_size,
                 void*),
         void* ctx) {
-    assert(callback);
+    assert(server.method && server.protocol && server.host && server.endpoint &&
+           server.x25519_pubkey && callback);
 
     try {
         std::optional<std::vector<std::pair<std::string, std::string>>> headers;

@@ -697,8 +697,9 @@ LIBSESSION_EXPORT config_string_list* config_current_hashes(const config_object*
 
 LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size_t* len) {
     const auto keys = unbox(conf)->get_keys();
-    assert(std::count_if(keys.begin(), keys.end(), [](const auto& k) { return k.size() == 32; }) ==
-           keys.size());
+    assert(static_cast<size_t>(std::count_if(keys.begin(), keys.end(), [](const auto& k) {
+               return k.size() == 32;
+           })) == keys.size());
     assert(len);
     *len = keys.size();
     if (keys.empty())
