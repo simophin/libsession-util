@@ -292,7 +292,8 @@ void Network::load_cache_from_disk() {
         std::string line;
         bool checked_swarm_expiration = false;
         std::chrono::seconds swarm_lifetime = 0s;
-        std::string path = entry.path();
+        auto path = entry.path().string();
+        auto filename = entry.path().filename().string();
 
         while (std::getline(file, line)) {
             try {
@@ -324,7 +325,7 @@ void Network::load_cache_from_disk() {
 
         // If we got nodes the add it to the cache, otherwise we want to remove it
         if (!nodes.empty())
-            loaded_cache[std::string(entry.path().filename())] = nodes;
+            loaded_cache[filename] = nodes;
         else
             caches_to_remove.emplace_back(path);
     }
@@ -1936,8 +1937,16 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                         bool timeout,
                         int status_code,
                         std::optional<std::string> response) {
-                    callback(
-                            success, timeout, status_code, response->data(), response->size(), ctx);
+                    if (response)
+                        callback(
+                                success,
+                                timeout,
+                                status_code,
+                                (*response).c_str(),
+                                (*response).size(),
+                                ctx);
+                    else
+                        callback(success, timeout, status_code, nullptr, 0, ctx);
                 });
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
