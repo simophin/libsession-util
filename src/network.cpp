@@ -1881,8 +1881,16 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                         bool timeout,
                         int status_code,
                         std::optional<std::string> response) {
-                    callback(
-                            success, timeout, status_code, response->data(), response->size(), ctx);
+                    if (response)
+                        callback(
+                                success,
+                                timeout,
+                                status_code,
+                                (*response).c_str(),
+                                (*response).size(),
+                                ctx);
+                    else
+                        callback(success, timeout, status_code, nullptr, 0, ctx);
                 });
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
