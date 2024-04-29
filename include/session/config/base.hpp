@@ -159,7 +159,7 @@ class ConfigBase : public ConfigSig {
     std::string _curr_hash;
 
     // Contains obsolete known message hashes that are obsoleted by the most recent merge or push;
-    // these are returned (and cleared) when `push` is called.
+    // these are returned (and cleared) when `push` or `old_hashes` are called.
     std::unordered_set<std::string> _old_hashes;
 
   protected:
@@ -993,6 +993,18 @@ class ConfigBase : public ConfigSig {
     /// Outputs:
     /// - `std::vector<std::string>` -- Returns current config hashes
     std::vector<std::string> current_hashes() const;
+
+    /// API: base/ConfigBase::old_hashes
+    ///
+    /// The old config hash(es); this can be empty if there are no old hashes or if the config is in
+    /// a dirty state (in which case these should be retrieved via the `push` function). Calling
+    /// this function or the `push` function will clear the stored old_hashes.
+    ///
+    /// Inputs: None
+    ///
+    /// Outputs:
+    /// - `std::vector<std::string>` -- Returns old config hashes
+    std::vector<std::string> old_hashes();
 
     /// API: base/ConfigBase::needs_push
     ///

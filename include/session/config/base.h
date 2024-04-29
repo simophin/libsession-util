@@ -289,6 +289,33 @@ LIBSESSION_EXPORT config_string_list* config_current_hashes(const config_object*
 #endif
         ;
 
+/// API: base/config_old_hashes
+///
+/// Obtains the known old hashes.  Note that this will be empty if there are no old hashes or
+/// the config is in a dirty state (in which case these should be retrieved via the `push`
+/// function). Calling this function, or the `push` function, will clear the stored old_hashes.
+///
+/// The returned pointer belongs to the caller and must be freed via `free()` when done with it.
+///
+/// Declaration:
+/// ```cpp
+/// CONFIG_STRING_LIST* config_old_hashes(
+///     [in]    const config_object*          conf
+/// );
+///
+/// ```
+///
+/// Inputs:
+/// - `conf` -- [in] Pointer to config_object object
+///
+/// Outputs:
+/// - `config_string_list*` -- pointer to the list of hashes; the pointer belongs to the caller
+LIBSESSION_EXPORT config_string_list* config_old_hashes(config_object* conf)
+#ifdef __GNUC__
+        __attribute__((warn_unused_result))
+#endif
+        ;
+
 /// API: base/config_get_keys
 ///
 /// Obtains the current group decryption keys.

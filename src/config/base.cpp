@@ -259,6 +259,17 @@ std::vector<std::string> ConfigBase::current_hashes() const {
     return hashes;
 }
 
+std::vector<std::string> ConfigBase::old_hashes() {
+    std::vector<std::string> hashes;
+    if (!is_dirty()) {
+        for (auto& old : _old_hashes)
+            hashes.push_back(std::move(old));
+        _old_hashes.clear();
+    }
+
+    return hashes;
+}
+
 bool ConfigBase::needs_push() const {
     return !is_clean();
 }
@@ -693,6 +704,10 @@ LIBSESSION_EXPORT bool config_needs_dump(const config_object* conf) {
 
 LIBSESSION_EXPORT config_string_list* config_current_hashes(const config_object* conf) {
     return make_string_list(unbox(conf)->current_hashes());
+}
+
+LIBSESSION_EXPORT config_string_list* config_old_hashes(config_object* conf) {
+    return make_string_list(unbox(conf)->old_hashes());
 }
 
 LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size_t* len) {
