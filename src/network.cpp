@@ -202,7 +202,6 @@ Network::Network(std::optional<std::string> cache_path, bool use_testnet, bool p
         cache_path{cache_path.value_or("")} {
     get_snode_pool_loop = std::make_shared<oxen::quic::Loop>();
     build_paths_loop = std::make_shared<oxen::quic::Loop>();
-    endpoint = net.endpoint(oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{{uALPN}});
 
     // Load the cache from disk and start the disk write thread
     if (should_cache_to_disk) {
@@ -423,6 +422,12 @@ void Network::start_disk_write_thread() {
     }
 }
 
+void Network::close_connections() {
+    net.call([this]() mutable {
+        endpoint.reset();
+    });
+}
+
 void Network::clear_cache() {
     net.call([this]() mutable {
         {
@@ -468,14 +473,27 @@ void Network::update_status(ConnectionStatus updated_status) {
     status_changed(updated_status);
 }
 
+std::shared_ptr<oxen::quic::Endpoint> Network::get_endpoint() {
+    auto current_endpoint = net.call_get([this] { return endpoint; });
+    
+    if (current_endpoint)
+        return current_endpoint;
+
+    auto new_endpoint = net.call_get([this]() mutable {
+        endpoint = net.endpoint(oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{{uALPN}});
+        return endpoint;
+    });
+
+    return new_endpoint;
+}
+
 connection_info Network::get_connection_info(
         service_node target,
         std::optional<oxen::quic::connection_established_callback> conn_established_cb) {
     auto connection_key_pair = ed25519::ed25519_key_pair();
-    auto creds = oxen::quic::GNUTLSCreds::make_from_ed_seckey(
-            std::string(connection_key_pair.second.begin(), connection_key_pair.second.end()));
+    auto creds = oxen::quic::GNUTLSCreds::make_from_ed_seckey(from_unsigned_sv(connection_key_pair.second));
 
-    auto c = endpoint->connect(
+    auto c = get_endpoint()->connect(
             target,
             creds,
             oxen::quic::opt::keep_alive{10s},
@@ -670,8 +688,6 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)
 void Network::with_path(
         std::optional<service_node> excluded_node,
         std::function<void(std::optional<onion_path> path)> callback) {
-    auto current_paths = net.call_get([this]() -> std::vector<onion_path> { return paths; });
-
     // Retrieve a random path that doesn't contain the excluded node
     auto select_valid_path = [](std::optional<service_node> excluded_node,
                                 std::vector<onion_path> paths) -> std::optional<onion_path> {
@@ -699,37 +715,71 @@ void Network::with_path(
         return possible_paths.front();
     };
 
-    // If we found a path then return it (also build additional paths in the background if needed)
-    if (auto target_path = select_valid_path(excluded_node, current_paths)) {
-        // Build additional paths in the background if we don't have enough
-        if (current_paths.size() < target_path_count) {
-            std::thread build_paths_thread(
-                    &Network::build_paths_if_needed,
-                    this,
-                    std::nullopt,
-                    [](std::optional<std::vector<onion_path>>) {});
-            build_paths_thread.detach();
-        }
+    std::pair<std::optional<onion_path>, uint8_t> path_info;
+    auto [target_path, paths_count] = path_info;
+    auto current_paths = net.call_get([this]() -> std::vector<onion_path> { return paths; });
+    paths_count = current_paths.size();
+    target_path = select_valid_path(excluded_node, current_paths);
 
-        // If the stream had been closed then try to open a new one
-        if (!target_path->conn_info.is_valid())
-            target_path->conn_info = get_connection_info(
-                    target_path->nodes[0], [this](oxen::quic::connection_interface&) {
+    // If we found a path but it's connection wasn't valid then we should try to reconnect and block the path building loop
+    if (target_path && !target_path->conn_info.is_valid()) {
+        path_info = build_paths_loop->call_get([this, excluded_node, select_valid_path]() mutable -> std::pair<std::optional<onion_path>, uint8_t> {
+            // Since this may have been blocked by another thread we should start by trying to get a new target path
+            auto current_paths = net.call_get([this]() -> std::vector<onion_path> { return paths; });
+
+            // If we found a path then return it (also build additional paths in the background if needed)
+            if (auto target_path = select_valid_path(excluded_node, current_paths)) {
+                // If the stream had been closed then try to open a new stream
+                if (!target_path->conn_info.is_valid()) {
+                    auto info = get_connection_info(target_path->nodes[0], [this](oxen::quic::connection_interface&) {
                         // If the connection is re-established update the network status back to
                         // connected
                         update_status(ConnectionStatus::connected);
                     });
 
-        return callback(*target_path);
+                    if (!info.is_valid())
+                        return {std::nullopt, current_paths.size()};
+
+                    auto updated_path = onion_path{std::move(info), std::move(target_path->nodes), 0};
+
+                    // No need to call the 'paths_changed' callback as the paths haven't actually changed, just
+                    // their connection info
+                    auto paths_count = net.call_get([this, target_path, updated_path]() mutable -> uint8_t {
+                        paths.erase(std::remove(paths.begin(), paths.end(), target_path), paths.end());
+                        paths.emplace_back(updated_path);
+                        return paths.size();
+                    });
+
+                    return {updated_path, paths_count};
+                }
+
+                return {target_path, current_paths.size()};
+            }
+
+            return {std::nullopt, current_paths.size()};
+        });
     }
 
-    // If we don't have any paths then build them
-    build_paths_if_needed(
-            std::nullopt,
-            [excluded_node, select_path = std::move(select_valid_path), cb = std::move(callback)](
-                    std::vector<onion_path> updated_paths) {
-                cb(select_path(excluded_node, updated_paths));
-            });
+    // If we didn't get a target path then we have to build paths
+    if (!target_path)
+        return build_paths_if_needed(
+                std::nullopt,
+                [excluded_node, select_path = std::move(select_valid_path), cb = std::move(callback)](
+                        std::vector<onion_path> updated_paths) {
+                    cb(select_path(excluded_node, updated_paths));
+                });
+
+    // Build additional paths in the background if we don't have enough
+    if (paths_count < target_path_count) {
+        std::thread build_paths_thread(
+                &Network::build_paths_if_needed,
+                this,
+                std::nullopt,
+                [](std::optional<std::vector<onion_path>>) {});
+        build_paths_thread.detach();
+    }
+
+    callback(target_path);
 }
 
 void Network::build_paths_if_needed(
@@ -1766,6 +1816,10 @@ LIBSESSION_C_API void network_add_logger(
             });
 }
 
+LIBSESSION_C_API void network_close_connections(network_object* network) {
+    unbox(network).close_connections();
+}
+
 LIBSESSION_C_API void network_clear_cache(network_object* network) {
     unbox(network).clear_cache();
 }
@@ -1876,13 +1930,13 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                 swarm_pubkey,
                 std::chrono::milliseconds{timeout_ms},
                 false,
-                [callback, ctx](
+                [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
                         int status_code,
                         std::optional<std::string> response) {
                     if (response)
-                        callback(
+                        cb(
                                 success,
                                 timeout,
                                 status_code,
@@ -1890,7 +1944,7 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                                 (*response).size(),
                                 ctx);
                     else
-                        callback(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success, timeout, status_code, nullptr, 0, ctx);
                 });
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
@@ -1940,13 +1994,13 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                 std::nullopt,
                 std::chrono::milliseconds{timeout_ms},
                 false,
-                [callback, ctx](
+                [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
                         int status_code,
                         std::optional<std::string> response) {
                     if (response)
-                        callback(
+                        cb(
                                 success,
                                 timeout,
                                 status_code,
@@ -1954,7 +2008,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                                 (*response).size(),
                                 ctx);
                     else
-                        callback(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success, timeout, status_code, nullptr, 0, ctx);
                 });
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);

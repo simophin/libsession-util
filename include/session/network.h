@@ -94,6 +94,11 @@ LIBSESSION_EXPORT void network_add_logger(
         void (*callback)(
                 LOG_LEVEL lvl, const char* name, size_t namelen, const char* msg, size_t msglen));
 
+/// API: network/network_close_connections
+///
+/// Closes any currently active connections.
+LIBSESSION_EXPORT void network_close_connections(network_object* network);
+
 /// API: network/network_clear_cache
 ///
 /// Clears the cached from memory and from disk (if a cache path was provided during

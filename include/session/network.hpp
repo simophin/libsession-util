@@ -102,6 +102,11 @@ class Network {
                     void(oxen::log::Level lvl, const std::string& name, const std::string& msg)>
                             callback);
 
+    /// API: network/close_connections
+    ///
+    /// Closes any currently active connections.
+    void close_connections();
+
     /// API: network/clear_cache
     ///
     /// Clears the cached from memory and from disk (if a cache path was provided during
@@ -264,6 +269,11 @@ class Network {
     /// Loads the snode pool and swarm caches from disk if a `cache_path` was provided and cached
     /// data exists.
     void load_cache_from_disk();
+
+    /// API: network/get_endpoint
+    ///
+    /// Retrieves or creates a new endpoint pointer.
+    std::shared_ptr<oxen::quic::Endpoint> get_endpoint();
 
     /// API: network/get_connection_info
     ///
