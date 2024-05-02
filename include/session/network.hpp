@@ -310,7 +310,8 @@ class Network {
     /// unable to find a valid path.
     void with_path(
             std::optional<service_node> excluded_node,
-            std::function<void(std::optional<onion_path> path)> callback);
+            std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
+                    callback);
 
     /// API: network/build_paths_if_needed
     ///
@@ -324,7 +325,9 @@ class Network {
     /// unable to create the paths the callback will be triggered with an empty list.
     void build_paths_if_needed(
             std::optional<service_node> excluded_node,
-            std::function<void(std::vector<onion_path> updated_paths)> callback);
+            std::function<
+                    void(std::vector<onion_path> updated_paths, std::optional<std::string> error)>
+                    callback);
 
     /// API: network/get_service_nodes_recursive
     ///

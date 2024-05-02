@@ -216,7 +216,7 @@ Network::Network(std::optional<std::string> cache_path, bool use_testnet, bool p
                 &Network::build_paths_if_needed,
                 this,
                 std::nullopt,
-                [](std::optional<std::vector<onion_path>>) {});
+                [](std::optional<std::vector<onion_path>>, std::optional<std::string>) {});
         build_paths_thread.detach();
     }
 }
@@ -685,7 +685,8 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)
 
 void Network::with_path(
         std::optional<service_node> excluded_node,
-        std::function<void(std::optional<onion_path> path)> callback) {
+        std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
+                callback) {
     // Retrieve a random path that doesn't contain the excluded node
     auto select_valid_path = [](std::optional<service_node> excluded_node,
                                 std::vector<onion_path> paths) -> std::optional<onion_path> {
@@ -778,8 +779,9 @@ void Network::with_path(
                 std::nullopt,
                 [excluded_node,
                  select_path = std::move(select_valid_path),
-                 cb = std::move(callback)](std::vector<onion_path> updated_paths) {
-                    cb(select_path(excluded_node, updated_paths));
+                 cb = std::move(callback)](
+                        std::vector<onion_path> updated_paths, std::optional<std::string> error) {
+                    cb(select_path(excluded_node, updated_paths), error);
                 });
 
     // Build additional paths in the background if we don't have enough
@@ -788,20 +790,21 @@ void Network::with_path(
                 &Network::build_paths_if_needed,
                 this,
                 std::nullopt,
-                [](std::optional<std::vector<onion_path>>) {});
+                [](std::optional<std::vector<onion_path>>, std::optional<std::string>) {});
         build_paths_thread.detach();
     }
 
-    callback(target_path);
+    callback(target_path, std::nullopt);
 }
 
 void Network::build_paths_if_needed(
         std::optional<service_node> excluded_node,
-        std::function<void(std::vector<onion_path> updated_paths)> callback) {
+        std::function<void(std::vector<onion_path> updated_paths, std::optional<std::string> error)>
+                callback) {
     with_snode_pool([this, excluded_node, cb = std::move(callback)](
                             std::vector<service_node> pool) {
         if (pool.empty())
-            return cb({});
+            return cb({}, "No snode pool.");
 
         build_paths_loop->call([this, excluded_node, pool, cb = std::move(cb)]() mutable {
             auto current_paths =
@@ -809,7 +812,7 @@ void Network::build_paths_if_needed(
 
             // No need to do anything if we already have enough paths
             if (current_paths.size() >= target_path_count)
-                return cb(current_paths);
+                return cb(current_paths, std::nullopt);
 
             // Update the network status
             net.call([this]() mutable { update_status(ConnectionStatus::connecting); });
@@ -843,7 +846,7 @@ void Network::build_paths_if_needed(
             if (possible_guard_nodes.empty()) {
                 oxen::log::info(
                         log_cat, "Unable to build paths due to lack of possible guard nodes.");
-                return cb({});
+                return cb({}, "Unable to build paths due to lack of possible guard nodes.");
             }
 
             // Now that we have a list of possible guard nodes we need to build the paths, first off
@@ -953,10 +956,10 @@ void Network::build_paths_if_needed(
                 });
 
                 // Trigger the callback with the updated paths
-                cb(updated_paths);
+                cb(updated_paths, std::nullopt);
             } catch (const std::exception& e) {
                 oxen::log::info(log_cat, "Unable to build paths due to error: {}", e.what());
-                cb({});
+                cb({}, e.what());
             }
         });
     });
@@ -1282,9 +1285,10 @@ void Network::send_onion_request(
              swarm_pubkey,
              timeout,
              is_retry,
-             cb = std::move(handle_response)](std::optional<onion_path> path) {
+             cb = std::move(handle_response)](
+                    std::optional<onion_path> path, std::optional<std::string> error) {
                 if (!path)
-                    return cb(false, false, -1, "No valid onion paths.");
+                    return cb(false, false, -1, error.value_or("No valid onion paths."));
 
                 try {
                     // Construct the onion request
