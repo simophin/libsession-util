@@ -120,7 +120,8 @@ LIBSESSION_EXPORT void network_set_status_changed_callback(
 ///
 /// Registers a callback to be called whenever the onion request paths are updated.
 ///
-/// The pointer provided to the callback belongs to the caller and must be freed via `free()` when done with it.
+/// The pointer provided to the callback belongs to the caller and must be freed via `free()` when
+/// done with it.
 ///
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object
