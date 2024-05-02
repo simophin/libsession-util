@@ -1863,7 +1863,6 @@ LIBSESSION_C_API void network_set_paths_changed_callback(
 
             // Allocate the memory for the onion_request_paths* array
             auto* c_paths_array = static_cast<onion_request_path*>(std::malloc(paths_mem_size));
-            auto* current_pos = c_paths_array;
             for (size_t i = 0; i < paths.size(); ++i) {
                 auto c_nodes = session::network::convert_service_nodes(paths[i]);
 
@@ -1873,7 +1872,6 @@ LIBSESSION_C_API void network_set_paths_changed_callback(
                         static_cast<network_service_node*>(std::malloc(node_array_size));
                 std::copy(c_nodes.begin(), c_nodes.end(), c_nodes_array);
                 new (c_paths_array + i) onion_request_path{c_nodes_array, c_nodes.size()};
-                current_pos += sizeof(onion_request_path) + node_array_size;
             }
 
             cb(c_paths_array, paths.size(), ctx);

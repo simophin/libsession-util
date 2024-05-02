@@ -288,12 +288,16 @@ TEST_CASE("Network onion request", "[send_onion_request][network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
-    REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
 
-    auto response = nlohmann::json::parse(*result.response);
-    CHECK(response.contains("hf"));
-    CHECK(response.contains("t"));
-    CHECK(response.contains("version"));
+    try {
+        auto response = nlohmann::json::parse(*result.response);
+        CHECK(response.contains("hf"));
+        CHECK(response.contains("t"));
+        CHECK(response.contains("version"));
+    } catch(...) {
+        CHECK(*result.response == "{JSON}");
+        REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
+    }
 }
 
 TEST_CASE("Network direct request C API", "[network_send_request][network]") {
