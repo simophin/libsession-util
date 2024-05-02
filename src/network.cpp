@@ -475,7 +475,7 @@ void Network::update_status(ConnectionStatus updated_status) {
 }
 
 std::shared_ptr<oxen::quic::Endpoint> Network::get_endpoint() {
-    return net.call_get([this] mutable {
+    return net.call_get([this]() mutable {
         if (!endpoint)
             endpoint = net.endpoint(
                     oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{{uALPN}});
