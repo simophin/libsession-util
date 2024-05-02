@@ -296,7 +296,9 @@ class Network {
     /// - `callback` -- [in] callback to be triggered once we have the service node pool.  NOTE: If
     /// we are unable to retrieve the service node pool the callback will be triggered with an empty
     /// list.
-    void with_snode_pool(std::function<void(std::vector<service_node> pool)> callback);
+    void with_snode_pool(
+            std::function<void(std::vector<service_node> pool, std::optional<std::string> error)>
+                    callback);
 
     /// API: network/with_path
     ///

@@ -520,7 +520,9 @@ connection_info Network::get_connection_info(
 
 // MARK: Snode Pool and Onion Path
 
-void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)> callback) {
+void Network::with_snode_pool(
+        std::function<void(std::vector<service_node> pool, std::optional<std::string> error)>
+                callback) {
     get_snode_pool_loop->call([this, cb = std::move(callback)]() mutable {
         auto current_pool_info = net.call_get(
                 [this]() -> std::pair<
@@ -537,7 +539,7 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)
 
         // If the cache has enough snodes and it hasn't expired then return it
         if (current_pool_info.first.size() >= min_snode_pool_count && !cache_has_expired)
-            return cb(current_pool_info.first);
+            return cb(current_pool_info.first, std::nullopt);
 
         // Update the network status
         net.call([this]() mutable { update_status(ConnectionStatus::connecting); });
@@ -591,7 +593,7 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)
                 });
 
                 oxen::log::info(log_cat, "Updated snode pool from seed node.");
-                return cb(nodes);
+                return cb(nodes, std::nullopt);
             }
 
             // Pick ~9 random snodes from the current cache to fetch nodes from (we want to
@@ -675,10 +677,10 @@ void Network::with_snode_pool(std::function<void(std::vector<service_node> pool)
             });
 
             oxen::log::info(log_cat, "Updated snode pool.");
-            cb(updated_pool);
+            cb(updated_pool, std::nullopt);
         } catch (const std::exception& e) {
             oxen::log::info(log_cat, "Failed to get snode pool: {}", e.what());
-            cb({});
+            cb({}, e.what());
         }
     });
 }
@@ -802,9 +804,9 @@ void Network::build_paths_if_needed(
         std::function<void(std::vector<onion_path> updated_paths, std::optional<std::string> error)>
                 callback) {
     with_snode_pool([this, excluded_node, cb = std::move(callback)](
-                            std::vector<service_node> pool) {
+                            std::vector<service_node> pool, std::optional<std::string> error) {
         if (pool.empty())
-            return cb({}, "No snode pool.");
+            return cb({}, error.value_or("No snode pool."));
 
         build_paths_loop->call([this, excluded_node, pool, cb = std::move(cb)]() mutable {
             auto current_paths =
@@ -1156,7 +1158,8 @@ void Network::get_swarm(
         return callback(*cached_swarm);
 
     // Pick a random node from the snode pool to fetch the swarm from
-    with_snode_pool([this, swarm_pubkey, cb = std::move(callback)](std::vector<service_node> pool) {
+    with_snode_pool([this, swarm_pubkey, cb = std::move(callback)](
+                            std::vector<service_node> pool, std::optional<std::string> /*error*/) {
         if (pool.empty())
             return cb({});
 
@@ -1228,7 +1231,8 @@ void Network::set_swarm(
 
 void Network::get_random_nodes(
         uint16_t count, std::function<void(std::vector<service_node> nodes)> callback) {
-    with_snode_pool([count, cb = std::move(callback)](std::vector<service_node> pool) {
+    with_snode_pool([count, cb = std::move(callback)](
+                            std::vector<service_node> pool, std::optional<std::string> /*error*/) {
         if (pool.size() < count)
             return cb({});
 

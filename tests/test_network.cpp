@@ -295,8 +295,7 @@ TEST_CASE("Network onion request", "[send_onion_request][network]") {
         CHECK(response.contains("t"));
         CHECK(response.contains("version"));
     } catch (...) {
-        CHECK(*result.response == "{JSON}");
-        REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
+        REQUIRE(*result.response == "{VALID JSON}");
     }
 }
 
