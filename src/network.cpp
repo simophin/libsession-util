@@ -192,6 +192,21 @@ namespace {
 
         throw std::runtime_error{"Invalid destination."};
     }
+
+    std::string consume_string(oxenc::bt_dict_consumer dict, std::string_view key) {
+        if (!dict.skip_until(key))
+            throw std::invalid_argument{
+                    "Unable to find entry in dict for key '" + std::string(key) + "'"};
+        return dict.consume_string();
+    }
+
+    template <typename IntType>
+    auto consume_integer(oxenc::bt_dict_consumer dict, std::string_view key) {
+        if (!dict.skip_until(key))
+            throw std::invalid_argument{
+                    "Unable to find entry in dict for key '" + std::string(key) + "'"};
+        return dict.next_integer<IntType>().second;
+    }
 }  // namespace
 
 // MARK: Initialization
@@ -1091,9 +1106,9 @@ void Network::get_service_nodes(
                     while (!node.is_finished()) {
                         auto node_consumer = node.consume_dict_consumer();
                         result.emplace_back(
-                                oxenc::from_hex(node_consumer.consume_string()),  // pubkey_ed25519
-                                node_consumer.consume_string(),                   // public_ip
-                                node_consumer.consume_integer<uint16_t>());  // storage_lmq_port
+                                oxenc::from_hex(consume_string(node_consumer, "pubkey_ed25519")),
+                                consume_string(node_consumer, "public_ip"),
+                                consume_integer<uint16_t>(node_consumer, "storage_lmq_port"));
                     }
 
                     // Output the result
