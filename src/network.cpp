@@ -425,6 +425,7 @@ void Network::start_disk_write_thread() {
 void Network::close_connections() {
     net.call([this]() mutable {
         endpoint.reset();
+        update_status(ConnectionStatus::disconnected);
     });
 }
 
@@ -474,17 +475,12 @@ void Network::update_status(ConnectionStatus updated_status) {
 }
 
 std::shared_ptr<oxen::quic::Endpoint> Network::get_endpoint() {
-    auto current_endpoint = net.call_get([this] { return endpoint; });
-    
-    if (current_endpoint)
-        return current_endpoint;
+    return net.call_get([this] mutable {
+        if (!endpoint)
+            endpoint = net.endpoint(oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{{uALPN}});
 
-    auto new_endpoint = net.call_get([this]() mutable {
-        endpoint = net.endpoint(oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{{uALPN}});
         return endpoint;
     });
-
-    return new_endpoint;
 }
 
 connection_info Network::get_connection_info(
@@ -1843,25 +1839,25 @@ LIBSESSION_C_API void network_set_paths_changed_callback(
     else
         unbox(network).paths_changed = [cb = std::move(callback),
                                         ctx](std::vector<std::vector<service_node>> paths) {
-            std::vector<onion_request_path> c_paths;
-            c_paths.reserve(paths.size());
+            size_t paths_mem_size = 0;
+            for (auto& nodes : paths)
+                paths_mem_size += sizeof(onion_request_path) + (sizeof(network_service_node) * nodes.size());
 
-            for (auto& nodes : paths) {
-                auto c_nodes = session::network::convert_service_nodes(nodes);
+            // Allocate the memory for the onion_request_paths* array
+            auto* c_paths_array = static_cast<onion_request_path*>(std::malloc(paths_mem_size));
+            auto* current_pos = c_paths_array;
+            for (size_t i = 0; i < paths.size(); ++i) {
+                auto c_nodes = session::network::convert_service_nodes(paths[i]);
 
                 // Allocate memory that persists outside the loop
-                network_service_node* c_nodes_array = new network_service_node[c_nodes.size()];
+                size_t node_array_size = sizeof(network_service_node) * c_nodes.size();
+                auto* c_nodes_array = static_cast<network_service_node*>(std::malloc(node_array_size));
                 std::copy(c_nodes.begin(), c_nodes.end(), c_nodes_array);
-
-                onion_request_path c_path{c_nodes_array, c_nodes.size()};
-                c_paths.emplace_back(c_path);
+                new (c_paths_array + i) onion_request_path{c_nodes_array, c_nodes.size()};
+                current_pos += sizeof(onion_request_path) + node_array_size;
             }
 
-            cb(c_paths.data(), c_paths.size(), ctx);
-
-            // Free the allocated memory after cb is called
-            for (auto& c_path : c_paths)
-                delete[] c_path.nodes;
+            cb(c_paths_array, paths.size(), ctx);
         };
 }
 
