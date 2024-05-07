@@ -82,18 +82,6 @@ LIBSESSION_EXPORT bool network_init(
 /// - `network` -- [in] Pointer to network_object object
 LIBSESSION_EXPORT void network_free(network_object* network);
 
-/// API: network/network_add_logger
-///
-/// Adds a logger to the network object.
-///
-/// Inputs:
-/// - `network` -- [in] Pointer to the network object
-/// - `callback` -- [in] callback to be called when a new message should be logged.
-LIBSESSION_EXPORT void network_add_logger(
-        network_object* network,
-        void (*callback)(
-                LOG_LEVEL lvl, const char* name, size_t namelen, const char* msg, size_t msglen));
-
 /// API: network/network_close_connections
 ///
 /// Closes any currently active connections.

@@ -779,8 +779,8 @@ LIBSESSION_EXPORT void config_set_logger(
     if (!callback)
         unbox(conf)->logger = nullptr;
     else
-        unbox(conf)->logger = [callback, ctx](oxen::log::Level lvl, std::string msg) {
-            callback(static_cast<LOG_LEVEL>(static_cast<int>(lvl)), msg.c_str(), ctx);
+        unbox(conf)->logger = [callback, ctx](LogLevel lvl, std::string msg) {
+            callback(static_cast<LOG_LEVEL>(lvl.level), msg.c_str(), ctx);
         };
 }
 

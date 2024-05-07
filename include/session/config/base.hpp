@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <memory>
-#include <oxen/log.hpp>
 #include <session/config.hpp>
 #include <session/util.hpp>
 #include <stdexcept>
@@ -13,6 +12,7 @@
 
 #include "base.h"
 #include "namespaces.hpp"
+#include "../logging.hpp"
 
 namespace session::config {
 
@@ -186,7 +186,7 @@ class ConfigBase : public ConfigSig {
     void set_state(ConfigState s);
 
     // Invokes the `logger` callback if set, does nothing if there is no logger.
-    void log(oxen::log::Level lvl, std::string msg) {
+    void log(LogLevel lvl, std::string msg) {
         if (logger)
             logger(lvl, std::move(msg));
     }
@@ -828,7 +828,8 @@ class ConfigBase : public ConfigSig {
     const DictFieldRoot data{*this};
 
     // If set then we log things by calling this callback
-    std::function<void(oxen::log::Level lvl, std::string msg)> logger;
+    // TODO: replace this in favour of logging via oxen::logging instead
+    std::function<void(LogLevel lvl, std::string msg)> logger;
 
     /// API: base/ConfigBase::storage_namespace
     ///

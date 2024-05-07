@@ -1,8 +1,5 @@
 #pragma once
 
-#include <spdlog/pattern_formatter.h>
-
-#include <oxen/log.hpp>
 #include <oxen/quic.hpp>
 
 #include "session/onionreq/builder.hpp"
@@ -78,7 +75,6 @@ class Network {
     std::shared_ptr<oxen::quic::Loop> build_paths_loop;
 
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
-    spdlog::pattern_formatter formatter;
 
   public:
     // Hook to be notified whenever the network connection status changes.
@@ -91,16 +87,6 @@ class Network {
     // use testnet or mainnet, all requests should be made via a single Network instance.
     Network(std::optional<std::string> cache_path, bool use_testnet, bool pre_build_paths);
     ~Network();
-
-    /// API: network/add_logger
-    ///
-    /// Adds a logger to the network object.
-    ///
-    /// Inputs:
-    /// - `callback` -- [in] callback to be called when a new message should be logged.
-    void add_logger(std::function<
-                    void(oxen::log::Level lvl, const std::string& name, const std::string& msg)>
-                            callback);
 
     /// API: network/close_connections
     ///

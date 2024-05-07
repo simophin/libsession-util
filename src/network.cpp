@@ -4,7 +4,6 @@
 #include <sodium/core.h>
 #include <sodium/crypto_sign_ed25519.h>
 #include <sodium/randombytes.h>
-#include <spdlog/sinks/callback_sink.h>
 
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -452,20 +451,6 @@ void Network::clear_cache() {
         }
         snode_cache_cv.notify_one();
     });
-}
-
-// MARK: Logging
-
-void Network::add_logger(
-        std::function<void(oxen::log::Level lvl, const std::string& name, const std::string& msg)>
-                callback) {
-    auto sink = std::make_shared<spdlog::sinks::callback_sink_mt>(
-            [this, cb = std::move(callback)](const spdlog::details::log_msg& msg) {
-                spdlog::memory_buf_t buf;
-                formatter.format(msg, buf);
-                cb(msg.level, to_string(msg.logger_name), to_string(buf));
-            });
-    oxen::log::add_sink(sink);
 }
 
 // MARK: Connection
@@ -1838,18 +1823,6 @@ LIBSESSION_C_API bool network_init(
 
 LIBSESSION_C_API void network_free(network_object* network) {
     delete network;
-}
-
-LIBSESSION_C_API void network_add_logger(
-        network_object* network,
-        void (*callback)(
-                LOG_LEVEL lvl, const char* name, size_t namelen, const char* msg, size_t msglen)) {
-    assert(callback);
-    unbox(network).add_logger(
-            [cb = std::move(callback)](
-                    oxen::log::Level lvl, const std::string& name, const std::string& msg) {
-                cb(static_cast<LOG_LEVEL>(lvl), name.c_str(), name.size(), msg.c_str(), msg.size());
-            });
 }
 
 LIBSESSION_C_API void network_close_connections(network_object* network) {

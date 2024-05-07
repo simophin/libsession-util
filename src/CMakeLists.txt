@@ -1,7 +1,8 @@
 
 add_library(common INTERFACE)
 target_link_libraries(common INTERFACE
-    oxenc::oxenc)
+    oxenc::oxenc
+    oxen::logging)
 
 target_include_directories(common INTERFACE ../include)
 if(WARNINGS_AS_ERRORS)
@@ -34,6 +35,12 @@ macro(add_libsession_util_library name)
 endmacro()
 
 
+
+add_libsession_util_library(util
+    logging.cpp
+    util.cpp
+)
+
 add_libsession_util_library(crypto
     blinding.cpp
     curve25519.cpp
@@ -42,7 +49,6 @@ add_libsession_util_library(crypto
     multi_encrypt.cpp
     random.cpp
     session_encrypt.cpp
-    util.cpp
     xed25519.cpp
 )
 
@@ -67,9 +73,15 @@ add_libsession_util_library(config
 
 
 
-target_link_libraries(crypto
+target_link_libraries(util
     PUBLIC
     common
+    oxen::logging
+)
+
+target_link_libraries(crypto
+    PUBLIC
+    util
     PRIVATE
     libsodium::sodium-internal
 )
@@ -77,12 +89,10 @@ target_link_libraries(crypto
 target_link_libraries(config
     PUBLIC
     crypto
-    common
     libsession::protos
     PRIVATE
     libsodium::sodium-internal
     libzstd::static
-    oxen::logging
 )
 
 add_libsession_util_library(onionreq
@@ -97,10 +107,8 @@ add_libsession_util_library(onionreq
 target_link_libraries(onionreq
     PUBLIC
     crypto
-    common
     quic
     PRIVATE
-    oxen::logging
     nlohmann_json::nlohmann_json
     libsodium::sodium-internal
     nettle::nettle
