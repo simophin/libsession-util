@@ -364,8 +364,6 @@ class MutableConfigMessage : public ConfigMessage {
 /// - `dict` -- a `bt_dict_consumer` positioned at or before the "~" key where the signature is
 ///   expected.  (If the bt_dict_consumer has already consumed the "~" key then this call will fail
 ///   as if the signature was missing).
-/// - `config_msg` -- the full config message; this must be a view of the same data in memory that
-///   `dict` is parsing (i.e. it cannot be a copy).
 /// - `verifier` -- a callback to invoke to verify the signature of the message.  If the callback is
 ///   empty then the signature will be ignored (it is neither required nor verified).
 /// - `verified_signature` is a pointer to a std::optional array of signature data; if this is
