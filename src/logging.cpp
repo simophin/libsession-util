@@ -22,12 +22,12 @@ void add_logger(
 
 }  // namespace session
 
-LIBSESSION_EXPORT void network_add_logger_simple(void (*callback)(const char* msg, size_t msglen)) {
+LIBSESSION_C_API void session_add_logger_simple(void (*callback)(const char* msg, size_t msglen)) {
     assert(callback);
     session::add_logger([cb = callback](std::string_view msg) { cb(msg.data(), msg.size()); });
 }
 
-LIBSESSION_EXPORT void network_add_logger_full(void (*callback)(
+LIBSESSION_C_API void session_add_logger_full(void (*callback)(
         const char* msg, size_t msglen, const char* cat, size_t can_len, LOG_LEVEL level)) {
     assert(callback);
     session::add_logger(
