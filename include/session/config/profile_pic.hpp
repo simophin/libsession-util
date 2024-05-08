@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-#include "session/types.hpp"
+#include <session/types.hpp>
 
 namespace session::config {
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "namespaces.hpp"
-#include "session/util.hpp"
+#include <session/util.hpp>
 
 namespace session::config::protos {
 

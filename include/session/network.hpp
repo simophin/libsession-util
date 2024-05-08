@@ -2,9 +2,9 @@
 
 #include <oxen/quic.hpp>
 
-#include "session/onionreq/builder.hpp"
-#include "session/onionreq/key_types.hpp"
-#include "session/types.hpp"
+#include "onionreq/builder.hpp"
+#include "onionreq/key_types.hpp"
+#include "types.hpp"
 
 namespace session::network {
 
