@@ -220,8 +220,7 @@ Network::Network(std::optional<std::string> cache_path, bool use_testnet, bool p
     // Load the cache from disk and start the disk write thread
     if (should_cache_to_disk) {
         load_cache_from_disk();
-        std::thread disk_write_thread(&Network::start_disk_write_thread, this);
-        disk_write_thread.detach();
+        disk_write_thread = std::thread{&Network::disk_write_thread_loop, this};
     }
 
     // Kick off a separate thread to build paths (may as well kick this off early)
@@ -241,6 +240,8 @@ Network::~Network() {
         shut_down_disk_thread = true;
     }
     snode_cache_cv.notify_one();
+    if (disk_write_thread.joinable())
+        disk_write_thread.join();
 }
 
 // MARK: Cache Management
@@ -356,7 +357,7 @@ void Network::load_cache_from_disk() {
             swarm_cache.size());
 }
 
-void Network::start_disk_write_thread() {
+void Network::disk_write_thread_loop() {
     std::unique_lock lock{snode_cache_mutex};
     while (true) {
         snode_cache_cv.wait(lock, [this] { return need_write || shut_down_disk_thread; });

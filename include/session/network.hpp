@@ -68,6 +68,8 @@ class Network {
     std::chrono::system_clock::time_point last_snode_pool_update;
     std::unordered_map<std::string, std::vector<service_node>> swarm_cache;
 
+    std::thread disk_write_thread;
+
     ConnectionStatus status;
     oxen::quic::Network net;
     std::vector<onion_path> paths;
@@ -244,11 +246,12 @@ class Network {
     /// - 'updated_status' - [in] the updated connection status.
     void update_status(ConnectionStatus updated_status);
 
-    /// API: network/start_disk_write_thread
+    /// API: network/disk_write_thread_loop
     ///
-    /// Starts the disk write thread which monitors a number of private variables and persists the
-    /// snode pool and swarm caches to disk if a `cache_path` was provided during initialization.
-    void start_disk_write_thread();
+    /// Body of the disk writer which runs until signalled to stop.  This is intended to run in its
+    /// own thread.  The thread monitors a number of private variables and persists the snode pool
+    /// and swarm caches to disk if a `cache_path` was provided during initialization.
+    void disk_write_thread_loop();
 
     /// API: network/load_cache_from_disk
     ///
