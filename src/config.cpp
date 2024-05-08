@@ -643,7 +643,7 @@ ConfigMessage::ConfigMessage(
         return;
     }
 
-    unmerged_ = -1;
+    unmerged_ = std::nullopt;
 
     // Clear any redundant messages. (we do it *here* rather than above because, in the
     // single-good-config case, above, we need the index of the good config for `unmerged_`).

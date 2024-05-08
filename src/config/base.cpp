@@ -211,7 +211,7 @@ std::vector<std::string> ConfigBase::_merge(
     //   might be our current config, or might be one single one of the new incoming messages).
     // - confs that failed to parse (we can't understand them, so leave them behind as they may be
     //   some future message).
-    size_t superconf = new_conf->unmerged_index();  // -1 if we had to merge
+    std::optional<size_t> superconf = new_conf->unmerged_index();  // nullopt if we had to merge
     for (size_t i = 0; i < all_hashes.size(); i++) {
         if (i != superconf && !bad_confs.count(i) && !all_hashes[i].empty())
             _old_hashes.emplace(all_hashes[i]);
@@ -240,9 +240,9 @@ std::vector<std::string> ConfigBase::_merge(
         } else {
             _config = std::move(new_conf);
             assert(((old_seqno == 0 && mine.empty()) || _config->unmerged_index() >= 1) &&
-                   static_cast<size_t>(_config->unmerged_index()) < all_hashes.size());
+                   _config->unmerged_index() < all_hashes.size());
             set_state(ConfigState::Clean);
-            _curr_hash = all_hashes[_config->unmerged_index()];
+            _curr_hash = all_hashes[*_config->unmerged_index()];
         }
     } else {
         // the merging affect nothing (if it had seqno would have been incremented), so don't
