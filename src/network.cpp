@@ -796,6 +796,9 @@ void Network::with_path(
         build_paths_thread.detach();
     }
 
+    // We have a valid path, update the status in case we had flagged it as disconnected for
+    // some reason
+    update_status(ConnectionStatus::connected);
     callback(target_path, std::nullopt);
 }
 
