@@ -10,7 +10,6 @@ extern "C" {
 
 #include "../config.h"
 #include "../export.h"
-#include "../log_level.h"
 
 // Config object base type: this type holds the internal object and is initialized by the various
 // config-dependent settings (e.g. config_user_profile_init) then passed to the various functions.
@@ -42,37 +41,6 @@ typedef struct config_object {
 /// Inputs:
 /// - `conf` -- [in] Pointer to config_object object
 LIBSESSION_EXPORT void config_free(config_object* conf);
-
-/// API: base/config_set_logger
-///
-/// Sets a logging function; takes the log function pointer and a context pointer (which can be NULL
-/// if not needed).  The given function pointer will be invoked with one of the above values, a
-/// null-terminated c string containing the log message, and the void* context object given when
-/// setting the logger (this is for caller-specific state data and won't be touched).
-///
-/// The logging function must have signature:
-///
-/// void log(LOG_LEVEL lvl, const char* msg, void* ctx);
-///
-/// Can be called with callback set to NULL to clear an existing logger.
-///
-/// The config object itself has no log level: the caller should filter by level as needed.
-///
-/// Declaration:
-/// ```cpp
-/// VOID config_set_logger(
-///     [in, out]   config_object*                                  conf,
-///     [in]        void(*)(LOG_LEVEL, const char*, void*)   callback,
-///     [in]        void*                                           ctx
-/// );
-/// ```
-///
-/// Inputs:
-/// - `conf` -- [in] Pointer to config_object object
-/// - `callback` -- [in] Callback function
-/// - `ctx` --- [in, optional] Pointer to an optional context. Set to NULL if unused
-LIBSESSION_EXPORT void config_set_logger(
-        config_object* conf, void (*callback)(LOG_LEVEL, const char*, void*), void* ctx);
 
 /// API: base/config_storage_namespace
 ///

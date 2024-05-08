@@ -9,6 +9,7 @@
 #include <sodium/utils.h>
 
 #include <oxen/log.hpp>
+#include <oxen/log/format.hpp>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -21,8 +22,13 @@
 #include "session/util.hpp"
 
 using namespace std::literals;
+using namespace oxen::log::literals;
 
 namespace session::config {
+
+namespace log = oxen::log;
+
+auto cat = log::Cat("config");
 
 void ConfigBase::set_state(ConfigState s) {
     if (s == ConfigState::Dirty && is_readonly())
@@ -133,17 +139,17 @@ std::vector<std::string> ConfigBase::_merge(
                 plaintexts.emplace_back(hash, decrypt(conf, key(i), encryption_domain()));
                 decrypted = true;
             } catch (const decrypt_error&) {
-                log(oxen::log::Level::debug,
-                    "Failed to decrypt message " + std::to_string(ci) + " using key " +
-                            std::to_string(i));
+                log::debug(cat, "Failed to decrypt message {} using key {}", ci, i);
             }
         }
         if (!decrypted)
-            log(oxen::log::Level::warn, "Failed to decrypt message " + std::to_string(ci));
+            log::warning(cat, "Failed to decrypt message {}", ci);
     }
-    log(oxen::log::Level::debug,
-        "successfully decrypted " + std::to_string(plaintexts.size()) + " of " +
-                std::to_string(configs.size()) + " incoming messages");
+    log::debug(
+            cat,
+            "successfully decrypted {} of {} incoming messages",
+            plaintexts.size(),
+            configs.size());
 
     for (auto& [hash, plain] : plaintexts) {
         // Remove prefix padding:
@@ -152,13 +158,13 @@ std::vector<std::string> ConfigBase::_merge(
             plain.resize(plain.size() - p);
         }
         if (plain.empty()) {
-            log(oxen::log::Level::err, "Invalid config message: contains no data");
+            log::error(cat, "Invalid config message: contains no data");
             continue;
         }
 
         // TODO FIXME (see above)
         if (plain[0] == 'm') {
-            log(oxen::log::Level::warn, "multi-part messages not yet supported!");
+            log::warning(cat, "multi-part messages not yet supported!");
             continue;
         }
 
@@ -169,17 +175,18 @@ std::vector<std::string> ConfigBase::_merge(
                 decompressed && !decompressed->empty())
                 plain = std::move(*decompressed);
             else {
-                log(oxen::log::Level::warn, "Invalid config message: decompression failed");
+                log::warning(cat, "Invalid config message: decompression failed");
                 continue;
             }
         }
 
         if (plain[0] != 'd')
-            log(oxen::log::Level::err,
-                "invalid/unsupported config message with type " +
-                        (plain[0] >= 0x20 && plain[0] <= 0x7e
-                                 ? "'" + std::string{from_unsigned_sv(plain.substr(0, 1))} + "'"
-                                 : "0x" + oxenc::to_hex(plain.begin(), plain.begin() + 1)));
+            log::error(
+                    cat,
+                    "invalid/unsupported config message with type {}",
+                    (plain[0] >= 0x20 && plain[0] <= 0x7e
+                             ? "'{}'"_format(static_cast<char>(plain[0]))
+                             : "0x{:02x}"_format(plain[0])));
 
         all_hashes.emplace_back(hash);
         all_confs.emplace_back(plain);
@@ -194,7 +201,7 @@ std::vector<std::string> ConfigBase::_merge(
             _config->signer,
             config_lags(),
             [&](size_t i, const config_error& e) {
-                log(oxen::log::Level::warn, e.what());
+                log::warning(cat, "{}", e.what());
                 assert(i > 0);  // i == 0 means we can't deserialize our own serialization
                 bad_confs.insert(i);
             });
@@ -772,16 +779,6 @@ LIBSESSION_EXPORT const unsigned char* config_get_sig_pubkey(const config_object
 
 LIBSESSION_EXPORT void config_clear_sig_keys(config_object* conf) {
     unbox(conf)->clear_sig_keys();
-}
-
-LIBSESSION_EXPORT void config_set_logger(
-        config_object* conf, void (*callback)(LOG_LEVEL, const char*, void*), void* ctx) {
-    if (!callback)
-        unbox(conf)->logger = nullptr;
-    else
-        unbox(conf)->logger = [callback, ctx](LogLevel lvl, std::string msg) {
-            callback(static_cast<LOG_LEVEL>(lvl.level), msg.c_str(), ctx);
-        };
 }
 
 }  // extern "C"

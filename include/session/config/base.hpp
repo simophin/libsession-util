@@ -10,9 +10,9 @@
 #include <variant>
 #include <vector>
 
+#include "../logging.hpp"
 #include "base.h"
 #include "namespaces.hpp"
-#include "../logging.hpp"
 
 namespace session::config {
 
@@ -184,12 +184,6 @@ class ConfigBase : public ConfigSig {
     // state and we know our current message hash, that hash gets added to `old_hashes_` to be
     // deleted at the next push.
     void set_state(ConfigState s);
-
-    // Invokes the `logger` callback if set, does nothing if there is no logger.
-    void log(LogLevel lvl, std::string msg) {
-        if (logger)
-            logger(lvl, std::move(msg));
-    }
 
     // Returns a reference to the current MutableConfigMessage.  If the current message is not
     // already dirty (i.e. Clean or Waiting) then calling this increments the seqno counter.
@@ -826,10 +820,6 @@ class ConfigBase : public ConfigSig {
 
     // Proxy class providing read and write access to the contained config data.
     const DictFieldRoot data{*this};
-
-    // If set then we log things by calling this callback
-    // TODO: replace this in favour of logging via oxen::logging instead
-    std::function<void(LogLevel lvl, std::string msg)> logger;
 
     /// API: base/ConfigBase::storage_namespace
     ///

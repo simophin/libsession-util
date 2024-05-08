@@ -1,8 +1,7 @@
 #pragma once
 
-#include <stdexcept>
-
 #include <session/types.hpp>
+#include <stdexcept>
 
 namespace session::config {
 

@@ -33,9 +33,11 @@ using namespace oxen::log::literals;
 
 namespace session::network {
 
+namespace log = oxen::log;
+
 namespace {
 
-    inline auto log_cat = oxen::log::Cat("network");
+    inline auto cat = log::Cat("network");
 
     class status_code_exception : public std::runtime_error {
       public:
@@ -285,7 +287,7 @@ void Network::load_cache_from_disk() {
                 loaded_pool.push_back(node);
                 loaded_failure_count[node.to_string()] = failure_count;
             } catch (...) {
-                oxen::log::warning(log_cat, "Skipping invalid entry in snode pool cache.");
+                log::warning(cat, "Skipping invalid entry in snode pool cache.");
             }
         }
 
@@ -327,7 +329,7 @@ void Network::load_cache_from_disk() {
                 // Otherwise try to parse as a node
                 nodes.push_back(node_from_disk(line).first);
             } catch (...) {
-                oxen::log::warning(log_cat, "Skipping invalid or expired entry in swarm cache.");
+                log::warning(cat, "Skipping invalid or expired entry in swarm cache.");
 
                 // The cache is invalid, we should remove it
                 if (!checked_swarm_expiration) {
@@ -350,11 +352,7 @@ void Network::load_cache_from_disk() {
     for (auto& cache_path : caches_to_remove)
         std::filesystem::remove_all(cache_path);
 
-    oxen::log::info(
-            log_cat,
-            "Loaded cache of {} snodes, {} swarms.",
-            snode_pool.size(),
-            swarm_cache.size());
+    log::info(cat, "Loaded cache of {} snodes, {} swarms.", snode_pool.size(), swarm_cache.size());
 }
 
 void Network::disk_write_thread_loop() {
@@ -391,7 +389,7 @@ void Network::disk_write_thread_loop() {
                     std::filesystem::remove(cache_path + file_snode_pool_updated);
                     std::ofstream timestamp_file{cache_path + file_snode_pool_updated};
                     timestamp_file << std::chrono::system_clock::to_time_t(last_pool_update_write);
-                    oxen::log::debug(log_cat, "Finished writing snode pool cache to disk.");
+                    log::debug(cat, "Finished writing snode pool cache to disk.");
                 }
 
                 // Write the swarm cache to disk
@@ -413,7 +411,7 @@ void Network::disk_write_thread_loop() {
                         std::filesystem::remove(cache_path + swarm_dir + "/" + key);
                         std::filesystem::rename(swarm_path + "_new", swarm_path);
                     }
-                    oxen::log::debug(log_cat, "Finished writing swarm cache to disk.");
+                    log::debug(cat, "Finished writing swarm cache to disk.");
                 }
 
                 need_pool_write = false;
@@ -565,7 +563,7 @@ void Network::with_snode_pool(
             // If we don't have enough nodes in the current cached pool then we need to fetch from
             // the seed nodes
             if (current_pool_info.first.size() < min_snode_pool_count) {
-                oxen::log::info(log_cat, "Fetching from seed nodes.");
+                log::info(cat, "Fetching from seed nodes.");
                 target_pool = (use_testnet ? seed_nodes_testnet : seed_nodes_mainnet);
 
                 // Just in case, make sure the seed nodes are have values
@@ -593,7 +591,7 @@ void Network::with_snode_pool(
                     snode_cache_cv.notify_one();
                 });
 
-                oxen::log::info(log_cat, "Updated snode pool from seed node.");
+                log::info(cat, "Updated snode pool from seed node.");
                 return cb(nodes, std::nullopt);
             }
 
@@ -603,7 +601,7 @@ void Network::with_snode_pool(
             std::shuffle(target_pool.begin(), target_pool.end(), rng);
             size_t num_retries = std::min(target_pool.size() / 3, static_cast<size_t>(3));
 
-            oxen::log::info(log_cat, "Fetching from random expired cache nodes.");
+            log::info(cat, "Fetching from random expired cache nodes.");
             std::vector<service_node> first_nodes(
                     target_pool.begin(), target_pool.begin() + num_retries);
             std::vector<service_node> second_nodes(
@@ -677,10 +675,10 @@ void Network::with_snode_pool(
                 snode_cache_cv.notify_one();
             });
 
-            oxen::log::info(log_cat, "Updated snode pool.");
+            log::info(cat, "Updated snode pool.");
             cb(updated_pool, std::nullopt);
         } catch (const std::exception& e) {
-            oxen::log::info(log_cat, "Failed to get snode pool: {}", e.what());
+            log::info(cat, "Failed to get snode pool: {}", e.what());
             cb({}, e.what());
         }
     });
@@ -824,7 +822,7 @@ void Network::build_paths_if_needed(
             net.call([this]() mutable { update_status(ConnectionStatus::connecting); });
 
             // Get the possible guard nodes
-            oxen::log::info(log_cat, "Building paths.");
+            log::info(cat, "Building paths.");
             std::vector<service_node> nodes_to_exclude;
             std::vector<service_node> possible_guard_nodes;
 
@@ -850,8 +848,7 @@ void Network::build_paths_if_needed(
                         });
 
             if (possible_guard_nodes.empty()) {
-                oxen::log::info(
-                        log_cat, "Unable to build paths due to lack of possible guard nodes.");
+                log::info(cat, "Unable to build paths due to lack of possible guard nodes.");
                 return cb({}, "Unable to build paths due to lack of possible guard nodes.");
             }
 
@@ -942,8 +939,7 @@ void Network::build_paths_if_needed(
                             std::back_inserter(node_descriptions),
                             [](service_node& node) { return node.to_string(); });
                     auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
-                    oxen::log::info(
-                            log_cat, "Built new onion request path: [{}]", path_description);
+                    log::info(cat, "Built new onion request path: [{}]", path_description);
                 }
 
                 // Paths were successfully built, update the connection status
@@ -964,7 +960,7 @@ void Network::build_paths_if_needed(
                 // Trigger the callback with the updated paths
                 cb(updated_paths, std::nullopt);
             } catch (const std::exception& e) {
-                oxen::log::info(log_cat, "Unable to build paths due to error: {}", e.what());
+                log::info(cat, "Unable to build paths due to error: {}", e.what());
                 cb({}, e.what());
             }
         });
@@ -1007,7 +1003,7 @@ void Network::find_valid_guard_node_recursive(
         return callback(std::nullopt, {});
 
     auto target_node = target_nodes.front();
-    oxen::log::info(log_cat, "Testing guard snode: {}", target_node.to_string());
+    log::info(cat, "Testing guard snode: {}", target_node.to_string());
 
     get_version(
             target_node,
@@ -1030,13 +1026,13 @@ void Network::find_valid_guard_node_recursive(
                         throw std::runtime_error{
                                 "Outdated node version ({})"_format(fmt::join(version, "."))};
 
-                    oxen::log::info(log_cat, "Guard snode {} valid.", target_node.to_string());
+                    log::info(cat, "Guard snode {} valid.", target_node.to_string());
                     cb(info, remaining_nodes);
                 } catch (const std::exception& e) {
                     // Log the error and loop after a slight delay (don't want to drain the pool
                     // too quickly if the network goes down)
-                    oxen::log::info(
-                            log_cat,
+                    log::info(
+                            cat,
                             "Testing {} failed with error: {}",
                             target_node.to_string(),
                             e.what());
@@ -1679,7 +1675,7 @@ void Network::handle_errors(
               updated_path]() mutable {
         // Drop the path if invalid
         if (updated_path.failure_count >= path_failure_threshold) {
-            oxen::log::info(log_cat, "Dropping path.");
+            log::info(cat, "Dropping path.");
             paths.erase(std::remove(paths.begin(), paths.end(), old_path), paths.end());
         } else
             std::replace(paths.begin(), paths.end(), old_path, updated_path);

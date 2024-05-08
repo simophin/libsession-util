@@ -1,5 +1,6 @@
 #include "session/onionreq/builder.hpp"
 
+#include <fmt/format.h>
 #include <nettle/gcm.h>
 #include <oxenc/bt.h>
 #include <oxenc/endian.h>
@@ -14,10 +15,8 @@
 #include <sodium/utils.h>
 
 #include <exception>
-#include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
-#include <oxen/log.hpp>
 #include <oxen/log/format.hpp>
 #include <oxen/quic/address.hpp>
 

@@ -12,16 +12,6 @@
 using namespace std::literals;
 using namespace oxenc::literals;
 
-void log_msg(LOG_LEVEL lvl, const char* msg, void*) {
-    INFO((lvl == LOG_LEVEL_CRITICAL ? "CRITICAL"
-          : lvl == LOG_LEVEL_ERROR  ? "ERROR"
-          : lvl == LOG_LEVEL_WARN   ? "Warning"
-          : lvl == LOG_LEVEL_INFO   ? "Info"
-          : lvl == LOG_LEVEL_DEBUG  ? "debug"
-                                    : "trace")
-         << ": " << msg);
-}
-
 TEST_CASE("user profile C API", "[config][user_profile][c]") {
 
     const auto seed = "0123456789abcdef0123456789abcdef00000000000000000000000000000000"_hex;
@@ -43,8 +33,6 @@ TEST_CASE("user profile C API", "[config][user_profile][c]") {
     config_object* conf;
     rc = user_profile_init(&conf, ed_sk.data(), NULL, 0, err);
     REQUIRE(rc == 0);
-
-    config_set_logger(conf, log_msg, NULL);
 
     // We don't need to push anything, since this is an empty config
     CHECK_FALSE(config_needs_push(conf));
@@ -208,7 +196,6 @@ TEST_CASE("user profile C API", "[config][user_profile][c]") {
     // Start with an empty config, as above:
     config_object* conf2;
     REQUIRE(user_profile_init(&conf2, ed_sk.data(), NULL, 0, err) == 0);
-    config_set_logger(conf2, log_msg, NULL);
     CHECK_FALSE(config_needs_dump(conf2));
 
     // Now imagine we just pulled down the encrypted string from the swarm; we merge it into conf2:
