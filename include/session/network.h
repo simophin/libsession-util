@@ -155,6 +155,27 @@ LIBSESSION_EXPORT void network_get_random_nodes(
         void (*callback)(network_service_node*, size_t, void*),
         void* ctx);
 
+/// API: network/network_onion_response_callback_t
+///
+/// Function pointer typedef for the callback function pointer given to
+/// network_send_onion_request_to_snode_destination and
+/// network_send_onion_request_to_server_destination.
+///
+/// Fields:
+/// - `success` -- true if the request was successful, false if it failed.
+/// - `timeout` -- true if the request failed because of a timeout
+/// - `status_code` -- the HTTP numeric status code of the request, e.g. 200 for OK
+/// - `response` -- pointer to the beginning of the response body
+/// - `response_size` -- length of the response body
+/// - `ctx` -- the context pointer passed to the function that initiated the request.
+typedef void (*network_onion_response_callback_t)(
+        bool success,
+        bool timeout,
+        int16_t status_code,
+        const char* response,
+        size_t response_size,
+        void* ctx);
+
 /// API: network/network_send_onion_request_to_snode_destination
 ///
 /// Sends a request via onion routing to the provided service node.
@@ -166,7 +187,8 @@ LIBSESSION_EXPORT void network_get_random_nodes(
 /// - `body_size` -- [in] size of the `body`.
 /// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
 /// - `callback` -- [in] callback to be called with the result of the request.
-/// - `ctx` -- [in, optional] Pointer to an optional context. Set to NULL if unused.
+/// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback. Set to
+/// NULL if unused.
 LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
         network_object* network,
         const network_service_node node,
@@ -174,13 +196,7 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
         size_t body_size,
         const char* swarm_pubkey_hex,
         int64_t timeout_ms,
-        void (*callback)(
-                bool success,
-                bool timeout,
-                int16_t status_code,
-                const char* response,
-                size_t response_size,
-                void*),
+        network_onion_response_callback_t callback,
         void* ctx);
 
 /// API: network/network_send_onion_request_to_server_destination
@@ -189,40 +205,20 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
 ///
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object.
-/// - `method` -- [in] the HTTP method to use for performing the request on the server.
-/// - `protocol` -- [in] the protocol to use for performing the request on the server.
-/// - `host` -- [in] the server host.
-/// - `endpoint` -- [in] the endpoint to call on the server.
-/// - `port` -- [in] the port to send the request to on the server.
-/// - `x25519_pubkey` -- [in] the x25519 pubkey of the server.
-/// - `query_param_keys` -- [in] array of keys for any query params to send to the server, must be
-/// the same size as `query_param_values`. Set to NULL if unused.
-/// - `query_param_values` -- [in] array of values for any query params to send to the server, must
-/// be the same size as `query_param_keys`. Set to NULL if unused.
-/// - `query_params_size` -- [in] The number of query params provided.
-/// - `headers` -- [in] array of keys for any headers to send to the server, must be the same size
-/// as `header_values`. Set to NULL if unused.
-/// - `header_values` -- [in] array of values for any headers to send to the server, must be the
-/// same size as `headers`. Set to NULL if unused.
-/// - `headers_size` -- [in] The number of headers provided.
+/// - `server` -- [in] struct containing information about the server the request should be sent to.
 /// - `body` -- [in] data to send to the specified endpoint.
 /// - `body_size` -- [in] size of the `body`.
 /// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
 /// - `callback` -- [in] callback to be called with the result of the request.
-/// - `ctx` -- [in, optional] Pointer to an optional context.  Set to NULL if unused.
+/// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
+/// to NULL if unused.
 LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
         network_object* network,
         const network_server_destination server,
         const unsigned char* body,
         size_t body_size,
         int64_t timeout_ms,
-        void (*callback)(
-                bool success,
-                bool timeout,
-                int16_t status_code,
-                const char* response,
-                size_t response_size,
-                void*),
+        network_onion_response_callback_t callback,
         void* ctx);
 
 #ifdef __cplusplus
