@@ -330,8 +330,8 @@ class Network {
     /// drained.
     /// - `limit` -- [in, optional] the number of service nodes to retrieve.
     /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If we drain the
-    /// `target_nodes` and haven't gotten a successful response an empty list will be returned along
-    /// with an error string.
+    /// `target_nodes` and haven't gotten a successful response then the callback will be invoked
+    /// with an empty vector and an error string.
     void get_service_nodes_recursive(
             std::vector<service_node> target_nodes,
             std::optional<int> limit,
@@ -347,8 +347,8 @@ class Network {
     /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
     /// drained.
     /// - `callback` -- [in] callback to be triggered once we make a successful request.  NOTE: If
-    /// we drain the `target_nodes` and haven't gotten a successful response a NULL
-    /// `connection_info` and empty will be provided.
+    /// we drain the `target_nodes` and haven't gotten a successful response then the callback will
+    /// be invoked with a std::nullopt `valid_guard_node` and `unused_nodes`.
     void find_valid_guard_node_recursive(
             std::vector<service_node> target_nodes,
             std::function<
@@ -363,7 +363,7 @@ class Network {
     /// - `node` -- [in] node to retrieve the service nodes from.
     /// - `limit` -- [in, optional] the number of service nodes to retrieve.
     /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If an error
-    /// occurs an empty list and an error will be returned.
+    /// occurs an empty list and an error will be provided.
     void get_service_nodes(
             service_node node,
             std::optional<int> limit,
@@ -379,7 +379,7 @@ class Network {
     /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
     /// `quic::DEFAULT_TIMEOUT` will be used.
     /// - `callback` -- [in] callback to be triggered with the result of the request.  NOTE: If an
-    /// error occurs an empty list and an error will be returned.
+    /// error occurs an empty list and an error will be provided.
     void get_version(
             service_node node,
             std::optional<std::chrono::milliseconds> timeout,
