@@ -22,7 +22,10 @@ struct LogLevel {
     LogLevel(spdlog::level::level_enum lvl);
     explicit constexpr LogLevel(int lvl) : level{lvl} {}
 
-    explicit operator spdlog::level::level_enum() const;
+    // Returns the log level as an spdlog enum (which is also a oxen::log::Level).
+    spdlog::level::level_enum spdlog_level() const;
+
+    std::string_view to_string() const;
 
     static const LogLevel trace;
     static const LogLevel debug;
@@ -55,5 +58,44 @@ inline const LogLevel LogLevel::critical{LOG_LEVEL_CRITICAL};
 void add_logger(std::function<void(std::string_view msg)> cb);
 void add_logger(
         std::function<void(std::string_view msg, std::string_view category, LogLevel level)> cb);
+
+/// API: session/logger_reset_level
+///
+/// Resets the log level of all existing category loggers, and sets a new default for any created
+/// after this call.  If this has not been called, the default log level of category loggers is
+/// info.
+///
+/// This function is simply a wrapper around oxen::log::reset_level
+void logger_reset_level(LogLevel level);
+
+/// API: session/logger_set_level_default
+///
+/// Sets the log level of new category loggers initialized after this call, but does not change the
+/// log level of already-initialized category loggers.
+///
+/// This function is simply a wrapper around oxen::log::set_level_default
+void logger_set_level_default(LogLevel level);
+
+/// API: session/logger_get_level_default
+///
+/// Gets the default log level of new loggers (since the last reset_level or set_level_default
+/// call).
+///
+/// This function is simply a wrapper around oxen::log::get_level_default
+LogLevel logger_get_level_default();
+
+/// API: session/logger_set_level
+///
+/// Set the log level of a specific logger category
+///
+/// This function is simply a wrapper around oxen::log::set_level
+void logger_set_level(std::string cat_name, LogLevel level);
+
+/// API: session/logger_get_level
+///
+/// Gets the log level of a specific logger category
+///
+/// This function is simply a wrapper around oxen::log::get_level
+LogLevel logger_get_level(std::string cat_name);
 
 }  // namespace session

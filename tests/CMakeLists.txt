@@ -17,6 +17,7 @@ add_executable(testAll
     test_group_info.cpp
     test_group_members.cpp
     test_hash.cpp
+    test_logging.cpp
     test_multi_encrypt.cpp
     test_network.cpp
     test_onionreq.cpp
