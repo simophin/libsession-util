@@ -13,10 +13,10 @@ using network_response_callback_t = std::function<void(
         bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
 
 enum class ConnectionStatus {
-    unknown = 0,
-    connecting = 1,
-    connected = 2,
-    disconnected = 3,
+    unknown,
+    connecting,
+    connected,
+    disconnected,
 };
 
 struct connection_info {
