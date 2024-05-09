@@ -224,6 +224,7 @@ Network::Network(std::optional<std::string> cache_path, bool use_testnet, bool p
         use_testnet{use_testnet},
         should_cache_to_disk{cache_path},
         cache_path{cache_path.value_or("")} {
+    log::info(cat, "Test info log - Create network");
     get_snode_pool_loop = std::make_shared<quic::Loop>();
     build_paths_loop = std::make_shared<quic::Loop>();
 
@@ -1915,7 +1916,7 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
     assert(callback);
 
     try {
-        std::optional<ustring> body;
+        std::optional<session::ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
 
@@ -1981,7 +1982,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                 headers->emplace_back(server.headers[i], server.header_values[i]);
         }
 
-        std::optional<ustring> body;
+        std::optional<session::ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
 

@@ -23,8 +23,8 @@ struct ServerDestination {
             std::string host,
             std::string endpoint,
             session::onionreq::x25519_pubkey x25519_pubkey,
-            std::optional<uint16_t> port,
-            std::optional<std::vector<std::pair<std::string, std::string>>> headers,
+            std::optional<uint16_t> port = std::nullopt,
+            std::optional<std::vector<std::pair<std::string, std::string>>> headers = std::nullopt,
             std::string method = "GET") :
             protocol{std::move(protocol)},
             host{std::move(host)},
