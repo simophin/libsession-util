@@ -153,7 +153,7 @@ namespace {
         auto v_s = session::split(vers, ".");
         std::vector<int> result;
         for (const auto& piece : v_s)
-            if (!oxen::quic::parse_int(piece, result.emplace_back()))
+            if (!quic::parse_int(piece, result.emplace_back()))
                 throw std::invalid_argument{"Invalid version"};
 
         // Remove any trailing `0` values (but ensure we at least end up with a "0" version)
@@ -186,14 +186,14 @@ namespace {
     }
 
     std::optional<service_node> node_for_destination(network_destination destination) {
-        if (auto* dest = std::get_if<oxen::quic::RemoteAddress>(&destination))
+        if (auto* dest = std::get_if<quic::RemoteAddress>(&destination))
             return *dest;
 
         return std::nullopt;
     }
 
     session::onionreq::x25519_pubkey pubkey_for_destination(network_destination destination) {
-        if (auto* dest = std::get_if<oxen::quic::RemoteAddress>(&destination))
+        if (auto* dest = std::get_if<quic::RemoteAddress>(&destination))
             return compute_xpk(dest->view_remote_key());
 
         if (auto* dest = std::get_if<ServerDestination>(&destination))
@@ -224,8 +224,8 @@ Network::Network(std::optional<std::string> cache_path, bool use_testnet, bool p
         use_testnet{use_testnet},
         should_cache_to_disk{cache_path},
         cache_path{cache_path.value_or("")} {
-    get_snode_pool_loop = std::make_shared<oxen::quic::Loop>();
-    build_paths_loop = std::make_shared<oxen::quic::Loop>();
+    get_snode_pool_loop = std::make_shared<quic::Loop>();
+    build_paths_loop = std::make_shared<quic::Loop>();
 
     // Load the cache from disk and start the disk write thread
     if (should_cache_to_disk) {
@@ -481,11 +481,10 @@ void Network::update_status(ConnectionStatus updated_status) {
     status_changed(updated_status);
 }
 
-std::shared_ptr<oxen::quic::Endpoint> Network::get_endpoint() {
+std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
     return net.call_get([this]() mutable {
         if (!endpoint)
-            endpoint = net.endpoint(
-                    oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{ALPN});
+            endpoint = net.endpoint(quic::Address{"0.0.0.0", 0}, quic::opt::alpns{ALPN});
 
         return endpoint;
     });
@@ -493,17 +492,17 @@ std::shared_ptr<oxen::quic::Endpoint> Network::get_endpoint() {
 
 connection_info Network::get_connection_info(
         service_node target,
-        std::optional<oxen::quic::connection_established_callback> conn_established_cb) {
+        std::optional<quic::connection_established_callback> conn_established_cb) {
     auto connection_key_pair = ed25519::ed25519_key_pair();
-    auto creds = oxen::quic::GNUTLSCreds::make_from_ed_seckey(
-            from_unsigned_sv(connection_key_pair.second));
+    auto creds =
+            quic::GNUTLSCreds::make_from_ed_seckey(from_unsigned_sv(connection_key_pair.second));
 
     auto c = get_endpoint()->connect(
             target,
             creds,
-            oxen::quic::opt::keep_alive{10s},
+            quic::opt::keep_alive{10s},
             conn_established_cb,
-            [this, target](oxen::quic::connection_interface& conn, uint64_t) {
+            [this, target](quic::connection_interface& conn, uint64_t) {
                 // When the connection is closed, update the path and connection status
                 auto target_path =
                         std::find_if(paths.begin(), paths.end(), [&target](const auto& path) {
@@ -522,7 +521,7 @@ connection_info Network::get_connection_info(
                 }
             });
 
-    return {target, c, c->open_stream<oxen::quic::BTRequestStream>()};
+    return {target, c, c->open_stream<quic::BTRequestStream>()};
 }
 
 // MARK: Snode Pool and Onion Path
@@ -747,8 +746,7 @@ void Network::with_path(
                         // If the stream had been closed then try to open a new stream
                         if (!target_path->conn_info.is_valid()) {
                             auto info = get_connection_info(
-                                    target_path->nodes[0],
-                                    [this](oxen::quic::connection_interface&) {
+                                    target_path->nodes[0], [this](quic::connection_interface&) {
                                         // If the connection is re-established update the network
                                         // status back to connected
                                         update_status(ConnectionStatus::connected);
@@ -1078,9 +1076,7 @@ void Network::get_service_nodes(
     payload.append("params", params.dump());
 
     info.stream->command(
-            "oxend_request",
-            payload.view(),
-            [this, cb = std::move(callback)](oxen::quic::message resp) {
+            "oxend_request", payload.view(), [this, cb = std::move(callback)](quic::message resp) {
                 try {
                     auto [status_code, body] = validate_response(resp, true);
 
@@ -1128,7 +1124,7 @@ void Network::get_version(
             "info",
             payload.view(),
             timeout,
-            [this, info, cb = std::move(callback)](oxen::quic::message resp) {
+            [this, info, cb = std::move(callback)](quic::message resp) {
                 try {
                     auto [status_code, body] = validate_response(resp, true);
 
@@ -1184,9 +1180,9 @@ void Network::get_swarm(
 
         send_onion_request(
                 node,
-                ustring{oxen::quic::to_usv(payload.dump())},
+                ustring{quic::to_usv(payload.dump())},
                 swarm_pubkey,
-                oxen::quic::DEFAULT_TIMEOUT,
+                quic::DEFAULT_TIMEOUT,
                 false,
                 [this, swarm_pubkey, cb = std::move(cb)](
                         bool success, bool timeout, int16_t, std::optional<std::string> response) {
@@ -1260,17 +1256,17 @@ void Network::send_request(
     if (!conn_info.is_valid())
         return handle_response(false, false, -1, "Network is unreachable.");
 
-    oxen::quic::bstring_view payload{};
+    quic::bstring_view payload{};
 
     if (info.body)
-        payload = oxen::quic::bstring_view{
+        payload = quic::bstring_view{
                 reinterpret_cast<const std::byte*>(info.body->data()), info.body->size()};
 
     conn_info.stream->command(
             info.endpoint,
             payload,
             info.timeout,
-            [this, info, cb = std::move(handle_response)](oxen::quic::message resp) {
+            [this, info, cb = std::move(handle_response)](quic::message resp) {
                 try {
                     auto [status_code, body] = validate_response(resp, false);
                     cb(true, false, status_code, body);
@@ -1459,8 +1455,7 @@ void Network::process_server_response(
 
 // MARK: Error Handling
 
-std::pair<uint16_t, std::string> Network::validate_response(
-        oxen::quic::message resp, bool is_bencoded) {
+std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, bool is_bencoded) {
     std::string body = resp.body_str();
 
     if (resp.timed_out)
