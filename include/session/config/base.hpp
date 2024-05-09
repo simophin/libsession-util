@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../logging.hpp"
+#include "../sodium_array.hpp"
 #include "base.h"
 #include "namespaces.hpp"
 

@@ -1,23 +1,6 @@
-#include <sodium/utils.h>
-
 #include <session/util.hpp>
 
 namespace session {
-void* sodium_buffer_allocate(size_t length) {
-    if (auto* p = sodium_malloc(length))
-        return p;
-    throw std::bad_alloc{};
-}
-
-void sodium_buffer_deallocate(void* p) {
-    if (p)
-        sodium_free(p);
-}
-
-void sodium_zero_buffer(void* ptr, size_t size) {
-    if (ptr)
-        sodium_memzero(ptr, size);
-}
 
 std::vector<std::string_view> split(std::string_view str, const std::string_view delim, bool trim) {
     std::vector<std::string_view> results;

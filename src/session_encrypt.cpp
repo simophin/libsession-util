@@ -17,7 +17,7 @@
 #include <stdexcept>
 
 #include "session/blinding.hpp"
-#include "session/util.hpp"
+#include "session/sodium_array.hpp"
 
 using namespace std::literals;
 
