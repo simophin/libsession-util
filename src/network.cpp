@@ -76,7 +76,6 @@ namespace {
 
     constexpr auto node_not_found_prefix = "Next node not found: "sv;
     constexpr auto ALPN = "oxenstorage"sv;
-    const ustring uALPN{reinterpret_cast<const unsigned char*>(ALPN.data()), ALPN.size()};
 
     service_node node_from_json(nlohmann::json json) {
         return {oxenc::from_hex(json["pubkey_ed25519"].get<std::string>()),
@@ -477,7 +476,7 @@ std::shared_ptr<oxen::quic::Endpoint> Network::get_endpoint() {
     return net.call_get([this]() mutable {
         if (!endpoint)
             endpoint = net.endpoint(
-                    oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{{uALPN}});
+                    oxen::quic::Address{"0.0.0.0", 0}, oxen::quic::opt::alpns{ALPN});
 
         return endpoint;
     });
