@@ -25,15 +25,12 @@
 #include "session/onionreq/response_parser.hpp"
 #include "session/util.hpp"
 
-using namespace session;
+using namespace oxen;
 using namespace session::onionreq;
-using namespace session::network;
 using namespace std::literals;
 using namespace oxen::log::literals;
 
 namespace session::network {
-
-namespace log = oxen::log;
 
 namespace {
 
@@ -78,7 +75,11 @@ namespace {
     constexpr auto ALPN = "oxenstorage"sv;
 
     service_node node_from_json(nlohmann::json json) {
-        return {oxenc::from_hex(json["pubkey_ed25519"].get<std::string>()),
+        auto pk_ed = json["pubkey_ed25519"].get<std::string_view>();
+        if (pk_ed.size() != 64 || !oxenc::is_hex(pk_ed))
+            throw std::invalid_argument{
+                    "Invalid service node json: pubkey_ed25519 is not a valid, hex pubkey"};
+        return {oxenc::from_hex(pk_ed),
                 json["ip"].get<std::string>(),
                 json["port_omq"].get<uint16_t>()};
     }
@@ -86,10 +87,18 @@ namespace {
     std::pair<service_node, uint8_t> node_from_disk(std::string_view str) {
         auto parts = split(str, "|");
         if (parts.size() != 4)
-            throw std::invalid_argument("Invalid service node serialisation: " + std::string(str));
+            throw std::invalid_argument("Invalid service node serialisation: {}"_format(str));
+        if (parts[2].size() != 64 || !oxenc::is_hex(parts[2]))
+            throw std::invalid_argument{
+                    "Invalid service node serialisation: pubkey is not hex or has wrong size"};
 
-        uint16_t port = std::stoul(std::string{parts[1]});
-        uint8_t failure_count = std::stoul(std::string{parts[3]});
+        uint16_t port;
+        if (!quic::parse_int(parts[1], port))
+            throw std::invalid_argument{"Invalid service node serialization: invalid port"};
+
+        uint8_t failure_count;
+        if (!quic::parse_int(parts[3], failure_count))
+            throw std::invalid_argument{"Invalid service node serialization: invalid port"};
 
         return {
                 {
