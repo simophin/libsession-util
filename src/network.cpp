@@ -631,18 +631,11 @@ void Network::with_snode_pool(
             auto second_result_nodes = prom2.get_future().get();
             auto third_result_nodes = prom3.get_future().get();
 
-            auto compare_nodes = [](const auto& a, const auto& b) {
-                if (a.host() == b.host()) {
-                    return a.port() < b.port();
-                }
-                return a.host() < b.host();
-            };
-
             // Sort the vectors (so make it easier to find the
             // intersection)
-            std::stable_sort(first_result_nodes.begin(), first_result_nodes.end(), compare_nodes);
-            std::stable_sort(second_result_nodes.begin(), second_result_nodes.end(), compare_nodes);
-            std::stable_sort(third_result_nodes.begin(), third_result_nodes.end(), compare_nodes);
+            std::stable_sort(first_result_nodes.begin(), first_result_nodes.end());
+            std::stable_sort(second_result_nodes.begin(), second_result_nodes.end());
+            std::stable_sort(third_result_nodes.begin(), third_result_nodes.end());
 
             // Get the intersection of the vectors
             std::vector<service_node> first_second_intersection;
