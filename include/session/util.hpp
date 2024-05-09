@@ -1,5 +1,7 @@
 #pragma once
 
+#include <oxenc/common.h>
+
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -39,6 +41,18 @@ inline const char* from_unsigned(const unsigned char* x) {
 }
 inline char* from_unsigned(unsigned char* x) {
     return reinterpret_cast<char*>(x);
+}
+// Helper to switch from basic_string_view<CFrom> to basic_string_view<CTo>.  Both CFrom and CTo
+// must be primitive, one-byte types.
+template <oxenc::basic_char CTo, oxenc::basic_char CFrom>
+inline std::basic_string_view<CTo> convert_sv(std::basic_string_view<CFrom> from) {
+    return {reinterpret_cast<const CTo*>(from.data()), from.size()};
+}
+// Same as above, but with a const basic_string<CFrom>& argument (to allow deduction of CFrom when
+// using a basic_string<CFrom>).
+template <oxenc::basic_char CTo, oxenc::basic_char CFrom>
+inline std::basic_string_view<CTo> convert_sv(const std::basic_string<CFrom>& from) {
+    return {reinterpret_cast<const CTo*>(from.data()), from.size()};
 }
 // Helper function to switch between basic_string_view<C> and ustring_view
 inline ustring_view to_unsigned_sv(std::string_view v) {

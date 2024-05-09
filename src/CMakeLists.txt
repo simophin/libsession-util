@@ -37,6 +37,7 @@ endmacro()
 
 
 add_libsession_util_library(util
+    file.cpp
     logging.cpp
     util.cpp
 )

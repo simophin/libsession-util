@@ -20,4 +20,4 @@ void sodium_zero_buffer(void* ptr, size_t size) {
         sodium_memzero(ptr, size);
 }
 
-}
+}  // namespace session

@@ -100,7 +100,8 @@ LogLevel logger_get_level(std::string cat_name);
 
 /// API: session/manual_log
 ///
-/// Logs the provided value via oxen::log, can be used to test that the loggers are working correctly
+/// Logs the provided value via oxen::log, can be used to test that the loggers are working
+/// correctly
 void manual_log(std::string_view msg);
 
 }  // namespace session

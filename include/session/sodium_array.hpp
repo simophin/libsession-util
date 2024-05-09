@@ -228,4 +228,4 @@ struct sodium_allocator {
 template <typename T>
 using sodium_vector = std::vector<T, sodium_allocator<T>>;
 
-}
+}  // namespace session

@@ -57,7 +57,8 @@ extern "C" {
 
 LIBSESSION_C_API void session_add_logger_simple(void (*callback)(const char* msg, size_t msglen)) {
     assert(callback);
-    session::add_logger([cb = std::move(callback)](std::string_view msg) { cb(msg.data(), msg.size()); });
+    session::add_logger(
+            [cb = std::move(callback)](std::string_view msg) { cb(msg.data(), msg.size()); });
 }
 
 LIBSESSION_C_API void session_add_logger_full(void (*callback)(

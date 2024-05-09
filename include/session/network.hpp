@@ -8,6 +8,8 @@
 
 namespace session::network {
 
+namespace fs = std::filesystem;
+
 using service_node = oxen::quic::RemoteAddress;
 using network_response_callback_t = std::function<void(
         bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
@@ -51,7 +53,7 @@ class Network {
   private:
     const bool use_testnet;
     const bool should_cache_to_disk;
-    const std::string cache_path;
+    const fs::path cache_path;
 
     // Disk thread state
     std::mutex snode_cache_mutex;  // This guards all the below:
@@ -65,7 +67,7 @@ class Network {
     // Values persisted to disk
     std::vector<service_node> snode_pool;
     std::unordered_map<std::string, uint8_t> snode_failure_counts;
-    std::chrono::system_clock::time_point last_snode_pool_update;
+    std::chrono::system_clock::time_point last_snode_pool_update{};
     std::unordered_map<std::string, std::vector<service_node>> swarm_cache;
 
     std::thread disk_write_thread;
@@ -87,7 +89,7 @@ class Network {
 
     // Constructs a new network with the given cache path and a flag indicating whether it should
     // use testnet or mainnet, all requests should be made via a single Network instance.
-    Network(std::optional<std::string> cache_path, bool use_testnet, bool pre_build_paths);
+    Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths);
     ~Network();
 
     /// API: network/close_connections

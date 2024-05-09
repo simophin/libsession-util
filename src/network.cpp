@@ -18,6 +18,7 @@
 
 #include "session/ed25519.hpp"
 #include "session/export.h"
+#include "session/file.hpp"
 #include "session/network.h"
 #include "session/onionreq/builder.h"
 #include "session/onionreq/builder.hpp"
@@ -45,31 +46,30 @@ namespace {
     };
 
     // The amount of time the snode cache can be used before it needs to be refreshed
-    const std::chrono::seconds snode_cache_expiration_duration = 2h;
+    constexpr auto snode_cache_expiration_duration = 2h;
 
     // The amount of time a swarm cache can be used before it needs to be refreshed
-    const std::chrono::seconds swarm_cache_expiration_duration = (24h * 7);
+    constexpr auto swarm_cache_expiration_duration = (24h * 7);
 
     // The smallest size the snode pool can get to before we need to fetch more.
-    const uint16_t min_snode_pool_count = 12;
+    constexpr uint16_t min_snode_pool_count = 12;
 
     // The number of paths we want to maintain.
-    const uint8_t target_path_count = 2;
+    constexpr uint8_t target_path_count = 2;
 
     // The number of snodes (including the guard snode) in a path.
-    const uint8_t path_size = 3;
+    constexpr uint8_t path_size = 3;
 
     // The number of times a path can fail before it's replaced.
-    const uint16_t path_failure_threshold = 3;
+    constexpr uint16_t path_failure_threshold = 3;
 
     // The number of times a snode can fail before it's replaced.
-    const uint16_t snode_failure_threshold = 3;
+    constexpr uint16_t snode_failure_threshold = 3;
 
     // File names
-    const auto file_testnet = "/testnet"s;
-    const auto file_snode_pool = "/snode_pool"s;
-    const auto file_snode_pool_updated = "/snode_pool_updated"s;
-    const auto swarm_dir = "/swarm"s;
+    const fs::path file_testnet{u8"testnet"}, file_snode_pool{u8"snode_pool"},
+            file_snode_pool_updated{u8"snode_pool_updated"}, swarm_dir{u8"swarm"},
+            default_cache_path{u8"."};
 
     constexpr auto node_not_found_prefix = "Next node not found: "sv;
     constexpr auto ALPN = "oxenstorage"sv;
@@ -220,10 +220,10 @@ namespace {
 
 // MARK: Initialization
 
-Network::Network(std::optional<std::string> cache_path, bool use_testnet, bool pre_build_paths) :
+Network::Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths) :
         use_testnet{use_testnet},
         should_cache_to_disk{cache_path},
-        cache_path{cache_path.value_or("")} {
+        cache_path{cache_path.value_or(default_cache_path)} {
     log::info(cat, "Test info log - Create network");
     get_snode_pool_loop = std::make_shared<quic::Loop>();
     build_paths_loop = std::make_shared<quic::Loop>();
@@ -259,33 +259,45 @@ Network::~Network() {
 
 void Network::load_cache_from_disk() {
     // If the cache is for the wrong network then delete everything
-    auto cache_is_for_testnet = std::filesystem::exists(cache_path + file_testnet);
-    if ((!use_testnet && cache_is_for_testnet) || (use_testnet && !cache_is_for_testnet))
-        std::filesystem::remove_all(cache_path);
+    auto testnet_stub = cache_path / file_testnet;
+    bool cache_is_for_testnet = fs::exists(testnet_stub);
+    if (use_testnet != cache_is_for_testnet)
+        fs::remove_all(cache_path);
 
-    // Create the cache directory if needed
-    std::filesystem::create_directories(cache_path);
-    std::filesystem::create_directories(cache_path + swarm_dir);
+    // Create the cache directory (and swarm_dir, inside it) if needed
+    auto swarm_path = cache_path / swarm_dir;
+    fs::create_directories(swarm_path);
 
     // If we are using testnet then create a file to indicate that
     if (use_testnet)
-        std::ofstream{cache_path + file_testnet};
+        write_whole_file(testnet_stub, "");
 
     // Load the last time the snode pool was updated
     //
     // Note: We aren't just reading the write time of the file because Apple consider
     // accessing file timestamps a method that can be used to track the user (and we
     // want to avoid being flagged as using such)
-    if (std::filesystem::exists(cache_path + file_snode_pool_updated)) {
-        std::ifstream file{cache_path + file_snode_pool_updated};
-        std::time_t timestamp;
-        file >> timestamp;
-        last_snode_pool_update = std::chrono::system_clock::from_time_t(timestamp);
+    auto last_updated_path = cache_path / file_snode_pool_updated;
+    if (fs::exists(last_updated_path)) {
+        try {
+            auto timestamp_str = read_whole_file(last_updated_path);
+            while (timestamp_str.ends_with('\n'))
+                timestamp_str.pop_back();
+
+            std::time_t timestamp;
+            if (!quic::parse_int(timestamp_str, timestamp))
+                throw std::runtime_error{"invalid file data: expected timestamp first line"};
+
+            last_snode_pool_update = std::chrono::system_clock::from_time_t(timestamp);
+        } catch (const std::exception& e) {
+            log::error(cat, "Ignoring invalid last update timestamp file: {}", e.what());
+        }
     }
 
     // Load the snode pool
-    if (std::filesystem::exists(cache_path + file_snode_pool)) {
-        std::ifstream file{cache_path + file_snode_pool};
+    auto pool_path = cache_path / file_snode_pool;
+    if (fs::exists(pool_path)) {
+        auto file = open_for_reading(pool_path);
         std::vector<service_node> loaded_pool;
         std::unordered_map<std::string, uint8_t> loaded_failure_count;
         std::string line;
@@ -305,28 +317,30 @@ void Network::load_cache_from_disk() {
     }
 
     // Load the swarm cache
-    auto swarm_path = (cache_path + swarm_dir);
     auto time_now = std::chrono::system_clock::now();
     std::unordered_map<std::string, std::vector<service_node>> loaded_cache;
-    std::vector<std::string> caches_to_remove;
+    std::vector<fs::path> caches_to_remove;
 
-    for (auto& entry : std::filesystem::directory_iterator(swarm_path)) {
+    for (auto& entry : fs::directory_iterator(swarm_path)) {
         // If the pubkey was valid then process the content
-        std::ifstream file{entry.path()};
+        auto file = open_for_reading(entry.path());
         std::vector<service_node> nodes;
         std::string line;
         bool checked_swarm_expiration = false;
         std::chrono::seconds swarm_lifetime = 0s;
-        auto path = entry.path().string();
-        auto filename = entry.path().filename().string();
+        const auto& path = entry.path();
+        std::string filename{convert_sv<char>(path.filename().u8string())};
 
         while (std::getline(file, line)) {
             try {
                 // If we haven't checked if the swarm cache has expired then do so, removing
                 // any expired/invalid caches
-                if (!checked_swarm_expiration && line.find('|') != std::string::npos) {
-                    auto swarm_last_updated =
-                            std::chrono::system_clock::from_time_t(std::stoi(line));
+                if (!checked_swarm_expiration) {
+                    std::time_t timestamp;
+                    if (!quic::parse_int(line, timestamp))
+                        throw std::runtime_error{
+                                "invalid file data: expected timestamp first line"};
+                    auto swarm_last_updated = std::chrono::system_clock::from_time_t(timestamp);
                     swarm_lifetime = std::chrono::duration_cast<std::chrono::seconds>(
                             time_now - swarm_last_updated);
                     checked_swarm_expiration = true;
@@ -337,8 +351,9 @@ void Network::load_cache_from_disk() {
 
                 // Otherwise try to parse as a node
                 nodes.push_back(node_from_disk(line).first);
-            } catch (...) {
-                log::warning(cat, "Skipping invalid or expired entry in swarm cache.");
+
+            } catch (const std::exception& e) {
+                log::warning(cat, "Skipping invalid or expired entry in swarm cache: {}", e.what());
 
                 // The cache is invalid, we should remove it
                 if (!checked_swarm_expiration) {
@@ -350,7 +365,7 @@ void Network::load_cache_from_disk() {
 
         // If we got nodes the add it to the cache, otherwise we want to remove it
         if (!nodes.empty())
-            loaded_cache[filename] = nodes;
+            loaded_cache[filename] = std::move(nodes);
         else
             caches_to_remove.emplace_back(path);
     }
@@ -359,7 +374,7 @@ void Network::load_cache_from_disk() {
 
     // Remove any expired cache files
     for (auto& cache_path : caches_to_remove)
-        std::filesystem::remove_all(cache_path);
+        fs::remove_all(cache_path);
 
     log::info(cat, "Loaded cache of {} snodes, {} swarms.", snode_pool.size(), swarm_cache.size());
 }
@@ -380,24 +395,28 @@ void Network::disk_write_thread_loop() {
             lock.unlock();
             {
                 // Create the cache directories if needed
-                std::filesystem::create_directories(cache_path);
-                std::filesystem::create_directories(cache_path + swarm_dir);
+                auto swarm_base = cache_path / swarm_dir;
+                fs::create_directories(swarm_base);
 
                 // Save the snode pool to disk
                 if (need_pool_write) {
-                    auto pool_path = cache_path + file_snode_pool;
-                    std::filesystem::remove(pool_path + "_new");
-                    std::ofstream file{pool_path + "_new"};
-                    for (auto& snode : snode_pool_write)
-                        file << node_to_disk(snode, snode_failure_counts_write) << '\n';
+                    auto pool_path = cache_path / file_snode_pool;
+                    auto pool_tmp = pool_path;
+                    pool_tmp += u8"_new";
 
-                    std::filesystem::remove(pool_path);
-                    std::filesystem::rename(pool_path + "_new", pool_path);
+                    {
+                        auto file = open_for_writing(pool_tmp);
+                        for (auto& snode : snode_pool_write)
+                            file << node_to_disk(snode, snode_failure_counts_write) << '\n';
+                    }
+
+                    fs::rename(pool_tmp, pool_path);
 
                     // Write the last update timestamp to disk
-                    std::filesystem::remove(cache_path + file_snode_pool_updated);
-                    std::ofstream timestamp_file{cache_path + file_snode_pool_updated};
-                    timestamp_file << std::chrono::system_clock::to_time_t(last_pool_update_write);
+                    write_whole_file(
+                            cache_path / file_snode_pool_updated,
+                            "{}"_format(
+                                    std::chrono::system_clock::to_time_t(last_pool_update_write)));
                     log::debug(cat, "Finished writing snode pool cache to disk.");
                 }
 
@@ -406,9 +425,10 @@ void Network::disk_write_thread_loop() {
                     auto time_now = std::chrono::system_clock::now();
 
                     for (auto& [key, swarm] : swarm_cache_write) {
-                        auto swarm_path = cache_path + swarm_dir + "/" + key;
-                        std::filesystem::remove(swarm_path + "_new");
-                        std::ofstream swarm_file{swarm_path + "_new"};
+                        auto swarm_path = swarm_base / key;
+                        auto swarm_tmp = swarm_path;
+                        swarm_tmp += u8"_new";
+                        auto swarm_file = open_for_writing(swarm_tmp);
 
                         // Write the timestamp to the file
                         swarm_file << std::chrono::system_clock::to_time_t(time_now) << '\n';
@@ -417,8 +437,7 @@ void Network::disk_write_thread_loop() {
                         for (auto& snode : swarm)
                             swarm_file << node_to_disk(snode, snode_failure_counts_write) << '\n';
 
-                        std::filesystem::remove(cache_path + swarm_dir + "/" + key);
-                        std::filesystem::rename(swarm_path + "_new", swarm_path);
+                        fs::rename(swarm_tmp, swarm_path);
                     }
                     log::debug(cat, "Finished writing swarm cache to disk.");
                 }
@@ -435,7 +454,7 @@ void Network::disk_write_thread_loop() {
             swarm_cache = {};
 
             lock.unlock();
-            { std::filesystem::remove_all(cache_path); }
+            fs::remove_all(cache_path);
             lock.lock();
             need_clear_cache = false;
         }
@@ -1253,8 +1272,7 @@ void Network::send_request(
     quic::bstring_view payload{};
 
     if (info.body)
-        payload = quic::bstring_view{
-                reinterpret_cast<const std::byte*>(info.body->data()), info.body->size()};
+        payload = convert_sv<std::byte>(*info.body);
 
     conn_info.stream->command(
             info.endpoint,
