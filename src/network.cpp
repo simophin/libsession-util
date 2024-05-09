@@ -1793,6 +1793,7 @@ inline bool set_error(char* error, const std::exception& e) {
 
 extern "C" {
 
+using namespace session;
 using namespace session::network;
 
 LIBSESSION_C_API bool network_init(
@@ -1916,7 +1917,7 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
     assert(callback);
 
     try {
-        std::optional<session::ustring> body;
+        std::optional<ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
 
@@ -1982,7 +1983,7 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                 headers->emplace_back(server.headers[i], server.header_values[i]);
         }
 
-        std::optional<session::ustring> body;
+        std::optional<ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
 
