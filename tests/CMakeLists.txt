@@ -41,6 +41,7 @@ target_link_libraries(testAll PRIVATE
     libsession::onionreq
     libsodium::sodium-internal
     nlohmann_json::nlohmann_json
+    oxen::logging
     Catch2Wrapper)
 
 if(NOT TARGET check)

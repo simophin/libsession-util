@@ -113,7 +113,7 @@ endif()
 if(NOT TARGET oxen::logging)
     add_subdirectory(oxen-libquic/external/oxen-logging)
 endif()
-set(OXEN_LOGGING_SOURCE_ROOT "${OXEN_LOGGING_SOURCE_ROOT};${PROJECT_SOURCE_DIR}" CACHE INTERNAL "")
+oxen_logging_add_source_dir("${PROJECT_SOURCE_DIR}")
 
 if(CMAKE_C_COMPILER_LAUNCHER)
   set(deps_cc "${CMAKE_C_COMPILER_LAUNCHER} ${deps_cc}")
