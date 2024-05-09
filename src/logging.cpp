@@ -31,6 +31,10 @@ void add_logger(
     log::add_sink(std::make_shared<log::formatted_callback_sink>(std::move(cb)));
 }
 
+void manual_log(std::string_view msg) {
+    log::critical(oxen::log::Cat("manual"), "{}", msg);
+}
+
 void logger_reset_level(LogLevel level) {
     log::reset_level(level.spdlog_level());
 }
@@ -49,16 +53,18 @@ LogLevel logger_get_level(std::string cat_name) {
 
 }  // namespace session
 
+extern "C" {
+
 LIBSESSION_C_API void session_add_logger_simple(void (*callback)(const char* msg, size_t msglen)) {
     assert(callback);
-    session::add_logger([cb = callback](std::string_view msg) { cb(msg.data(), msg.size()); });
+    session::add_logger([cb = std::move(callback)](std::string_view msg) { cb(msg.data(), msg.size()); });
 }
 
 LIBSESSION_C_API void session_add_logger_full(void (*callback)(
         const char* msg, size_t msglen, const char* cat, size_t cat_len, LOG_LEVEL level)) {
     assert(callback);
     session::add_logger(
-            [cb = callback](
+            [cb = std::move(callback)](
                     std::string_view msg, std::string_view category, session::LogLevel level) {
                 cb(msg.data(),
                    msg.size(),
@@ -83,3 +89,9 @@ LIBSESSION_C_API void session_logger_set_level(const char* cat_name, LOG_LEVEL l
 LIBSESSION_C_API LOG_LEVEL session_logger_get_level(const char* cat_name) {
     return static_cast<LOG_LEVEL>(oxen::log::get_level(cat_name));
 }
+
+LIBSESSION_C_API void session_manual_log(const char* msg) {
+    session::manual_log(msg);
+}
+
+}  // extern "C"

@@ -57,6 +57,11 @@ LIBSESSION_EXPORT void session_logger_set_level(const char* cat_name, LOG_LEVEL 
 /// Gets the log level of a specific logger category
 LIBSESSION_EXPORT LOG_LEVEL session_logger_get_level(const char* cat_name);
 
+/// API: session/session_manual_log
+///
+/// Logs the provided value via oxen::log, can be used to test that the loggers are working correctly
+LIBSESSION_EXPORT void session_manual_log(const char* msg);
+
 #ifdef __cplusplus
 }
 #endif
