@@ -317,7 +317,7 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
             body.data(),
             body.size(),
             nullptr,
-            oxen::quic::DEFAULT_TIMEOUT.count(),
+            std::chrono::milliseconds{oxen::quic::DEFAULT_TIMEOUT}.count(),
             [](bool success,
                bool timeout,
                int16_t status_code,
@@ -330,6 +330,7 @@ TEST_CASE("Network direct request C API", "[network_send_request][network]") {
                 REQUIRE(response_size != 0);
 
                 auto response_str = std::string(c_response, response_size);
+                INFO("response_str is: " << response_str);
                 REQUIRE_NOTHROW(nlohmann::json::parse(response_str));
 
                 auto response = nlohmann::json::parse(response_str);
