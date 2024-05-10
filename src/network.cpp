@@ -258,125 +258,135 @@ Network::~Network() {
 // MARK: Cache Management
 
 void Network::load_cache_from_disk() {
-    // If the cache is for the wrong network then delete everything
-    auto testnet_stub = cache_path / file_testnet;
-    bool cache_is_for_testnet = fs::exists(testnet_stub);
-    if (use_testnet != cache_is_for_testnet)
-        fs::remove_all(cache_path);
+    try {
+        // If the cache is for the wrong network then delete everything
+        auto testnet_stub = cache_path / file_testnet;
+        bool cache_is_for_testnet = fs::exists(testnet_stub);
+        if (use_testnet != cache_is_for_testnet)
+            fs::remove_all(cache_path);
 
-    // Create the cache directory (and swarm_dir, inside it) if needed
-    auto swarm_path = cache_path / swarm_dir;
-    fs::create_directories(swarm_path);
+        // Create the cache directory (and swarm_dir, inside it) if needed
+        auto swarm_path = cache_path / swarm_dir;
+        fs::create_directories(swarm_path);
 
-    // If we are using testnet then create a file to indicate that
-    if (use_testnet)
-        write_whole_file(testnet_stub, "");
+        // If we are using testnet then create a file to indicate that
+        if (use_testnet)
+            write_whole_file(testnet_stub, "");
 
-    // Load the last time the snode pool was updated
-    //
-    // Note: We aren't just reading the write time of the file because Apple consider
-    // accessing file timestamps a method that can be used to track the user (and we
-    // want to avoid being flagged as using such)
-    auto last_updated_path = cache_path / file_snode_pool_updated;
-    if (fs::exists(last_updated_path)) {
-        try {
-            auto timestamp_str = read_whole_file(last_updated_path);
-            while (timestamp_str.ends_with('\n'))
-                timestamp_str.pop_back();
-
-            std::time_t timestamp;
-            if (!quic::parse_int(timestamp_str, timestamp))
-                throw std::runtime_error{"invalid file data: expected timestamp first line"};
-
-            last_snode_pool_update = std::chrono::system_clock::from_time_t(timestamp);
-        } catch (const std::exception& e) {
-            log::error(cat, "Ignoring invalid last update timestamp file: {}", e.what());
-        }
-    }
-
-    // Load the snode pool
-    auto pool_path = cache_path / file_snode_pool;
-    if (fs::exists(pool_path)) {
-        auto file = open_for_reading(pool_path);
-        std::vector<service_node> loaded_pool;
-        std::unordered_map<std::string, uint8_t> loaded_failure_count;
-        std::string line;
-
-        while (std::getline(file, line)) {
+        // Load the last time the snode pool was updated
+        //
+        // Note: We aren't just reading the write time of the file because Apple consider
+        // accessing file timestamps a method that can be used to track the user (and we
+        // want to avoid being flagged as using such)
+        auto last_updated_path = cache_path / file_snode_pool_updated;
+        if (fs::exists(last_updated_path)) {
             try {
-                auto [node, failure_count] = node_from_disk(line);
-                loaded_pool.push_back(node);
-                loaded_failure_count[node.to_string()] = failure_count;
-            } catch (...) {
-                log::warning(cat, "Skipping invalid entry in snode pool cache.");
-            }
-        }
+                auto timestamp_str = read_whole_file(last_updated_path);
+                while (timestamp_str.ends_with('\n'))
+                    timestamp_str.pop_back();
 
-        snode_pool = loaded_pool;
-        snode_failure_counts = loaded_failure_count;
-    }
+                std::time_t timestamp;
+                if (!quic::parse_int(timestamp_str, timestamp))
+                    throw std::runtime_error{"invalid file data: expected timestamp first line"};
 
-    // Load the swarm cache
-    auto time_now = std::chrono::system_clock::now();
-    std::unordered_map<std::string, std::vector<service_node>> loaded_cache;
-    std::vector<fs::path> caches_to_remove;
-
-    for (auto& entry : fs::directory_iterator(swarm_path)) {
-        // If the pubkey was valid then process the content
-        auto file = open_for_reading(entry.path());
-        std::vector<service_node> nodes;
-        std::string line;
-        bool checked_swarm_expiration = false;
-        std::chrono::seconds swarm_lifetime = 0s;
-        const auto& path = entry.path();
-        std::string filename{convert_sv<char>(path.filename().u8string())};
-
-        while (std::getline(file, line)) {
-            try {
-                // If we haven't checked if the swarm cache has expired then do so, removing
-                // any expired/invalid caches
-                if (!checked_swarm_expiration) {
-                    std::time_t timestamp;
-                    if (!quic::parse_int(line, timestamp))
-                        throw std::runtime_error{
-                                "invalid file data: expected timestamp first line"};
-                    auto swarm_last_updated = std::chrono::system_clock::from_time_t(timestamp);
-                    swarm_lifetime = std::chrono::duration_cast<std::chrono::seconds>(
-                            time_now - swarm_last_updated);
-                    checked_swarm_expiration = true;
-
-                    if (swarm_lifetime < swarm_cache_expiration_duration)
-                        throw std::runtime_error{"Expired swarm cache."};
-                }
-
-                // Otherwise try to parse as a node
-                nodes.push_back(node_from_disk(line).first);
-
+                last_snode_pool_update = std::chrono::system_clock::from_time_t(timestamp);
             } catch (const std::exception& e) {
-                log::warning(cat, "Skipping invalid or expired entry in swarm cache: {}", e.what());
-
-                // The cache is invalid, we should remove it
-                if (!checked_swarm_expiration) {
-                    caches_to_remove.emplace_back(path);
-                    break;
-                }
+                log::error(cat, "Ignoring invalid last update timestamp file: {}", e.what());
             }
         }
 
-        // If we got nodes the add it to the cache, otherwise we want to remove it
-        if (!nodes.empty())
-            loaded_cache[filename] = std::move(nodes);
-        else
-            caches_to_remove.emplace_back(path);
-    }
+        // Load the snode pool
+        auto pool_path = cache_path / file_snode_pool;
+        if (fs::exists(pool_path)) {
+            auto file = open_for_reading(pool_path);
+            std::vector<service_node> loaded_pool;
+            std::unordered_map<std::string, uint8_t> loaded_failure_count;
+            std::string line;
 
-    swarm_cache = loaded_cache;
+            while (std::getline(file, line)) {
+                try {
+                    auto [node, failure_count] = node_from_disk(line);
+                    loaded_pool.push_back(node);
+                    loaded_failure_count[node.to_string()] = failure_count;
+                } catch (...) {
+                    log::warning(cat, "Skipping invalid entry in snode pool cache.");
+                }
+            }
 
-    // Remove any expired cache files
-    for (auto& cache_path : caches_to_remove)
+            snode_pool = loaded_pool;
+            snode_failure_counts = loaded_failure_count;
+        }
+
+        // Load the swarm cache
+        auto time_now = std::chrono::system_clock::now();
+        std::unordered_map<std::string, std::vector<service_node>> loaded_cache;
+        std::vector<fs::path> caches_to_remove;
+
+        for (auto& entry : fs::directory_iterator(swarm_path)) {
+            // If the pubkey was valid then process the content
+            auto file = open_for_reading(entry.path());
+            std::vector<service_node> nodes;
+            std::string line;
+            bool checked_swarm_expiration = false;
+            std::chrono::seconds swarm_lifetime = 0s;
+            const auto& path = entry.path();
+            std::string filename{convert_sv<char>(path.filename().u8string())};
+
+            while (std::getline(file, line)) {
+                try {
+                    // If we haven't checked if the swarm cache has expired then do so, removing
+                    // any expired/invalid caches
+                    if (!checked_swarm_expiration) {
+                        std::time_t timestamp;
+                        if (!quic::parse_int(line, timestamp))
+                            throw std::runtime_error{
+                                    "invalid file data: expected timestamp first line"};
+                        auto swarm_last_updated = std::chrono::system_clock::from_time_t(timestamp);
+                        swarm_lifetime = std::chrono::duration_cast<std::chrono::seconds>(
+                                time_now - swarm_last_updated);
+                        checked_swarm_expiration = true;
+
+                        if (swarm_lifetime < swarm_cache_expiration_duration)
+                            throw std::runtime_error{"Expired swarm cache."};
+                    }
+
+                    // Otherwise try to parse as a node
+                    nodes.push_back(node_from_disk(line).first);
+
+                } catch (const std::exception& e) {
+                    log::warning(
+                            cat, "Skipping invalid or expired entry in swarm cache: {}", e.what());
+
+                    // The cache is invalid, we should remove it
+                    if (!checked_swarm_expiration) {
+                        caches_to_remove.emplace_back(path);
+                        break;
+                    }
+                }
+            }
+
+            // If we got nodes the add it to the cache, otherwise we want to remove it
+            if (!nodes.empty())
+                loaded_cache[filename] = std::move(nodes);
+            else
+                caches_to_remove.emplace_back(path);
+        }
+
+        swarm_cache = loaded_cache;
+
+        // Remove any expired cache files
+        for (auto& cache_path : caches_to_remove)
+            fs::remove_all(cache_path);
+
+        log::info(
+                cat,
+                "Loaded cache of {} snodes, {} swarms.",
+                snode_pool.size(),
+                swarm_cache.size());
+    } catch (const std::exception& e) {
+        log::error(cat, "Failed to load cache, will rebuild ({}).", e.what());
         fs::remove_all(cache_path);
-
-    log::info(cat, "Loaded cache of {} snodes, {} swarms.", snode_pool.size(), swarm_cache.size());
+    }
 }
 
 void Network::disk_write_thread_loop() {
