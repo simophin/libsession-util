@@ -212,8 +212,12 @@ std::vector<std::string> ConfigBase::_merge(
     // - confs that failed to parse (we can't understand them, so leave them behind as they may be
     //   some future message).
     std::optional<size_t> superconf = new_conf->unmerged_index();  // nullopt if we had to merge
+    std::string_view superconf_hash = superconf && *superconf < all_hashes.size()
+        ? all_hashes[*superconf]
+        : "";
+
     for (size_t i = 0; i < all_hashes.size(); i++) {
-        if (i != superconf && !bad_confs.count(i) && !all_hashes[i].empty())
+        if (i != superconf && !bad_confs.count(i) && !all_hashes[i].empty() && superconf_hash != all_hashes[i])
             _old_hashes.emplace(all_hashes[i]);
     }
 
