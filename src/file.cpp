@@ -7,16 +7,15 @@ std::ofstream open_for_writing(const fs::path& filename) {
     std::ofstream out;
     out.exceptions(std::ios_base::failbit | std::ios_base::badbit);
     out.open(filename, std::ios_base::binary | std::ios_base::out | std::ios_base::trunc);
-    if (!out.is_open())
-        throw std::runtime_error{"Failed to open file for writing: " + std::string(filename)};
+    out.exceptions(std::ios_base::badbit);
     return out;
 }
 
 std::ifstream open_for_reading(const fs::path& filename) {
     std::ifstream in;
+    in.exceptions(std::ios_base::failbit | std::ios_base::badbit);
     in.open(filename, std::ios::binary | std::ios::in);
-    if (!in.is_open())
-        throw std::runtime_error{"Failed to open file for reading: " + std::string(filename)};
+    in.exceptions(std::ios_base::badbit);
     return in;
 }
 
