@@ -32,7 +32,7 @@ void add_logger(
 }
 
 void manual_log(std::string_view msg) {
-    log::critical(oxen::log::Cat("manual"), "{}", msg);
+    log::info(oxen::log::Cat("manual"), "{}", msg);
 }
 
 void logger_reset_level(LogLevel level) {

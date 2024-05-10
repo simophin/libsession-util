@@ -1,6 +1,6 @@
 #include <sodium/utils.h>
 
-#include <session/secure_array.hpp>
+#include <session/sodium_array.hpp>
 
 namespace session {
 
