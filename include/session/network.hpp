@@ -75,7 +75,7 @@ class Network {
     ConnectionStatus status;
     oxen::quic::Network net;
     std::vector<onion_path> paths;
-    std::shared_ptr<oxen::quic::Loop> build_paths_loop;
+    std::shared_ptr<oxen::quic::Loop> paths_and_pool_loop;
 
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
 
@@ -277,18 +277,21 @@ class Network {
             service_node target,
             std::optional<oxen::quic::connection_established_callback> conn_established_cb);
 
-    /// API: network/with_snode_pool
+    /// API: network/with_paths_and_pool
     ///
-    /// Retrieves the service node pool from the cache.  If the cache is empty it will first be
-    /// populated from the network.
+    /// Retrieves the current onion request paths and service node pool from the cache.  If the
+    /// cache is empty it will first be populated from the network.
     ///
     /// Inputs:
-    /// - `callback` -- [in] callback to be triggered once we have the service node pool.  NOTE: If
-    /// we are unable to retrieve the service node pool the callback will be triggered with an empty
-    /// list.
-    void with_snode_pool(
-            std::function<void(std::vector<service_node> pool, std::optional<std::string> error)>
-                    callback);
+    /// - `callback` -- [in] callback to be triggered once we have built the paths and service node
+    /// pool.  NOTE: If we are unable to build the paths or retrieve the service node pool the
+    /// callback will be triggered with empty lists and an error.
+    void with_paths_and_pool(
+            std::optional<service_node> excluded_node,
+            std::function<
+                    void(std::vector<onion_path> updated_paths,
+                         std::vector<service_node> pool,
+                         std::optional<std::string> error)> callback);
 
     /// API: network/with_path
     ///
@@ -314,24 +317,22 @@ class Network {
     ///
     /// Outputs:
     /// - The possible path, if found, and the number of paths provided.
-    std::pair<std::optional<onion_path>, uint8_t> find_possible_path(
-            std::optional<service_node> excluded_node, std::vector<onion_path> paths);
+    std::pair<bool, bool> validate_paths_and_pool(
+            std::vector<onion_path> paths,
+            std::vector<service_node> pool,
+            std::chrono::system_clock::time_point last_pool_update);
 
-    /// API: network/build_paths_if_needed
+    /// API: network/find_possible_path
     ///
-    /// Builds onion request paths if needed by opening and testing connections to random service
-    /// nodes in the snode pool.  If we already have enough paths the callback will be triggered
-    /// with the current paths.
+    /// Picks a random path from the provided paths excluding the provided node if one is available.
     ///
     /// Inputs:
     /// - `excluded_node` -- [in, optional] node which should not be included in the paths.
-    /// - `callback` -- [in] callback to be triggered once we have enough paths.  NOTE: If we are
-    /// unable to create the paths the callback will be triggered with an empty list.
-    void build_paths_if_needed(
-            std::optional<service_node> excluded_node,
-            std::function<
-                    void(std::vector<onion_path> updated_paths, std::optional<std::string> error)>
-                    callback);
+    ///
+    /// Outputs:
+    /// - The possible path, if found, and the number of paths provided.
+    std::pair<std::optional<onion_path>, uint8_t> find_possible_path(
+            std::optional<service_node> excluded_node, std::vector<onion_path> paths);
 
     /// API: network/get_service_nodes_recursive
     ///
