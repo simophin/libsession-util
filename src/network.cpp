@@ -225,8 +225,7 @@ Network::Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_
         should_cache_to_disk{cache_path},
         cache_path{cache_path.value_or(default_cache_path)} {
     log::info(cat, "Test info log - Create network");
-    get_snode_pool_loop = std::make_shared<quic::Loop>();
-    build_paths_loop = std::make_shared<quic::Loop>();
+    paths_and_pool_loop = std::make_shared<quic::Loop>();
 
     // Load the cache from disk and start the disk write thread
     if (should_cache_to_disk) {
