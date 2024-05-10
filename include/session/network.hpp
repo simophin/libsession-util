@@ -75,7 +75,6 @@ class Network {
     ConnectionStatus status;
     oxen::quic::Network net;
     std::vector<onion_path> paths;
-    std::shared_ptr<oxen::quic::Loop> get_snode_pool_loop;
     std::shared_ptr<oxen::quic::Loop> build_paths_loop;
 
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
@@ -305,6 +304,18 @@ class Network {
             std::optional<service_node> excluded_node,
             std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
                     callback);
+
+    /// API: network/find_possible_path
+    ///
+    /// Picks a random path from the provided paths excluding the provided node if one is available.
+    ///
+    /// Inputs:
+    /// - `excluded_node` -- [in, optional] node which should not be included in the paths.
+    ///
+    /// Outputs:
+    /// - The possible path, if found, and the number of paths provided.
+    std::pair<std::optional<onion_path>, uint8_t> find_possible_path(
+            std::optional<service_node> excluded_node, std::vector<onion_path> paths);
 
     /// API: network/build_paths_if_needed
     ///

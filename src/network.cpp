@@ -559,7 +559,7 @@ connection_info Network::get_connection_info(
 void Network::with_snode_pool(
         std::function<void(std::vector<service_node> pool, std::optional<std::string> error)>
                 callback) {
-    get_snode_pool_loop->call([this, cb = std::move(callback)]() mutable {
+    build_paths_loop->call([this, cb = std::move(callback)]() mutable {
         auto current_pool_info = net.call_get(
                 [this]() -> std::pair<
                                  std::vector<service_node>,
@@ -718,88 +718,50 @@ void Network::with_path(
         std::optional<service_node> excluded_node,
         std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
                 callback) {
-    // Retrieve a random path that doesn't contain the excluded node
-    auto select_valid_path = [](std::optional<service_node> excluded_node,
-                                std::vector<onion_path> paths) -> std::optional<onion_path> {
-        if (paths.empty())
-            return std::nullopt;
-
-        std::vector<onion_path> possible_paths;
-        std::copy_if(
-                paths.begin(),
-                paths.end(),
-                std::back_inserter(possible_paths),
-                [&excluded_node](const auto& path) {
-                    return !path.nodes.empty() &&
-                           (!excluded_node ||
-                            std::find(path.nodes.begin(), path.nodes.end(), excluded_node) ==
-                                    path.nodes.end());
-                });
-
-        if (possible_paths.empty())
-            return std::nullopt;
-
-        CSRNG rng;
-        std::shuffle(possible_paths.begin(), possible_paths.end(), rng);
-
-        return possible_paths.front();
-    };
-
-    std::pair<std::optional<onion_path>, uint8_t> path_info;
-    auto [target_path, paths_count] = path_info;
     auto current_paths = net.call_get([this]() -> std::vector<onion_path> { return paths; });
-    paths_count = current_paths.size();
-    target_path = select_valid_path(excluded_node, current_paths);
+    std::pair<std::optional<onion_path>, uint8_t> path_info =
+            find_possible_path(excluded_node, current_paths);
+    auto& [target_path, paths_count] = path_info;
 
-    // If we found a path but it's connection wasn't valid then we should try to reconnect and block
-    // the path building loop
+    // The path doesn't have a valid connection so we should try to reconnect (we will end
+    // up updating the `paths` value so should do this in a blocking way)
     if (target_path && !target_path->conn_info.is_valid()) {
         path_info = build_paths_loop->call_get(
                 [this,
-                 excluded_node,
-                 select_valid_path]() mutable -> std::pair<std::optional<onion_path>, uint8_t> {
-                    // Since this may have been blocked by another thread we should start by trying
-                    // to get a new target path
+                 path = *target_path]() mutable -> std::pair<std::optional<onion_path>, uint8_t> {
+                    // Since this may have been blocked by another thread we should start by
+                    // making sure the target path is still one of the current paths
                     auto current_paths =
                             net.call_get([this]() -> std::vector<onion_path> { return paths; });
+                    auto target_path_it =
+                            std::find(current_paths.begin(), current_paths.end(), path);
 
-                    // If we found a path then return it (also build additional paths in the
-                    // background if needed)
-                    if (auto target_path = select_valid_path(excluded_node, current_paths)) {
-                        // If the stream had been closed then try to open a new stream
-                        if (!target_path->conn_info.is_valid()) {
-                            auto info = get_connection_info(
-                                    target_path->nodes[0], [this](quic::connection_interface&) {
-                                        // If the connection is re-established update the network
-                                        // status back to connected
-                                        update_status(ConnectionStatus::connected);
-                                    });
+                    // If we didn't find the path then don't bother continuing
+                    if (target_path_it == current_paths.end())
+                        return {std::nullopt, current_paths.size()};
 
-                            if (!info.is_valid())
-                                return {std::nullopt, current_paths.size()};
+                    auto info =
+                            get_connection_info(path.nodes[0], [this](quic::connection_interface&) {
+                                // If the connection is re-established update the network
+                                // status back to connected
+                                update_status(ConnectionStatus::connected);
+                            });
 
-                            auto updated_path =
-                                    onion_path{std::move(info), std::move(target_path->nodes), 0};
+                    if (!info.is_valid())
+                        return {std::nullopt, current_paths.size()};
 
-                            // No need to call the 'paths_changed' callback as the paths haven't
-                            // actually changed, just their connection info
-                            auto paths_count = net.call_get(
-                                    [this, target_path, updated_path]() mutable -> uint8_t {
-                                        paths.erase(
-                                                std::remove(
-                                                        paths.begin(), paths.end(), target_path),
-                                                paths.end());
-                                        paths.emplace_back(updated_path);
-                                        return paths.size();
-                                    });
+                    // No need to call the 'paths_changed' callback as the paths haven't
+                    // actually changed, just their connection info
+                    auto updated_path = onion_path{std::move(info), std::move(path.nodes), 0};
+                    auto paths_count =
+                            net.call_get([this, path, updated_path]() mutable -> uint8_t {
+                                paths.erase(
+                                        std::remove(paths.begin(), paths.end(), path), paths.end());
+                                paths.emplace_back(updated_path);
+                                return paths.size();
+                            });
 
-                            return {updated_path, paths_count};
-                        }
-
-                        return {target_path, current_paths.size()};
-                    }
-
-                    return {std::nullopt, current_paths.size()};
+                    return {updated_path, paths_count};
                 });
     }
 
@@ -807,11 +769,15 @@ void Network::with_path(
     if (!target_path)
         return build_paths_if_needed(
                 std::nullopt,
-                [excluded_node,
-                 select_path = std::move(select_valid_path),
-                 cb = std::move(callback)](
+                [this, excluded_node, cb = std::move(callback)](
                         std::vector<onion_path> updated_paths, std::optional<std::string> error) {
-                    cb(select_path(excluded_node, updated_paths), error);
+                    if (error)
+                        return cb(std::nullopt, *error);
+                    auto [target_path, paths_count] = find_possible_path(excluded_node, updated_paths);
+
+                    if (!target_path)
+                        return cb(std::nullopt, "Unable to find valid path.");
+                    cb(*target_path, std::nullopt);
                 });
 
     // Build additional paths in the background if we don't have enough
@@ -830,6 +796,32 @@ void Network::with_path(
     callback(target_path, std::nullopt);
 }
 
+std::pair<std::optional<onion_path>, uint8_t> Network::find_possible_path(
+        std::optional<service_node> excluded_node, std::vector<onion_path> paths) {
+    if (paths.empty())
+        return {std::nullopt, paths.size()};
+
+    std::vector<onion_path> possible_paths;
+    std::copy_if(
+            paths.begin(),
+            paths.end(),
+            std::back_inserter(possible_paths),
+            [&excluded_node](const auto& path) {
+                return !path.nodes.empty() &&
+                       (!excluded_node ||
+                        std::find(path.nodes.begin(), path.nodes.end(), excluded_node) ==
+                                path.nodes.end());
+            });
+
+    if (possible_paths.empty())
+        return {std::nullopt, paths.size()};
+
+    CSRNG rng;
+    std::shuffle(possible_paths.begin(), possible_paths.end(), rng);
+
+    return {possible_paths.front(), paths.size()};
+};
+
 void Network::build_paths_if_needed(
         std::optional<service_node> excluded_node,
         std::function<void(std::vector<onion_path> updated_paths, std::optional<std::string> error)>
@@ -839,160 +831,158 @@ void Network::build_paths_if_needed(
         if (pool.empty())
             return cb({}, error.value_or("No snode pool."));
 
-        build_paths_loop->call([this, excluded_node, pool, cb = std::move(cb)]() mutable {
-            auto current_paths =
-                    net.call_get([this]() -> std::vector<onion_path> { return paths; });
+        auto current_paths =
+                net.call_get([this]() -> std::vector<onion_path> { return paths; });
 
-            // No need to do anything if we already have enough paths
-            if (current_paths.size() >= target_path_count)
-                return cb(current_paths, std::nullopt);
+        // No need to do anything if we already have enough paths
+        if (current_paths.size() >= target_path_count)
+            return cb(current_paths, std::nullopt);
 
-            // Update the network status
-            net.call([this]() mutable { update_status(ConnectionStatus::connecting); });
+        // Update the network status
+        net.call([this]() mutable { update_status(ConnectionStatus::connecting); });
 
-            // Get the possible guard nodes
-            log::info(cat, "Building paths.");
-            std::vector<service_node> nodes_to_exclude;
-            std::vector<service_node> possible_guard_nodes;
+        // Get the possible guard nodes
+        log::info(cat, "Building paths.");
+        std::vector<service_node> nodes_to_exclude;
+        std::vector<service_node> possible_guard_nodes;
 
-            if (excluded_node)
-                nodes_to_exclude.push_back(*excluded_node);
+        if (excluded_node)
+            nodes_to_exclude.push_back(*excluded_node);
 
-            for (auto& path : paths)
-                nodes_to_exclude.insert(
-                        nodes_to_exclude.end(), path.nodes.begin(), path.nodes.end());
+        for (auto& path : paths)
+            nodes_to_exclude.insert(
+                    nodes_to_exclude.end(), path.nodes.begin(), path.nodes.end());
 
-            if (nodes_to_exclude.empty())
-                possible_guard_nodes = pool;
-            else
-                std::copy_if(
-                        pool.begin(),
-                        pool.end(),
-                        std::back_inserter(possible_guard_nodes),
-                        [&nodes_to_exclude](const auto& node) {
-                            return std::find(
-                                           nodes_to_exclude.begin(),
-                                           nodes_to_exclude.end(),
-                                           node) == nodes_to_exclude.end();
-                        });
+        if (nodes_to_exclude.empty())
+            possible_guard_nodes = pool;
+        else
+            std::copy_if(
+                    pool.begin(),
+                    pool.end(),
+                    std::back_inserter(possible_guard_nodes),
+                    [&nodes_to_exclude](const auto& node) {
+                        return std::find(
+                                        nodes_to_exclude.begin(),
+                                        nodes_to_exclude.end(),
+                                        node) == nodes_to_exclude.end();
+                    });
 
-            if (possible_guard_nodes.empty()) {
-                log::info(cat, "Unable to build paths due to lack of possible guard nodes.");
-                return cb({}, "Unable to build paths due to lack of possible guard nodes.");
+        if (possible_guard_nodes.empty()) {
+            log::info(cat, "Unable to build paths due to lack of possible guard nodes.");
+            return cb({}, "Unable to build paths due to lack of possible guard nodes.");
+        }
+
+        // Now that we have a list of possible guard nodes we need to build the paths, first off
+        // we need to find valid guard nodes for the paths
+        CSRNG rng;
+        std::shuffle(possible_guard_nodes.begin(), possible_guard_nodes.end(), rng);
+
+        // Split the possible nodes list into a list of lists (one list could run out before the
+        // other but in most cases this should work fine)
+        size_t required_paths = (target_path_count - current_paths.size());
+        size_t chunk_size = (possible_guard_nodes.size() / required_paths);
+        std::vector<std::vector<service_node>> nodes_to_test;
+        auto start = 0;
+
+        for (size_t i = 0; i < required_paths; ++i) {
+            auto end = std::min(start + chunk_size, possible_guard_nodes.size());
+
+            if (i == required_paths - 1)
+                end = possible_guard_nodes.size();
+
+            nodes_to_test.emplace_back(
+                    possible_guard_nodes.begin() + start, possible_guard_nodes.begin() + end);
+            start = end;
+        }
+
+        // Start testing guard nodes based on the number of paths we want to build
+        std::vector<std::promise<std::pair<connection_info, std::vector<service_node>>>>
+                promises(required_paths);
+
+        for (size_t i = 0; i < required_paths; ++i) {
+            find_valid_guard_node_recursive(
+                    nodes_to_test[i],
+                    [&prom = promises[i]](
+                            std::optional<connection_info> valid_guard_node,
+                            std::vector<service_node> unused_nodes) {
+                        try {
+                            if (!valid_guard_node)
+                                std::runtime_error{"Failed to find valid guard node."};
+                            prom.set_value({*valid_guard_node, unused_nodes});
+                        } catch (...) {
+                            prom.set_exception(std::current_exception());
+                        }
+                    });
+        }
+
+        // Combine the results (we want to block the `build_paths_loop` until we have retrieved
+        // the valid guard nodes so we don't double up on requests
+        try {
+            std::vector<connection_info> valid_nodes;
+            std::vector<service_node> unused_nodes;
+
+            for (auto& prom : promises) {
+                auto result = prom.get_future().get();
+                valid_nodes.emplace_back(result.first);
+                unused_nodes.insert(
+                        unused_nodes.begin(), result.second.begin(), result.second.end());
             }
 
-            // Now that we have a list of possible guard nodes we need to build the paths, first off
-            // we need to find valid guard nodes for the paths
-            CSRNG rng;
-            std::shuffle(possible_guard_nodes.begin(), possible_guard_nodes.end(), rng);
+            // Make sure we ended up getting enough valid nodes
+            auto have_enough_guard_nodes =
+                    (current_paths.size() + valid_nodes.size() >= target_path_count);
+            auto have_enough_unused_nodes =
+                    (unused_nodes.size() >= ((path_size - 1) * target_path_count));
 
-            // Split the possible nodes list into a list of lists (one list could run out before the
-            // other but in most cases this should work fine)
-            size_t required_paths = (target_path_count - current_paths.size());
-            size_t chunk_size = (possible_guard_nodes.size() / required_paths);
-            std::vector<std::vector<service_node>> nodes_to_test;
-            auto start = 0;
+            if (!have_enough_guard_nodes || !have_enough_unused_nodes)
+                throw std::runtime_error{"Not enough remaining nodes."};
 
-            for (size_t i = 0; i < required_paths; ++i) {
-                auto end = std::min(start + chunk_size, possible_guard_nodes.size());
+            // Build the paths
+            auto updated_paths = current_paths;
 
-                if (i == required_paths - 1)
-                    end = possible_guard_nodes.size();
+            for (auto& info : valid_nodes) {
+                std::vector<service_node> path{info.node};
 
-                nodes_to_test.emplace_back(
-                        possible_guard_nodes.begin() + start, possible_guard_nodes.begin() + end);
-                start = end;
-            }
-
-            // Start testing guard nodes based on the number of paths we want to build
-            std::vector<std::promise<std::pair<connection_info, std::vector<service_node>>>>
-                    promises(required_paths);
-
-            for (size_t i = 0; i < required_paths; ++i) {
-                find_valid_guard_node_recursive(
-                        nodes_to_test[i],
-                        [&prom = promises[i]](
-                                std::optional<connection_info> valid_guard_node,
-                                std::vector<service_node> unused_nodes) {
-                            try {
-                                if (!valid_guard_node)
-                                    std::runtime_error{"Failed to find valid guard node."};
-                                prom.set_value({*valid_guard_node, unused_nodes});
-                            } catch (...) {
-                                prom.set_exception(std::current_exception());
-                            }
-                        });
-            }
-
-            // Combine the results (we want to block the `build_paths_loop` until we have retrieved
-            // the valid guard nodes so we don't double up on requests
-            try {
-                std::vector<connection_info> valid_nodes;
-                std::vector<service_node> unused_nodes;
-
-                for (auto& prom : promises) {
-                    auto result = prom.get_future().get();
-                    valid_nodes.emplace_back(result.first);
-                    unused_nodes.insert(
-                            unused_nodes.begin(), result.second.begin(), result.second.end());
+                for (auto i = 0; i < path_size - 1; i++) {
+                    auto node = unused_nodes.back();
+                    unused_nodes.pop_back();
+                    path.push_back(node);
                 }
 
-                // Make sure we ended up getting enough valid nodes
-                auto have_enough_guard_nodes =
-                        (current_paths.size() + valid_nodes.size() >= target_path_count);
-                auto have_enough_unused_nodes =
-                        (unused_nodes.size() >= ((path_size - 1) * target_path_count));
+                updated_paths.emplace_back(onion_path{std::move(info), path, 0});
 
-                if (!have_enough_guard_nodes || !have_enough_unused_nodes)
-                    throw std::runtime_error{"Not enough remaining nodes."};
-
-                // Build the paths
-                auto updated_paths = current_paths;
-
-                for (auto& info : valid_nodes) {
-                    std::vector<service_node> path{info.node};
-
-                    for (auto i = 0; i < path_size - 1; i++) {
-                        auto node = unused_nodes.back();
-                        unused_nodes.pop_back();
-                        path.push_back(node);
-                    }
-
-                    updated_paths.emplace_back(onion_path{std::move(info), path, 0});
-
-                    // Log that a path was built
-                    std::vector<std::string> node_descriptions;
-                    std::transform(
-                            path.begin(),
-                            path.end(),
-                            std::back_inserter(node_descriptions),
-                            [](service_node& node) { return node.to_string(); });
-                    auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
-                    log::info(cat, "Built new onion request path: [{}]", path_description);
-                }
-
-                // Paths were successfully built, update the connection status
-                update_status(ConnectionStatus::connected);
-
-                // Store the updated paths and update the connection status
-                std::vector<std::vector<service_node>> raw_paths;
-                for (auto& path : updated_paths)
-                    raw_paths.emplace_back(path.nodes);
-
-                net.call([this, updated_paths, raw_paths]() mutable {
-                    paths = updated_paths;
-
-                    if (paths_changed)
-                        paths_changed(raw_paths);
-                });
-
-                // Trigger the callback with the updated paths
-                cb(updated_paths, std::nullopt);
-            } catch (const std::exception& e) {
-                log::info(cat, "Unable to build paths due to error: {}", e.what());
-                cb({}, e.what());
+                // Log that a path was built
+                std::vector<std::string> node_descriptions;
+                std::transform(
+                        path.begin(),
+                        path.end(),
+                        std::back_inserter(node_descriptions),
+                        [](service_node& node) { return node.to_string(); });
+                auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
+                log::info(cat, "Built new onion request path: [{}]", path_description);
             }
-        });
+
+            // Paths were successfully built, update the connection status
+            update_status(ConnectionStatus::connected);
+
+            // Store the updated paths and update the connection status
+            std::vector<std::vector<service_node>> raw_paths;
+            for (auto& path : updated_paths)
+                raw_paths.emplace_back(path.nodes);
+
+            net.call([this, updated_paths, raw_paths]() mutable {
+                paths = updated_paths;
+
+                if (paths_changed)
+                    paths_changed(raw_paths);
+            });
+
+            // Trigger the callback with the updated paths
+            cb(updated_paths, std::nullopt);
+        } catch (const std::exception& e) {
+            log::info(cat, "Unable to build paths due to error: {}", e.what());
+            cb({}, e.what());
+        }
     });
 }
 
