@@ -113,7 +113,17 @@ endif()
 if(NOT TARGET oxen::logging)
     add_subdirectory(oxen-libquic/external/oxen-logging)
 endif()
+
 oxen_logging_add_source_dir("${PROJECT_SOURCE_DIR}")
+
+# Apple xcode 15 has a completely broken std::source_location; we can't fix it, but at least we can
+# hack up the source locations to hide the path that it uses (which is the useless path to
+# oxen/log.hpp where the info/critical/etc. bodies are).
+if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL AppleClang AND NOT CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16)
+    message(WARNING "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} is broken: filenames in logging statements will not display properly")
+    oxen_logging_add_source_dir("${CMAKE_CURRENT_SOURCE_DIR}/oxen-libquic/external/oxen-logging/include/oxen")
+endif()
+
 
 if(CMAKE_C_COMPILER_LAUNCHER)
   set(deps_cc "${CMAKE_C_COMPILER_LAUNCHER} ${deps_cc}")
