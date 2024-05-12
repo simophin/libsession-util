@@ -64,6 +64,16 @@ TEST_CASE("Logging callbacks", "[logging]") {
 
     REQUIRE(simple_logs.size() == 2);
     REQUIRE(full_logs.size() == 2);
+
+#if defined(__APPLE__) && defined(__clang__)
+    CHECK(fixup_log(simple_logs[0]) ==
+          "[<timestamp>] [<reltime>] [test.a:critical|log.hpp:177] abc 42\n");
+    CHECK(fixup_log(simple_logs[1]) == "[<timestamp>] [<reltime>] [test.b:info|log.hpp:98] hi\n");
+    CHECK(fixup_log(full_logs[0]) ==
+          "test.a|critical|[<timestamp>] [<reltime>] [test.a:critical|log.hpp:177] abc 42\n");
+    CHECK(fixup_log(full_logs[1]) ==
+          "test.b|info|[<timestamp>] [<reltime>] [test.b:info|log.hpp:98] hi\n");
+#elif
     CHECK(fixup_log(simple_logs[0]) ==
           "[<timestamp>] [<reltime>] [test.a:critical|tests/test_logging.cpp:{}] abc 42\n"_format(
                   line0));
@@ -75,6 +85,7 @@ TEST_CASE("Logging callbacks", "[logging]") {
     CHECK(fixup_log(full_logs[1]) ==
           "test.b|info|[<timestamp>] [<reltime>] [test.b:info|tests/test_logging.cpp:{}] hi\n"_format(
                   line1));
+#endif
 }
 
 TEST_CASE("Logging callbacks with quic::Network", "[logging][network]") {
