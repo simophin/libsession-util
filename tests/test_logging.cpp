@@ -73,7 +73,7 @@ TEST_CASE("Logging callbacks", "[logging]") {
           "test.a|critical|[<timestamp>] [<reltime>] [test.a:critical|log.hpp:177] abc 42\n");
     CHECK(fixup_log(full_logs[1]) ==
           "test.b|info|[<timestamp>] [<reltime>] [test.b:info|log.hpp:98] hi\n");
-#elif
+#else
     CHECK(fixup_log(simple_logs[0]) ==
           "[<timestamp>] [<reltime>] [test.a:critical|tests/test_logging.cpp:{}] abc 42\n"_format(
                   line0));
