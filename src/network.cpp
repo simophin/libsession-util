@@ -713,7 +713,7 @@ void Network::with_paths_and_pool(
                         return {{}, {}, e.what()};
                     }
                 }
-throw std::runtime_error{"CI TEST - throw after got pool"};
+
                 // Build new paths if needed
                 if (!paths_valid) {
                     try {
@@ -774,7 +774,7 @@ throw std::runtime_error{"CI TEST - throw after got pool"};
                         std::vector<
                                 std::promise<std::pair<connection_info, std::vector<service_node>>>>
                                 promises(required_paths);
-
+                        throw std::runtime_error{"CI TEST - throw before testing guard nodes"};
                         for (size_t i = 0; i < required_paths; ++i) {
                             find_valid_guard_node_recursive(
                                     nodes_to_test[i],
