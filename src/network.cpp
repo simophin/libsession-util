@@ -805,7 +805,7 @@ void Network::with_paths_and_pool(
                                     result.second.begin(),
                                     result.second.end());
                         }
-                        throw std::runtime_error{"CI TEST - throw after testing guard nodes"};
+
                         // Make sure we ended up getting enough valid nodes
                         auto have_enough_guard_nodes =
                                 (current_paths.size() + valid_nodes.size() >= target_path_count);
@@ -842,7 +842,7 @@ void Network::with_paths_and_pool(
                         return {{}, {}, e.what()};
                     }
                 }
-
+throw std::runtime_error{"CI TEST - throw after building paths"};
                 // Store to instance variables
                 net.call([this, pool_result, paths_result, pool_valid, paths_valid]() mutable {
                     if (!paths_valid) {
