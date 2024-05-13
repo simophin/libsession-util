@@ -844,9 +844,9 @@ void Network::with_paths_and_pool(
                 }
 
                 // Store to instance variables
-                net.call([this/*, pool_result, paths_result, pool_valid, paths_valid*/]() mutable {
+                net.call([this, /*pool_result, */paths_result/*, pool_valid, paths_valid*/]() mutable {
                     // if (!paths_valid) {
-                    //     paths = paths_result;
+                        paths = paths_result;
 
                     //     // Call the paths_changed callback if provided
                     //     if (paths_changed) {
