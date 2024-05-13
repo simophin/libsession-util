@@ -844,32 +844,31 @@ void Network::with_paths_and_pool(
                 }
 
                 // Store to instance variables
-                net.call([this, pool_result, paths_result, pool_valid, paths_valid]() mutable {
-throw std::runtime_error{"CI TEST - throw in net.call"};
-                    if (!paths_valid) {
-                        paths = paths_result;
+                net.call([this/*, pool_result, paths_result, pool_valid, paths_valid*/]() mutable {
+                    // if (!paths_valid) {
+                    //     paths = paths_result;
 
-                        // Call the paths_changed callback if provided
-                        if (paths_changed) {
-                            std::vector<std::vector<service_node>> raw_paths;
-                            for (auto& path : paths_result)
-                                raw_paths.emplace_back(path.nodes);
+                    //     // Call the paths_changed callback if provided
+                    //     if (paths_changed) {
+                    //         std::vector<std::vector<service_node>> raw_paths;
+                    //         for (auto& path : paths_result)
+                    //             raw_paths.emplace_back(path.nodes);
 
-                            paths_changed(raw_paths);
-                        }
-                    }
+                    //         paths_changed(raw_paths);
+                    //     }
+                    // }
 
-                    // Only update the disk cache if the snode pool was updated
-                    if (!pool_valid) {
-                        {
-                            std::lock_guard lock{snode_cache_mutex};
-                            snode_pool = pool_result;
-                            last_snode_pool_update = std::chrono::system_clock::now();
-                            need_pool_write = true;
-                            need_write = true;
-                        }
-                        snode_cache_cv.notify_one();
-                    }
+                    // // Only update the disk cache if the snode pool was updated
+                    // if (!pool_valid) {
+                    //     {
+                    //         std::lock_guard lock{snode_cache_mutex};
+                    //         snode_pool = pool_result;
+                    //         last_snode_pool_update = std::chrono::system_clock::now();
+                    //         need_pool_write = true;
+                    //         need_write = true;
+                    //     }
+                    //     snode_cache_cv.notify_one();
+                    // }
 
                     // Paths were successfully built, update the connection status
                     update_status(ConnectionStatus::connected);
