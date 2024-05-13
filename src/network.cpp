@@ -713,7 +713,7 @@ void Network::with_paths_and_pool(
                         return {{}, {}, e.what()};
                     }
                 }
-
+throw std::runtime_error{"CI TEST - throw after got pool"};
                 // Build new paths if needed
                 if (!paths_valid) {
                     try {
@@ -876,7 +876,7 @@ void Network::with_paths_and_pool(
 
                 return {paths_result, pool_result, std::nullopt};
             });
-throw std::runtime_error{"CI TEST - throw after got pool and paths"};
+
     return callback(updated_paths, updated_pool, error);
 }
 
