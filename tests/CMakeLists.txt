@@ -1,5 +1,9 @@
 add_subdirectory(Catch2)
 
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  add_definitions(-DRELEASE_BUILD)
+endif()
+
 add_executable(testAll
     test_blinding.cpp
     test_bt_merge.cpp
