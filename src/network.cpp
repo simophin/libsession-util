@@ -870,10 +870,10 @@ throw std::runtime_error{"CI TEST - throw in net.call"};
                         }
                         snode_cache_cv.notify_one();
                     }
-                });
 
-                // Paths were successfully built, update the connection status
-                update_status(ConnectionStatus::connected);
+                    // Paths were successfully built, update the connection status
+                    update_status(ConnectionStatus::connected);
+                });
 
                 return {paths_result, pool_result, std::nullopt};
             });
@@ -977,7 +977,7 @@ void Network::with_path(
 
     // We have a valid path, update the status in case we had flagged it as disconnected for
     // some reason
-    update_status(ConnectionStatus::connected);
+    net.call([this]() mutable { update_status(ConnectionStatus::connected); });
     callback(target_path, std::nullopt);
 }
 
