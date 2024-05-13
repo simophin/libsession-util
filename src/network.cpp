@@ -824,7 +824,8 @@ void Network::with_paths_and_pool(
                                 unused_nodes.pop_back();
                                 path.push_back(node);
                             }
-
+                            info.conn.reset();
+                            info.stream.reset();
                             paths_result.emplace_back(onion_path{std::move(info), path, 0});
 
                             // Log that a path was built
