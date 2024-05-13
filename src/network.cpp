@@ -785,7 +785,7 @@ void Network::with_paths_and_pool(
                                             if (!valid_guard_node)
                                                 std::runtime_error{
                                                         "Failed to find valid guard node."};
-                                            prom.set_value({std::move(*valid_guard_node), unused_nodes});
+                                            prom.set_value({*valid_guard_node, unused_nodes});
                                         } catch (...) {
                                             prom.set_exception(std::current_exception());
                                         }
@@ -1066,7 +1066,7 @@ void Network::find_valid_guard_node_recursive(
                                 "Outdated node version ({})"_format(fmt::join(version, "."))};
 
                     log::info(cat, "Guard snode {} valid.", target_node.to_string());
-                    cb(std::move(info), remaining_nodes);
+                    cb(info, remaining_nodes);
                 } catch (const std::exception& e) {
                     // Log the error and loop after a slight delay (don't want to drain the pool
                     // too quickly if the network goes down)
@@ -1150,14 +1150,14 @@ void Network::get_version(
     auto info = get_connection_info(node, std::nullopt);
 
     if (!info.is_valid())
-        return callback({}, std::move(info), "Network is unreachable.");
+        return callback({}, info, "Network is unreachable.");
 
     oxenc::bt_dict_producer payload;
     info.stream->command(
             "info",
             payload.view(),
             timeout,
-            [this, info = std::move(info), cb = std::move(callback)](quic::message resp) {
+            [this, info, cb = std::move(callback)](quic::message resp) {
                 try {
                     auto [status_code, body] = validate_response(resp, true);
 

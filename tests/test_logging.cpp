@@ -100,7 +100,11 @@ TEST_CASE("Logging callbacks with quic::Network", "[logging][network]") {
     oxen::log::clear_sinks();
 
     CHECK(simple_logs.size() >= 2);
-    CHECK(simple_logs == std::vector<std::string>{"uncomment me to fail showing all log lines"});
+    // CHECK(simple_logs == std::vector<std::string>{"uncomment me to fail showing all log lines"});
+#ifndef NDEBUG
+    CHECK(simple_logs.front().find("Started libevent") != std::string::npos);
+#else
     CHECK(simple_logs.front().find("Starting libevent") != std::string::npos);
+#endif
     CHECK(simple_logs.back().find("Loop shutdown complete") != std::string::npos);
 }
