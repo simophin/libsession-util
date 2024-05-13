@@ -785,7 +785,7 @@ void Network::with_paths_and_pool(
                                             if (!valid_guard_node)
                                                 std::runtime_error{
                                                         "Failed to find valid guard node."};
-                                            prom.set_value({*valid_guard_node, unused_nodes});
+                                            prom.set_value({std::move(*valid_guard_node), unused_nodes});
                                         } catch (...) {
                                             prom.set_exception(std::current_exception());
                                         }
@@ -824,8 +824,7 @@ void Network::with_paths_and_pool(
                                 unused_nodes.pop_back();
                                 path.push_back(node);
                             }
-                            info.conn.reset();
-                            info.stream.reset();
+
                             paths_result.emplace_back(onion_path{std::move(info), path, 0});
 
                             // Log that a path was built
@@ -845,31 +844,31 @@ void Network::with_paths_and_pool(
                 }
 
                 // Store to instance variables
-                net.call([this, /*pool_result, */paths_result/*, pool_valid, paths_valid*/]() mutable {
-                    // if (!paths_valid) {
+                net.call([this, pool_result, paths_result, pool_valid, paths_valid]() mutable {
+                    if (!paths_valid) {
                         paths = paths_result;
 
-                    //     // Call the paths_changed callback if provided
-                    //     if (paths_changed) {
-                    //         std::vector<std::vector<service_node>> raw_paths;
-                    //         for (auto& path : paths_result)
-                    //             raw_paths.emplace_back(path.nodes);
+                        // Call the paths_changed callback if provided
+                        if (paths_changed) {
+                            std::vector<std::vector<service_node>> raw_paths;
+                            for (auto& path : paths_result)
+                                raw_paths.emplace_back(path.nodes);
 
-                    //         paths_changed(raw_paths);
-                    //     }
-                    // }
+                            paths_changed(raw_paths);
+                        }
+                    }
 
-                    // // Only update the disk cache if the snode pool was updated
-                    // if (!pool_valid) {
-                    //     {
-                    //         std::lock_guard lock{snode_cache_mutex};
-                    //         snode_pool = pool_result;
-                    //         last_snode_pool_update = std::chrono::system_clock::now();
-                    //         need_pool_write = true;
-                    //         need_write = true;
-                    //     }
-                    //     snode_cache_cv.notify_one();
-                    // }
+                    // Only update the disk cache if the snode pool was updated
+                    if (!pool_valid) {
+                        {
+                            std::lock_guard lock{snode_cache_mutex};
+                            snode_pool = pool_result;
+                            last_snode_pool_update = std::chrono::system_clock::now();
+                            need_pool_write = true;
+                            need_write = true;
+                        }
+                        snode_cache_cv.notify_one();
+                    }
 
                     // Paths were successfully built, update the connection status
                     update_status(ConnectionStatus::connected);
@@ -1067,7 +1066,7 @@ void Network::find_valid_guard_node_recursive(
                                 "Outdated node version ({})"_format(fmt::join(version, "."))};
 
                     log::info(cat, "Guard snode {} valid.", target_node.to_string());
-                    cb(info, remaining_nodes);
+                    cb(std::move(info), remaining_nodes);
                 } catch (const std::exception& e) {
                     // Log the error and loop after a slight delay (don't want to drain the pool
                     // too quickly if the network goes down)
@@ -1151,14 +1150,14 @@ void Network::get_version(
     auto info = get_connection_info(node, std::nullopt);
 
     if (!info.is_valid())
-        return callback({}, info, "Network is unreachable.");
+        return callback({}, std::move(info), "Network is unreachable.");
 
     oxenc::bt_dict_producer payload;
     info.stream->command(
             "info",
             payload.view(),
             timeout,
-            [this, info, cb = std::move(callback)](quic::message resp) {
+            [this, info = std::move(info), cb = std::move(callback)](quic::message resp) {
                 try {
                     auto [status_code, body] = validate_response(resp, true);
 
