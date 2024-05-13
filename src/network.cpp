@@ -845,6 +845,7 @@ void Network::with_paths_and_pool(
 
                 // Store to instance variables
                 net.call([this, pool_result, paths_result, pool_valid, paths_valid]() mutable {
+throw std::runtime_error{"CI TEST - throw in net.call"};
                     if (!paths_valid) {
                         paths = paths_result;
 
@@ -857,7 +858,7 @@ void Network::with_paths_and_pool(
                             paths_changed(raw_paths);
                         }
                     }
-throw std::runtime_error{"CI TEST - throw after updating paths"};
+
                     // Only update the disk cache if the snode pool was updated
                     if (!pool_valid) {
                         {
