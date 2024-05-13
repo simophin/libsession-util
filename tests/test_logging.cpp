@@ -101,7 +101,7 @@ TEST_CASE("Logging callbacks with quic::Network", "[logging][network]") {
 
     CHECK(simple_logs.size() >= 2);
     // CHECK(simple_logs == std::vector<std::string>{"uncomment me to fail showing all log lines"});
-#ifdef RELEASE_BUILD
+#if defined(__APPLE__) && defined(__clang__) && defined(RELEASE_BUILD)
     CHECK(simple_logs.front().find("Started libevent") != std::string::npos);
 #else
     CHECK(simple_logs.front().find("Starting libevent") != std::string::npos);
