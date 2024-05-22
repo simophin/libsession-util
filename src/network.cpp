@@ -223,8 +223,7 @@ namespace {
 Network::Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths) :
         use_testnet{use_testnet},
         should_cache_to_disk{cache_path},
-        cache_path{cache_path.value_or(default_cache_path)} {
-    log::info(cat, "Test info log - Create network");
+        cache_path{std::move(cache_path.value_or(default_cache_path))} {
     paths_and_pool_loop = std::make_shared<quic::Loop>();
 
     // Load the cache from disk and start the disk write thread
@@ -384,7 +383,7 @@ void Network::load_cache_from_disk() {
                 snode_pool.size(),
                 swarm_cache.size());
     } catch (const std::exception& e) {
-        log::error(cat, "Failed to load cache, will rebuild ({}).", e.what());
+        log::error(cat, "Failed to load snode cache, will rebuild ({}).", e.what());
         fs::remove_all(cache_path);
     }
 }
@@ -404,57 +403,62 @@ void Network::disk_write_thread_loop() {
 
             lock.unlock();
             {
-                // Create the cache directories if needed
-                auto swarm_base = cache_path / swarm_dir;
-                fs::create_directories(swarm_base);
+                try {
+                    // Create the cache directories if needed
+                    auto swarm_base = cache_path / swarm_dir;
+                    fs::create_directories(swarm_base);
 
-                // Save the snode pool to disk
-                if (need_pool_write) {
-                    auto pool_path = cache_path / file_snode_pool;
-                    auto pool_tmp = pool_path;
-                    pool_tmp += u8"_new";
+                    // Save the snode pool to disk
+                    if (need_pool_write) {
+                        auto pool_path = cache_path / file_snode_pool;
+                        auto pool_tmp = pool_path;
+                        pool_tmp += u8"_new";
 
-                    {
-                        auto file = open_for_writing(pool_tmp);
-                        for (auto& snode : snode_pool_write)
-                            file << node_to_disk(snode, snode_failure_counts_write) << '\n';
+                        {
+                            auto file = open_for_writing(pool_tmp);
+                            for (auto& snode : snode_pool_write)
+                                file << node_to_disk(snode, snode_failure_counts_write) << '\n';
+                        }
+
+                        fs::rename(pool_tmp, pool_path);
+
+                        // Write the last update timestamp to disk
+                        write_whole_file(
+                                cache_path / file_snode_pool_updated,
+                                "{}"_format(std::chrono::system_clock::to_time_t(
+                                        last_pool_update_write)));
+                        log::debug(cat, "Finished writing snode pool cache to disk.");
                     }
 
-                    fs::rename(pool_tmp, pool_path);
+                    // Write the swarm cache to disk
+                    if (need_swarm_write) {
+                        auto time_now = std::chrono::system_clock::now();
 
-                    // Write the last update timestamp to disk
-                    write_whole_file(
-                            cache_path / file_snode_pool_updated,
-                            "{}"_format(
-                                    std::chrono::system_clock::to_time_t(last_pool_update_write)));
-                    log::debug(cat, "Finished writing snode pool cache to disk.");
-                }
+                        for (auto& [key, swarm] : swarm_cache_write) {
+                            auto swarm_path = swarm_base / key;
+                            auto swarm_tmp = swarm_path;
+                            swarm_tmp += u8"_new";
+                            auto swarm_file = open_for_writing(swarm_tmp);
 
-                // Write the swarm cache to disk
-                if (need_swarm_write) {
-                    auto time_now = std::chrono::system_clock::now();
+                            // Write the timestamp to the file
+                            swarm_file << std::chrono::system_clock::to_time_t(time_now) << '\n';
 
-                    for (auto& [key, swarm] : swarm_cache_write) {
-                        auto swarm_path = swarm_base / key;
-                        auto swarm_tmp = swarm_path;
-                        swarm_tmp += u8"_new";
-                        auto swarm_file = open_for_writing(swarm_tmp);
+                            // Write the nodes to the file
+                            for (auto& snode : swarm)
+                                swarm_file << node_to_disk(snode, snode_failure_counts_write)
+                                           << '\n';
 
-                        // Write the timestamp to the file
-                        swarm_file << std::chrono::system_clock::to_time_t(time_now) << '\n';
-
-                        // Write the nodes to the file
-                        for (auto& snode : swarm)
-                            swarm_file << node_to_disk(snode, snode_failure_counts_write) << '\n';
-
-                        fs::rename(swarm_tmp, swarm_path);
+                            fs::rename(swarm_tmp, swarm_path);
+                        }
+                        log::debug(cat, "Finished writing swarm cache to disk.");
                     }
-                    log::debug(cat, "Finished writing swarm cache to disk.");
-                }
 
-                need_pool_write = false;
-                need_swarm_write = false;
-                need_write = false;
+                    need_pool_write = false;
+                    need_swarm_write = false;
+                    need_write = false;
+                } catch (const std::exception& e) {
+                    log::error(cat, "Failed to write snode cache: {}", e.what());
+                }
             }
             lock.lock();
         }
@@ -545,6 +549,7 @@ connection_info Network::get_connection_info(
                     target_path->conn_info.stream.reset();
                     handle_errors(
                             {target, "", std::nullopt, std::nullopt, *target_path, 0ms, false},
+                            false,
                             std::nullopt,
                             std::nullopt,
                             std::nullopt);
@@ -604,18 +609,20 @@ void Network::with_paths_and_pool(
                 // Populate the snode pool if needed
                 if (!pool_valid) {
                     // Define the response handler to avoid code duplication
-                    auto handle_nodes_response = [](std::promise<std::vector<service_node>>& prom) {
-                        return [&prom](std::vector<service_node> nodes,
-                                       std::optional<std::string> error) {
-                            try {
-                                if (nodes.empty())
-                                    throw std::runtime_error{error.value_or("No nodes received.")};
-                                prom.set_value(nodes);
-                            } catch (...) {
-                                prom.set_exception(std::current_exception());
-                            }
-                        };
-                    };
+                    auto handle_nodes_response =
+                            [](std::promise<std::vector<service_node>>&& prom) {
+                                return [&prom](std::vector<service_node> nodes,
+                                               std::optional<std::string> error) {
+                                    try {
+                                        if (nodes.empty())
+                                            throw std::runtime_error{
+                                                    error.value_or("No nodes received.")};
+                                        prom.set_value(nodes);
+                                    } catch (...) {
+                                        prom.set_exception(std::current_exception());
+                                    }
+                                };
+                            };
 
                     try {
                         // If we don't have enough nodes in the current cached pool then we need to
@@ -630,13 +637,16 @@ void Network::with_paths_and_pool(
 
                             std::shuffle(pool_result.begin(), pool_result.end(), rng);
                             std::promise<std::vector<service_node>> prom;
+                            std::future<std::vector<service_node>> prom_future = prom.get_future();
 
                             get_service_nodes(
-                                    pool_result.front(), 256, handle_nodes_response(prom));
+                                    pool_result.front(),
+                                    256,
+                                    handle_nodes_response(std::move(prom)));
 
                             // We want to block the `get_snode_pool_loop` until we have retrieved
                             // the snode pool so we don't double up on requests
-                            pool_result = prom.get_future().get();
+                            pool_result = prom_future.get();
                             log::info(cat, "Retrieved snode pool from seed node.");
                         } else {
                             // Pick ~9 random snodes from the current cache to fetch nodes from (we
@@ -646,55 +656,60 @@ void Network::with_paths_and_pool(
                                     std::min(pool_result.size() / 3, static_cast<size_t>(3));
 
                             log::info(cat, "Fetching from random expired cache nodes.");
-                            std::vector<service_node> first_nodes(
+                            std::vector<service_node> nodes1(
                                     pool_result.begin(), pool_result.begin() + num_retries);
-                            std::vector<service_node> second_nodes(
+                            std::vector<service_node> nodes2(
                                     pool_result.begin() + num_retries,
                                     pool_result.begin() + (num_retries * 2));
-                            std::vector<service_node> third_nodes(
+                            std::vector<service_node> nodes3(
                                     pool_result.begin() + (num_retries * 2),
                                     pool_result.begin() + (num_retries * 3));
                             std::promise<std::vector<service_node>> prom1;
                             std::promise<std::vector<service_node>> prom2;
                             std::promise<std::vector<service_node>> prom3;
+                            std::future<std::vector<service_node>> prom_future1 =
+                                    prom1.get_future();
+                            std::future<std::vector<service_node>> prom_future2 =
+                                    prom2.get_future();
+                            std::future<std::vector<service_node>> prom_future3 =
+                                    prom3.get_future();
 
                             // Kick off 3 concurrent requests
                             get_service_nodes_recursive(
-                                    first_nodes, std::nullopt, handle_nodes_response(prom1));
+                                    nodes1, std::nullopt, handle_nodes_response(std::move(prom1)));
                             get_service_nodes_recursive(
-                                    second_nodes, std::nullopt, handle_nodes_response(prom2));
+                                    nodes2, std::nullopt, handle_nodes_response(std::move(prom2)));
                             get_service_nodes_recursive(
-                                    third_nodes, std::nullopt, handle_nodes_response(prom3));
+                                    nodes3, std::nullopt, handle_nodes_response(std::move(prom3)));
 
                             // We want to block the `get_snode_pool_loop` until we have retrieved
                             // the snode pool so we don't double up on requests
-                            auto first_result_nodes = prom1.get_future().get();
-                            auto second_result_nodes = prom2.get_future().get();
-                            auto third_result_nodes = prom3.get_future().get();
+                            auto result_nodes1 = prom_future1.get();
+                            auto result_nodes2 = prom_future2.get();
+                            auto result_nodes3 = prom_future3.get();
 
                             // Sort the vectors (so make it easier to find the
                             // intersection)
-                            std::stable_sort(first_result_nodes.begin(), first_result_nodes.end());
-                            std::stable_sort(
-                                    second_result_nodes.begin(), second_result_nodes.end());
-                            std::stable_sort(third_result_nodes.begin(), third_result_nodes.end());
+                            std::stable_sort(result_nodes1.begin(), result_nodes1.end());
+                            std::stable_sort(result_nodes2.begin(), result_nodes2.end());
+                            std::stable_sort(result_nodes3.begin(), result_nodes3.end());
 
                             // Get the intersection of the vectors
-                            std::vector<service_node> first_second_intersection;
+                            std::vector<service_node> intersection1_2;
                             std::vector<service_node> intersection;
 
                             std::set_intersection(
-                                    first_result_nodes.begin(),
-                                    first_result_nodes.end(),
-                                    second_result_nodes.begin(),
-                                    second_result_nodes.end(),
-                                    std::back_inserter(first_second_intersection),
+                                    result_nodes1.begin(),
+                                    result_nodes1.end(),
+                                    result_nodes2.begin(),
+                                    result_nodes2.end(),
+                                    std::back_inserter(intersection1_2),
                                     [](const auto& a, const auto& b) { return a == b; });
                             std::set_intersection(
-                                    first_second_intersection.begin(),
-                                    first_second_intersection.end(),
-                                    third_result_nodes.begin(),
-                                    third_result_nodes.end(),
+                                    intersection1_2.begin(),
+                                    intersection1_2.end(),
+                                    result_nodes3.begin(),
+                                    result_nodes3.end(),
                                     std::back_inserter(intersection),
                                     [](const auto& a, const auto& b) { return a == b; });
 
@@ -1314,9 +1329,9 @@ void Network::send_request(
                     auto [status_code, body] = validate_response(resp, false);
                     cb(true, false, status_code, body);
                 } catch (const status_code_exception& e) {
-                    handle_errors(info, e.status_code, e.what(), cb);
+                    handle_errors(info, false, e.status_code, e.what(), cb);
                 } catch (const std::exception& e) {
-                    cb(false, resp.timed_out, -1, e.what());
+                    handle_errors(info, resp.timed_out, -1, e.what(), cb);
                 }
             });
 }
@@ -1362,6 +1377,7 @@ void Network::send_onion_request(
                             swarm_pubkey,
                             *path,
                             timeout,
+                            node_for_destination(destination).has_value(),
                             is_retry};
 
                     send_request(
@@ -1376,11 +1392,18 @@ void Network::send_onion_request(
                                     bool timeout,
                                     int16_t status_code,
                                     std::optional<std::string> response) {
-                                if (!success || timeout ||
-                                    !ResponseParser::response_long_enough(
-                                            builder.enc_type, response->size()))
-                                    return handle_errors(info, status_code, response, cb);
+                                // If the request was reported as a failure or a timeout then we
+                                // will have already handled the errors so just trigger the callback
+                                if (!success || timeout)
+                                    return cb(success, timeout, status_code, response);
 
+                                // Ensure the response is long enough to be processed, if not then
+                                // handle it as an error
+                                if (!ResponseParser::response_long_enough(
+                                            builder.enc_type, response->size()))
+                                    return handle_errors(info, timeout, status_code, response, cb);
+
+                                // Otherwise, process the onion request response
                                 if (std::holds_alternative<service_node>(destination))
                                     process_snode_response(builder, *response, info, cb);
                                 else if (std::holds_alternative<ServerDestination>(destination))
@@ -1442,7 +1465,7 @@ void Network::process_snode_response(
 
         // If we got a non 2xx status code, return the error
         if (status_code < 200 || status_code > 299)
-            return handle_errors(info, status_code, body, handle_response);
+            return handle_errors(info, false, status_code, body, handle_response);
 
         handle_response(true, false, status_code, body);
     } catch (const std::exception& e) {
@@ -1479,10 +1502,10 @@ void Network::process_server_response(
         // If we have a status code that is not in the 2xx range, return the error
         if (status_code < 200 || status_code > 299) {
             if (result_bencode.is_finished())
-                return handle_errors(info, status_code, std::nullopt, handle_response);
+                return handle_errors(info, false, status_code, std::nullopt, handle_response);
 
             return handle_errors(
-                    info, status_code, result_bencode.consume_string(), handle_response);
+                    info, false, status_code, result_bencode.consume_string(), handle_response);
         }
 
         // If there is no body just return the success status
@@ -1553,10 +1576,45 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
 
 void Network::handle_errors(
         request_info info,
+        bool timeout,
         std::optional<int16_t> status_code_,
         std::optional<std::string> response,
         std::optional<network_response_callback_t> handle_response) {
     auto status_code = status_code_.value_or(-1);
+
+    // If we are making a proxied request to a server then it's possible that the server destination
+    // failed rather than nodes along the path, to avoid needlessly dropping paths we want to try to
+    // detect some of the more common cases and just handle the response without updating the
+    // path/snode state
+    if (!info.node_destination) {
+        // A tmeout could be caused because the destination is unreachable rather than the the path
+        // (eg. if a user has an old SOGS which is no longer running on their device they will get a
+        // timeout)
+        if (timeout) {
+            log::warning(cat, "Detected server timeout, finishing early.");
+            if (handle_response)
+                return (*handle_response)(false, true, status_code, response);
+            return;
+        }
+
+        // A number of server errors can return HTML data but no status code, this indicates that
+        // we managed to connect to the destination so try to intercept some of these cases
+        if (status_code == -1 && response) {
+            const std::unordered_map<std::string, std::pair<int16_t, bool>> response_map = {
+                    {"500 Internal Server Error", {500, false}},
+                    {"504 Gateway Timeout", {504, true}},
+            };
+
+            for (const auto& [prefix, result] : response_map) {
+                if (response->starts_with(prefix)) {
+                    log::warning(cat, "Detected {}, finishing early.", prefix);
+                    if (handle_response)
+                        return (*handle_response)(false, result.second, result.first, response);
+                    return;
+                }
+            }
+        }
+    }
 
     switch (status_code) {
         // A 404 or a 400 is likely due to a bad/missing SOGS or file so
@@ -1721,8 +1779,23 @@ void Network::handle_errors(
               updated_path]() mutable {
         // Drop the path if invalid
         if (updated_path.failure_count >= path_failure_threshold) {
-            log::info(cat, "Dropping path.");
+            auto old_paths_size = paths.size();
+            old_path.conn_info.conn.reset();
+            old_path.conn_info.stream.reset();
             paths.erase(std::remove(paths.begin(), paths.end(), old_path), paths.end());
+
+            std::vector<std::string> node_descriptions;
+            std::transform(
+                    old_path.nodes.begin(),
+                    old_path.nodes.end(),
+                    std::back_inserter(node_descriptions),
+                    [](service_node& node) { return node.to_string(); });
+            auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
+
+            if (paths.size() != old_paths_size)
+                log::info(cat, "Dropping path: [{}]", path_description);
+            else
+                log::info(cat, "Path already dropped: [{}]", path_description);
         } else
             std::replace(paths.begin(), paths.end(), old_path, updated_path);
 

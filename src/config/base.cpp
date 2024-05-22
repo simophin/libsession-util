@@ -143,7 +143,11 @@ std::vector<std::string> ConfigBase::_merge(
             }
         }
         if (!decrypted)
-            log::warning(cat, "Failed to decrypt message {}", ci);
+            log::warning(
+                    cat,
+                    "Failed to decrypt message {} for namespace {}",
+                    ci,
+                    static_cast<std::int16_t>(storage_namespace()));
     }
     log::debug(
             cat,
