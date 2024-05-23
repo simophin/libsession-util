@@ -1591,7 +1591,6 @@ void Network::handle_errors(
         // (eg. if a user has an old SOGS which is no longer running on their device they will get a
         // timeout)
         if (timeout) {
-            log::warning(cat, "Detected server timeout, finishing early.");
             if (handle_response)
                 return (*handle_response)(false, true, status_code, response);
             return;
@@ -1607,7 +1606,6 @@ void Network::handle_errors(
 
             for (const auto& [prefix, result] : response_map) {
                 if (response->starts_with(prefix)) {
-                    log::warning(cat, "Detected {}, finishing early.", prefix);
                     if (handle_response)
                         return (*handle_response)(false, result.second, result.first, response);
                     return;
