@@ -480,7 +480,14 @@ void Network::disk_write_thread_loop() {
 void Network::close_connections() {
     net.call([this]() mutable {
         endpoint.reset();
+
+        for (auto& path : paths) {
+            path.conn_info.conn.reset();
+            path.conn_info.stream.reset();
+        }
+
         update_status(ConnectionStatus::disconnected);
+        log::info(cat, "Closed all connections.");
     });
 }
 
@@ -524,9 +531,12 @@ std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
     });
 }
 
-connection_info Network::get_connection_info(
-        service_node target,
-        std::optional<quic::connection_established_callback> conn_established_cb) {
+connection_info Network::get_connection_info(service_node target) {
+    std::once_flag cb_called;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool connection_established = false;
+    bool done = false;
     auto connection_key_pair = ed25519::ed25519_key_pair();
     auto creds =
             quic::GNUTLSCreds::make_from_ed_seckey(from_unsigned_sv(connection_key_pair.second));
@@ -535,15 +545,38 @@ connection_info Network::get_connection_info(
             target,
             creds,
             quic::opt::keep_alive{10s},
-            conn_established_cb,
-            [this, target](quic::connection_interface& conn, uint64_t) {
+            [&mutex, &cv, &connection_established, &done, &cb_called](
+                    quic::connection_interface& conn) {
+                std::call_once(cb_called, [&]() {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        connection_established = true;
+                        done = true;
+                    }
+                    cv.notify_one();
+                });
+            },
+            [this, target, &mutex, &cv, &done, &cb_called](
+                    quic::connection_interface& conn, uint64_t) {
+                // Trigger the callback first before updating the paths in case this was triggered
+                // when try to establish a connection
+                std::call_once(cb_called, [&]() {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        done = true;
+                    }
+                    cv.notify_one();
+                });
+
                 // When the connection is closed, update the path and connection status
-                auto target_path =
-                        std::find_if(paths.begin(), paths.end(), [&target](const auto& path) {
+                auto current_paths =
+                        net.call_get([this]() -> std::vector<onion_path> { return paths; });
+                auto target_path = std::find_if(
+                        current_paths.begin(), current_paths.end(), [&target](const auto& path) {
                             return !path.nodes.empty() && target == path.nodes.front();
                         });
 
-                if (target_path != paths.end() && target_path->conn_info.conn &&
+                if (target_path != current_paths.end() && target_path->conn_info.conn &&
                     conn.reference_id() == target_path->conn_info.conn->reference_id()) {
                     target_path->conn_info.conn.reset();
                     target_path->conn_info.stream.reset();
@@ -555,6 +588,12 @@ connection_info Network::get_connection_info(
                             std::nullopt);
                 }
             });
+
+    std::unique_lock<std::mutex> lock(mutex);
+    cv.wait(lock, [&done] { return done; });
+
+    if (!connection_established)
+        return {target, nullptr, nullptr};
 
     return {target, c, c->open_stream<quic::BTRequestStream>()};
 }
@@ -579,10 +618,12 @@ void Network::with_paths_and_pool(
     });
 
     // Check if the current data is valid, and if so just return it
-    auto [paths_valid, pool_valid] = validate_paths_and_pool(current_paths, pool, last_pool_update);
+    auto current_valid_paths = valid_paths(current_paths);
+    auto [paths_valid, pool_valid] =
+            validate_paths_and_pool_sizes(current_valid_paths, pool, last_pool_update);
 
     if (paths_valid && pool_valid)
-        return callback(current_paths, pool, std::nullopt);
+        return callback(current_valid_paths, pool, std::nullopt);
 
     auto [updated_paths, updated_pool, error] =
             paths_and_pool_loop->call_get([this, excluded_node]() mutable -> paths_and_pool_result {
@@ -592,11 +633,12 @@ void Network::with_paths_and_pool(
                         });
 
                 // Check if the current data is valid, and if so just return it
+                auto current_valid_paths = valid_paths(current_paths);
                 auto [paths_valid, pool_valid] =
-                        validate_paths_and_pool(current_paths, pool, last_pool_update);
+                        validate_paths_and_pool_sizes(current_valid_paths, pool, last_pool_update);
 
                 if (paths_valid && pool_valid)
-                    return {current_paths, pool, std::nullopt};
+                    return {current_valid_paths, pool, std::nullopt};
 
                 // Update the network status
                 net.call([this]() mutable { update_status(ConnectionStatus::connecting); });
@@ -604,7 +646,7 @@ void Network::with_paths_and_pool(
                 // If the pool isn't valid then we should update it
                 CSRNG rng;
                 std::vector<service_node> pool_result = pool;
-                std::vector<onion_path> paths_result = current_paths;
+                std::vector<onion_path> paths_result = current_valid_paths;
 
                 // Populate the snode pool if needed
                 if (!pool_valid) {
@@ -768,7 +810,7 @@ void Network::with_paths_and_pool(
 
                         // Split the possible nodes list into a list of lists (one list could run
                         // out before the other but in most cases this should work fine)
-                        size_t required_paths = (target_path_count - current_paths.size());
+                        size_t required_paths = (target_path_count - current_valid_paths.size());
                         size_t chunk_size = (possible_guard_nodes.size() / required_paths);
                         std::vector<std::vector<service_node>> nodes_to_test;
                         auto start = 0;
@@ -787,22 +829,30 @@ void Network::with_paths_and_pool(
 
                         // Start testing guard nodes based on the number of paths we want to build
                         std::vector<
-                                std::promise<std::pair<connection_info, std::vector<service_node>>>>
-                                promises(required_paths);
+                                std::future<std::pair<connection_info, std::vector<service_node>>>>
+                                futures;
+                        futures.reserve(required_paths);
 
                         for (size_t i = 0; i < required_paths; ++i) {
+                            std::promise<std::pair<connection_info, std::vector<service_node>>>
+                                    guard_node_prom;
+                            futures.emplace_back(guard_node_prom.get_future());
+
+                            auto prom = std::make_shared<std::promise<
+                                    std::pair<connection_info, std::vector<service_node>>>>(
+                                    std::move(guard_node_prom));
+
                             find_valid_guard_node_recursive(
                                     nodes_to_test[i],
-                                    [&prom = promises[i]](
-                                            std::optional<connection_info> valid_guard_node,
-                                            std::vector<service_node> unused_nodes) {
+                                    [prom](std::optional<connection_info> valid_guard_node,
+                                           std::vector<service_node> unused_nodes) {
                                         try {
                                             if (!valid_guard_node)
-                                                std::runtime_error{
+                                                throw std::runtime_error{
                                                         "Failed to find valid guard node."};
-                                            prom.set_value({*valid_guard_node, unused_nodes});
+                                            prom->set_value({*valid_guard_node, unused_nodes});
                                         } catch (...) {
-                                            prom.set_exception(std::current_exception());
+                                            prom->set_exception(std::current_exception());
                                         }
                                     });
                         }
@@ -812,8 +862,8 @@ void Network::with_paths_and_pool(
                         std::vector<connection_info> valid_nodes;
                         std::vector<service_node> unused_nodes;
 
-                        for (auto& prom : promises) {
-                            auto result = prom.get_future().get();
+                        for (auto& fut : futures) {
+                            auto result = fut.get();
                             valid_nodes.emplace_back(result.first);
                             unused_nodes.insert(
                                     unused_nodes.begin(),
@@ -823,7 +873,8 @@ void Network::with_paths_and_pool(
 
                         // Make sure we ended up getting enough valid nodes
                         auto have_enough_guard_nodes =
-                                (current_paths.size() + valid_nodes.size() >= target_path_count);
+                                (current_valid_paths.size() + valid_nodes.size() >=
+                                 target_path_count);
                         auto have_enough_unused_nodes =
                                 (unused_nodes.size() >= ((path_size - 1) * target_path_count));
 
@@ -895,7 +946,18 @@ void Network::with_paths_and_pool(
     return callback(updated_paths, updated_pool, error);
 }
 
-std::pair<bool, bool> Network::validate_paths_and_pool(
+std::vector<onion_path> Network::valid_paths(std::vector<onion_path> paths) {
+    auto valid_paths = paths;
+    auto valid_paths_end =
+            std::remove_if(valid_paths.begin(), valid_paths.end(), [](onion_path path) {
+                return !path.conn_info.is_valid();
+            });
+    valid_paths.erase(valid_paths_end, valid_paths.end());
+
+    return valid_paths;
+}
+
+std::pair<bool, bool> Network::validate_paths_and_pool_sizes(
         std::vector<onion_path> paths,
         std::vector<service_node> pool,
         std::chrono::system_clock::time_point last_pool_update) {
@@ -934,15 +996,19 @@ void Network::with_path(
                     if (target_path_it == current_paths.end())
                         return {std::nullopt, current_paths.size()};
 
-                    auto info =
-                            get_connection_info(path.nodes[0], [this](quic::connection_interface&) {
-                                // If the connection is re-established update the network
-                                // status back to connected
-                                update_status(ConnectionStatus::connected);
-                            });
+                    // Try to retrieve a valid connection for the guard node
+                    auto info = get_connection_info(path.nodes[0]);
 
+                    // It's possible that the connection was created successfully, and reported as
+                    // valid, but isn't actually valid (eg. it was shutdown immediately due to the
+                    // network being unreachable) so to avoid this we wait for either the connection
+                    // to be established or the connection to fail before continuing
                     if (!info.is_valid())
                         return {std::nullopt, current_paths.size()};
+
+                    // If the connection info is valid update the connection status back to
+                    // connected
+                    update_status(ConnectionStatus::connected);
 
                     // No need to call the 'paths_changed' callback as the paths haven't
                     // actually changed, just their connection info
@@ -969,11 +1035,13 @@ void Network::with_path(
                         std::optional<std::string> error) {
                     if (error)
                         return cb(std::nullopt, *error);
+
                     auto [target_path, paths_count] =
                             find_possible_path(excluded_node, updated_paths);
 
                     if (!target_path)
                         return cb(std::nullopt, "Unable to find valid path.");
+
                     cb(*target_path, std::nullopt);
                 });
 
@@ -1106,7 +1174,7 @@ void Network::get_service_nodes(
         std::optional<int> limit,
         std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                 callback) {
-    auto info = get_connection_info(node, std::nullopt);
+    auto info = get_connection_info(node);
 
     if (!info.is_valid())
         return callback({}, "Network is unreachable.");
@@ -1162,7 +1230,7 @@ void Network::get_version(
         std::function<void(
                 std::vector<int> version, connection_info info, std::optional<std::string> error)>
                 callback) {
-    auto info = get_connection_info(node, std::nullopt);
+    auto info = get_connection_info(node);
 
     if (!info.is_valid())
         return callback({}, info, "Network is unreachable.");
@@ -1587,7 +1655,7 @@ void Network::handle_errors(
     // detect some of the more common cases and just handle the response without updating the
     // path/snode state
     if (!info.node_destination) {
-        // A tmeout could be caused because the destination is unreachable rather than the the path
+        // A timeout could be caused because the destination is unreachable rather than the the path
         // (eg. if a user has an old SOGS which is no longer running on their device they will get a
         // timeout)
         if (timeout) {
@@ -1792,8 +1860,12 @@ void Network::handle_errors(
 
             if (paths.size() != old_paths_size)
                 log::info(cat, "Dropping path: [{}]", path_description);
-            else
+            else {
+                // If the path was already dropped then the snode pool would have already been
+                // updated so no need to continue
                 log::info(cat, "Path already dropped: [{}]", path_description);
+                return;
+            }
         } else
             std::replace(paths.begin(), paths.end(), old_path, updated_path);
 
@@ -1858,7 +1930,7 @@ void Network::set_paths(std::vector<onion_path> paths_) {
 }
 
 uint8_t Network::get_failure_count(onion_path path) {
-    auto current_paths = net.call_get([this, path]() -> std::vector<onion_path> { return paths; });
+    auto current_paths = net.call_get([this]() -> std::vector<onion_path> { return paths; });
 
     auto target_path =
             std::find_if(current_paths.begin(), current_paths.end(), [&path](const auto& path_it) {

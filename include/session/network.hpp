@@ -270,15 +270,15 @@ class Network {
 
     /// API: network/get_connection_info
     ///
-    /// Creates a connection and opens a stream to the target service node.
+    /// Creates a connection for the target node and waits for the connection to be established (or
+    /// closed in case it fails to establish) before returning the connection.
     ///
     /// Inputs:
     /// - `target` -- [in] the target service node to connect to.
-    /// - `conn_established_cb` -- [in, optional] a callback to be passed when creating the
-    /// connection that should be triggered when the connection is established.
-    connection_info get_connection_info(
-            service_node target,
-            std::optional<oxen::quic::connection_established_callback> conn_established_cb);
+    ///
+    /// Returns:
+    /// - `connection_info` -- The connection info for the target service node.
+    connection_info get_connection_info(service_node target);
 
     /// API: network/with_paths_and_pool
     ///
@@ -311,16 +311,29 @@ class Network {
             std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
                     callback);
 
-    /// API: network/find_possible_path
+    /// API: network/valid_paths
     ///
-    /// Picks a random path from the provided paths excluding the provided node if one is available.
+    /// Filters the provided paths down to a list of valid paths.
     ///
     /// Inputs:
-    /// - `excluded_node` -- [in, optional] node which should not be included in the paths.
+    /// - `paths` -- [in] paths to validate.
     ///
     /// Outputs:
-    /// - The possible path, if found, and the number of paths provided.
-    std::pair<bool, bool> validate_paths_and_pool(
+    /// - A list of valid paths.
+    std::vector<onion_path> valid_paths(std::vector<onion_path> paths);
+
+    /// API: network/validate_paths_and_pool_sizes
+    ///
+    /// Returns a pair of bools indicating whether the provided paths and pool are valid.
+    ///
+    /// Inputs:
+    /// - `paths` -- [in] paths to validate size for.
+    /// - `pool` -- [in] pool to validate size for.
+    /// - `last_pool_update` -- [in] timestamp for when the pool was last updated.
+    ///
+    /// Outputs:
+    /// - A pair of flags indicating whether the provided paths and pool have the correct sizes.
+    std::pair<bool, bool> validate_paths_and_pool_sizes(
             std::vector<onion_path> paths,
             std::vector<service_node> pool,
             std::chrono::system_clock::time_point last_pool_update);
