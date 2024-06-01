@@ -10,7 +10,11 @@ local submodules = {
 
 local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 
-local default_deps_nocxx = ['nlohmann-json3-dev'];
+local libngtcp2_deps = ['libgnutls28-dev'];
+
+local default_deps_nocxx = [
+  'nlohmann-json3-dev'
+] + libngtcp2_deps;
 local default_deps = ['g++'] + default_deps_nocxx;
 
 local default_test_deps = [];
