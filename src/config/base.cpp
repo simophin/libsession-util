@@ -651,13 +651,19 @@ LIBSESSION_EXPORT config_string_list* config_merge(
         const unsigned char** configs,
         const size_t* lengths,
         size_t count) {
-    auto& config = *unbox(conf);
-    std::vector<std::pair<std::string, ustring_view>> confs;
-    confs.reserve(count);
-    for (size_t i = 0; i < count; i++)
-        confs.emplace_back(msg_hashes[i], ustring_view{configs[i], lengths[i]});
+    try {
+        auto& config = *unbox(conf);
+        std::vector<std::pair<std::string, ustring_view>> confs;
+        confs.reserve(count);
+        for (size_t i = 0; i < count; i++)
+            confs.emplace_back(msg_hashes[i], ustring_view{configs[i], lengths[i]});
 
-    return make_string_list(config.merge(confs));
+        return make_string_list(config.merge(confs));
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
+    return nullptr;
 }
 
 LIBSESSION_EXPORT bool config_needs_push(const config_object* conf) {
@@ -665,39 +671,45 @@ LIBSESSION_EXPORT bool config_needs_push(const config_object* conf) {
 }
 
 LIBSESSION_EXPORT config_push_data* config_push(config_object* conf) {
-    auto& config = *unbox(conf);
-    auto [seqno, data, obs] = config.push();
+    try {
+        auto& config = *unbox(conf);
+        auto [seqno, data, obs] = config.push();
 
-    // We need to do one alloc here that holds everything:
-    // - the returned struct
-    // - pointers to the obsolete message hash strings
-    // - the data
-    // - the message hash strings
-    size_t buffer_size = sizeof(config_push_data) + obs.size() * sizeof(char*) + data.size();
-    for (auto& o : obs)
-        buffer_size += o.size();
-    buffer_size += obs.size();  // obs msg hash string NULL terminators
+        // We need to do one alloc here that holds everything:
+        // - the returned struct
+        // - pointers to the obsolete message hash strings
+        // - the data
+        // - the message hash strings
+        size_t buffer_size = sizeof(config_push_data) + obs.size() * sizeof(char*) + data.size();
+        for (auto& o : obs)
+            buffer_size += o.size();
+        buffer_size += obs.size();  // obs msg hash string NULL terminators
 
-    auto* ret = static_cast<config_push_data*>(std::malloc(buffer_size));
+        auto* ret = static_cast<config_push_data*>(std::malloc(buffer_size));
 
-    ret->seqno = seqno;
+        ret->seqno = seqno;
 
-    static_assert(alignof(config_push_data) >= alignof(char*));
-    ret->obsolete = reinterpret_cast<char**>(ret + 1);
-    ret->obsolete_len = obs.size();
+        static_assert(alignof(config_push_data) >= alignof(char*));
+        ret->obsolete = reinterpret_cast<char**>(ret + 1);
+        ret->obsolete_len = obs.size();
 
-    ret->config = reinterpret_cast<unsigned char*>(ret->obsolete + ret->obsolete_len);
-    ret->config_len = data.size();
+        ret->config = reinterpret_cast<unsigned char*>(ret->obsolete + ret->obsolete_len);
+        ret->config_len = data.size();
 
-    std::memcpy(ret->config, data.data(), data.size());
-    char* obsptr = reinterpret_cast<char*>(ret->config + ret->config_len);
-    for (size_t i = 0; i < obs.size(); i++) {
-        std::memcpy(obsptr, obs[i].c_str(), obs[i].size() + 1);
-        ret->obsolete[i] = obsptr;
-        obsptr += obs[i].size() + 1;
+        std::memcpy(ret->config, data.data(), data.size());
+        char* obsptr = reinterpret_cast<char*>(ret->config + ret->config_len);
+        for (size_t i = 0; i < obs.size(); i++) {
+            std::memcpy(obsptr, obs[i].c_str(), obs[i].size() + 1);
+            ret->obsolete[i] = obsptr;
+            obsptr += obs[i].size() + 1;
+        }
+
+        return ret;
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
     }
-
-    return ret;
+    return nullptr;
 }
 
 LIBSESSION_EXPORT void config_confirm_pushed(
@@ -706,11 +718,16 @@ LIBSESSION_EXPORT void config_confirm_pushed(
 }
 
 LIBSESSION_EXPORT void config_dump(config_object* conf, unsigned char** out, size_t* outlen) {
-    assert(out && outlen);
-    auto data = unbox(conf)->dump();
-    *outlen = data.size();
-    *out = static_cast<unsigned char*>(std::malloc(data.size()));
-    std::memcpy(*out, data.data(), data.size());
+    try {
+        assert(out && outlen);
+        auto data = unbox(conf)->dump();
+        *outlen = data.size();
+        *out = static_cast<unsigned char*>(std::malloc(data.size()));
+        std::memcpy(*out, data.data(), data.size());
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
 }
 
 LIBSESSION_EXPORT bool config_needs_dump(const config_object* conf) {
@@ -745,10 +762,21 @@ LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size
 }
 
 LIBSESSION_EXPORT void config_add_key(config_object* conf, const unsigned char* key) {
-    unbox(conf)->add_key({key, 32});
+    try {
+        unbox(conf)->add_key({key, 32});
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
+        
 }
 LIBSESSION_EXPORT void config_add_key_low_prio(config_object* conf, const unsigned char* key) {
-    unbox(conf)->add_key({key, 32}, /*high_priority=*/false);
+    try {
+        unbox(conf)->add_key({key, 32}, /*high_priority=*/false);
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
 }
 LIBSESSION_EXPORT int config_clear_keys(config_object* conf) {
     return unbox(conf)->clear_keys();
@@ -760,7 +788,11 @@ LIBSESSION_EXPORT int config_key_count(const config_object* conf) {
     return unbox(conf)->key_count();
 }
 LIBSESSION_EXPORT bool config_has_key(const config_object* conf, const unsigned char* key) {
-    return unbox(conf)->has_key({key, 32});
+    try {
+        return unbox(conf)->has_key({key, 32});
+    } catch (...) {
+        return false;
+    }
 }
 LIBSESSION_EXPORT const unsigned char* config_key(const config_object* conf, size_t i) {
     return unbox(conf)->key(i).data();
@@ -771,11 +803,21 @@ LIBSESSION_EXPORT const char* config_encryption_domain(const config_object* conf
 }
 
 LIBSESSION_EXPORT void config_set_sig_keys(config_object* conf, const unsigned char* secret) {
-    unbox(conf)->set_sig_keys({secret, 64});
+    try {
+        unbox(conf)->set_sig_keys({secret, 64});
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
 }
 
 LIBSESSION_EXPORT void config_set_sig_pubkey(config_object* conf, const unsigned char* pubkey) {
-    unbox(conf)->set_sig_pubkey({pubkey, 32});
+    try {
+        unbox(conf)->set_sig_pubkey({pubkey, 32});
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
 }
 
 LIBSESSION_EXPORT const unsigned char* config_get_sig_pubkey(const config_object* conf) {
