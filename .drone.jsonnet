@@ -1,5 +1,3 @@
-local docker_base = 'registry.oxen.rocks/lokinet-ci-';
-
 local submodule_commands = [
   'git fetch --tags',
   'git submodule update --init --recursive --depth=1 --jobs=4',
@@ -15,17 +13,27 @@ local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 local default_deps_nocxx = ['nlohmann-json3-dev'];
 local default_deps = ['g++'] + default_deps_nocxx;
 
-local docker_base = 'registry.oxen.rocks/lokinet-ci-';
+local default_test_deps = [];
+
+local docker_base = 'registry.oxen.rocks/';
+
+local debian_backports(distro, pkgs) = [
+  'echo "deb http://deb.debian.org/debian ' + distro + '-backports main" >/etc/apt/sources.list.d/' + distro + '-backports.list',
+  'eatmydata ' + apt_get_quiet + ' update',
+  'eatmydata ' + apt_get_quiet + ' install -y ' + std.join(' ', std.map(function(x) x + '/' + distro + '-backports', pkgs)),
+];
 
 // Do something on a debian-like system
 local debian_pipeline(name,
                       image,
                       arch='amd64',
                       deps=default_deps,
-                      oxen_repo=false,
+                      oxen_repo=true,
                       kitware_repo=''/* ubuntu codename, if wanted */,
                       allow_fail=false,
+                      cmake_pkg='cmake',
                       build=['echo "Error: drone build argument not set"', 'exit 1'],
+                      extra_setup=[],
                       extra_steps=[])
       = {
   kind: 'pipeline',
@@ -59,9 +67,9 @@ local debian_pipeline(name,
           'echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ' + kitware_repo + ' main" >/etc/apt/sources.list.d/kitware.list',
           'eatmydata ' + apt_get_quiet + ' update',
         ] else []
-      ) + [
+      ) + extra_setup + [
         'eatmydata ' + apt_get_quiet + ' dist-upgrade -y',
-        'eatmydata ' + apt_get_quiet + ' install --no-install-recommends -y cmake make git ccache ca-certificates ' + std.join(' ', deps),
+        'eatmydata ' + apt_get_quiet + ' install --no-install-recommends -y ' + cmake_pkg + ' make git ccache ca-certificates ' + std.join(' ', deps),
       ] + build,
     },
   ] + extra_steps,
@@ -72,14 +80,17 @@ local debian_build(name,
                    image,
                    arch='amd64',
                    deps=default_deps,
+                   test_deps=default_test_deps,
                    build_type='Release',
                    lto=false,
                    werror=true,
                    cmake_extra='',
+                   shared_libs=true,
                    jobs=6,
                    tests=true,
-                   oxen_repo=false,
+                   oxen_repo=true,
                    kitware_repo=''/* ubuntu codename, if wanted */,
+                   extra_setup=[],
                    allow_fail=false)
       = debian_pipeline(
   name,
@@ -94,7 +105,7 @@ local debian_build(name,
     'cd build',
     'cmake .. -DCMAKE_CXX_FLAGS=-fdiagnostics-color=always -DCMAKE_BUILD_TYPE=' + build_type + ' ' +
     (if werror then '-DWARNINGS_AS_ERRORS=ON ' else '') +
-    '-DBUILD_SHARED_LIBS=ON ' +
+    (if shared_libs then '-DBUILD_SHARED_LIBS=ON ' else '') +
     '-DUSE_LTO=' + (if lto then 'ON ' else 'OFF ') +
     '-DWITH_TESTS=' + (if tests then 'ON ' else 'OFF ') +
     cmake_extra,
@@ -106,10 +117,23 @@ local debian_build(name,
                    image: image,
                    pull: 'always',
                    [if allow_fail then 'failure']: 'ignore',
-                   commands: [
-                     'cd build',
-                     './tests/testAll --colour-mode ansi -d yes',
-                   ],
+                   commands:
+                     [apt_get_quiet + ' install -y eatmydata'] + (
+                       if std.length(test_deps) > 0 then (
+                         if oxen_repo then [
+                           'eatmydata ' + apt_get_quiet + ' install --no-install-recommends -y lsb-release',
+                           'cp utils/deb.oxen.io.gpg /etc/apt/trusted.gpg.d',
+                           'echo deb http://deb.oxen.io $$(lsb_release -sc) main >/etc/apt/sources.list.d/oxen.list',
+                         ] else []
+                       ) + [
+                         'eatmydata ' + apt_get_quiet + ' update',
+                         'eatmydata ' + apt_get_quiet + ' dist-upgrade -y',
+                         'eatmydata ' + apt_get_quiet + ' install --no-install-recommends -y ' + std.join(' ', test_deps),
+                       ] else []
+                     ) + [
+                       'cd build',
+                       './tests/testAll --colour-mode ansi -d yes',
+                     ],
                  }] else [])
 );
 // windows cross compile on debian
@@ -160,9 +184,10 @@ local windows_cross_pipeline(name,
 );
 
 local clang(version) = debian_build(
-  'Debian sid/clang-' + version + ' (amd64)',
+  'Debian sid/clang-' + version,
   docker_base + 'debian-sid-clang',
   deps=['clang-' + version] + default_deps_nocxx,
+  shared_libs=false,
   cmake_extra='-DCMAKE_C_COMPILER=clang-' + version + ' -DCMAKE_CXX_COMPILER=clang++-' + version + ' '
 );
 
@@ -182,6 +207,7 @@ local full_llvm(version) = debian_build(
 
 // Macos build
 local mac_pipeline(name,
+                   arch='amd64',
                    allow_fail=false,
                    build=['echo "Error: drone build argument not set"', 'exit 1'],
                    extra_steps=[])
@@ -189,7 +215,7 @@ local mac_pipeline(name,
   kind: 'pipeline',
   type: 'exec',
   name: name,
-  platform: { os: 'darwin', arch: 'amd64' },
+  platform: { os: 'darwin', arch: arch },
   steps: [
     { name: 'submodules', commands: submodule_commands },
     {
@@ -205,6 +231,7 @@ local mac_pipeline(name,
   ] + extra_steps,
 };
 local mac_builder(name,
+                  arch='amd64',
                   build_type='Release',
                   werror=true,
                   lto=false,
@@ -212,7 +239,7 @@ local mac_builder(name,
                   jobs=6,
                   tests=true,
                   allow_fail=false)
-      = mac_pipeline(name, allow_fail=allow_fail, build=[
+      = mac_pipeline(name, arch=arch, allow_fail=allow_fail, build=[
   'mkdir build',
   'cd build',
   'cmake .. -DCMAKE_CXX_FLAGS=-fcolor-diagnostics -DCMAKE_BUILD_TYPE=' + build_type + ' ' +
@@ -249,6 +276,7 @@ local static_build(name,
   image,
   arch=arch,
   deps=deps,
+  oxen_repo=oxen_repo,
   build=[
     'export JOBS=' + jobs,
     './utils/static-bundle.sh build ' + archive_name + ' -DSTATIC_LIBSTD=ON ' + cmake_extra,
@@ -299,35 +327,30 @@ local static_build(name,
   },
 
   // Various debian builds
-  debian_build('Debian sid (amd64)', docker_base + 'debian-sid'),
-  debian_build('Debian sid/Debug (amd64)', docker_base + 'debian-sid', build_type='Debug'),
+  debian_build('Debian sid', docker_base + 'debian-sid'),
+  debian_build('Debian sid/Debug', docker_base + 'debian-sid', build_type='Debug'),
+  debian_build('Debian testing', docker_base + 'debian-testing'),
   clang(16),
   full_llvm(16),
   debian_build('Debian stable (i386)', docker_base + 'debian-stable/i386'),
-  debian_build('Ubuntu latest (amd64)', docker_base + 'ubuntu-rolling'),
-  debian_build('Ubuntu LTS (amd64)', docker_base + 'ubuntu-lts'),
-  debian_build('Ubuntu bionic (amd64)',
-               docker_base + 'ubuntu-bionic',
-               deps=['g++-8'],
-               kitware_repo='bionic',
-               cmake_extra='-DCMAKE_C_COMPILER=gcc-8 -DCMAKE_CXX_COMPILER=g++-8'),
+  debian_build('Debian 11', docker_base + 'debian-bullseye', extra_setup=debian_backports('bullseye', ['cmake'])),
+  debian_build('Ubuntu latest', docker_base + 'ubuntu-rolling'),
+  debian_build('Ubuntu LTS', docker_base + 'ubuntu-lts'),
 
   // ARM builds (ARM64 and armhf)
   debian_build('Debian sid (ARM64)', docker_base + 'debian-sid', arch='arm64', jobs=4),
   debian_build('Debian stable (armhf)', docker_base + 'debian-stable/arm32v7', arch='arm64', jobs=4),
 
-  // Windows builds (x64)
-  windows_cross_pipeline('Windows (amd64)', docker_base + 'debian-win32-cross-wine'),
-
   // Macos builds:
-  mac_builder('macOS (Release)'),
-  mac_builder('macOS (Debug)', build_type='Debug'),
+  mac_builder('macOS Intel (Release)'),
+  mac_builder('macOS Arm64 (Release)', arch='arm64'),
+  mac_builder('macOS Arm64 (Debug)', arch='arm64', build_type='Debug'),
 
   // Static lib builds
-  static_build('Static Linux amd64', docker_base + 'debian-stable', 'libsession-util-linux-amd64-TAG.tar.xz'),
-  static_build('Static Linux i386', docker_base + 'debian-stable', 'libsession-util-linux-i386-TAG.tar.xz'),
-  static_build('Static Linux arm64', docker_base + 'debian-stable', 'libsession-util-linux-arm64-TAG.tar.xz', arch='arm64'),
-  static_build('Static Linux armhf', docker_base + 'debian-stable/arm32v7', 'libsession-util-linux-armhf-TAG.tar.xz', arch='arm64'),
+  static_build('Static Linux/amd64', docker_base + 'debian-stable', 'libsession-util-linux-amd64-TAG.tar.xz'),
+  static_build('Static Linux/i386', docker_base + 'debian-stable', 'libsession-util-linux-i386-TAG.tar.xz'),
+  static_build('Static Linux/arm64', docker_base + 'debian-stable', 'libsession-util-linux-arm64-TAG.tar.xz', arch='arm64'),
+  static_build('Static Linux/armhf', docker_base + 'debian-stable/arm32v7', 'libsession-util-linux-armhf-TAG.tar.xz', arch='arm64'),
   static_build('Static Windows x64',
                docker_base + 'debian-win32-cross',
                'libsession-util-windows-x64-TAG.zip',
@@ -355,7 +378,7 @@ local static_build(name,
     'cd build-macos && ../utils/ci/drone-static-upload.sh',
   ]),
 
-  mac_pipeline('Static iOS', build=[
+  mac_pipeline('Static iOS', arch='arm64', build=[
     'export JOBS=6',
     './utils/ios.sh libsession-util-ios-TAG',
     'cd build-ios && ../utils/ci/drone-static-upload.sh',
