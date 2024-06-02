@@ -13,11 +13,12 @@ local apt_get_quiet = 'apt-get -o=Dpkg::Use-Pty=0 -q';
 local libngtcp2_deps = ['libgnutls28-dev'];
 
 local default_deps_nocxx = [
-  'nlohmann-json3-dev'
+  'nlohmann-json3-dev',
 ] + libngtcp2_deps;
+
 local default_deps = ['g++'] + default_deps_nocxx;
 
-local default_test_deps = [];
+local default_test_deps = libngtcp2_deps;
 
 local docker_base = 'registry.oxen.rocks/';
 
@@ -115,6 +116,7 @@ local debian_build(name,
     cmake_extra,
     'make VERBOSE=1 -j' + jobs,
   ],
+  extra_setup=extra_setup,
   extra_steps=(if tests then
                  [{
                    name: 'tests',
@@ -191,15 +193,15 @@ local clang(version) = debian_build(
   'Debian sid/clang-' + version,
   docker_base + 'debian-sid-clang',
   deps=['clang-' + version] + default_deps_nocxx,
-  shared_libs=false,
   cmake_extra='-DCMAKE_C_COMPILER=clang-' + version + ' -DCMAKE_CXX_COMPILER=clang++-' + version + ' '
 );
 
 local full_llvm(version) = debian_build(
-  'Debian sid/llvm-' + version + ' (amd64)',
+  'Debian sid/llvm-' + version,
   docker_base + 'debian-sid-clang',
   deps=['clang-' + version, ' lld-' + version, ' libc++-' + version + '-dev', 'libc++abi-' + version + '-dev']
        + default_deps_nocxx,
+  shared_libs=false,
   cmake_extra='-DCMAKE_C_COMPILER=clang-' + version +
               ' -DCMAKE_CXX_COMPILER=clang++-' + version +
               ' -DCMAKE_CXX_FLAGS="-stdlib=libc++ -fcolor-diagnostics" ' +
