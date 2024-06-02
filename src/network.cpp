@@ -223,7 +223,7 @@ namespace {
 Network::Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths) :
         use_testnet{use_testnet},
         should_cache_to_disk{cache_path},
-        cache_path{std::move(cache_path.value_or(default_cache_path))} {
+        cache_path{cache_path.value_or(default_cache_path)} {
     paths_and_pool_loop = std::make_shared<quic::Loop>();
 
     // Load the cache from disk and start the disk write thread
@@ -545,8 +545,7 @@ connection_info Network::get_connection_info(service_node target) {
             target,
             creds,
             quic::opt::keep_alive{10s},
-            [&mutex, &cv, &connection_established, &done, &cb_called](
-                    quic::connection_interface& conn) {
+            [&mutex, &cv, &connection_established, &done, &cb_called](quic::connection_interface&) {
                 std::call_once(cb_called, [&]() {
                     {
                         std::lock_guard<std::mutex> lock(mutex);
@@ -581,7 +580,7 @@ connection_info Network::get_connection_info(service_node target) {
                     target_path->conn_info.conn.reset();
                     target_path->conn_info.stream.reset();
                     handle_errors(
-                            {target, "", std::nullopt, std::nullopt, *target_path, 0ms, false},
+                            {target, "", std::nullopt, std::nullopt, *target_path, 0ms, false, false},
                             false,
                             std::nullopt,
                             std::nullopt,
