@@ -721,10 +721,12 @@ TEST_CASE("Group Keys - C API", "[config][groups][keys][c]") {
                 m.info,
                 m.members));
         [[maybe_unused]] config_string_list* hashes;
-        REQUIRE_THROWS(
-                hashes = config_merge(m.info, merge_hash1, &merge_data1[0], &merge_size1[0], 1));
-        REQUIRE_THROWS(
-                hashes = config_merge(m.members, merge_hash1, &merge_data1[1], &merge_size1[1], 1));
+        hashes = config_merge(m.info, merge_hash1, &merge_data1[0], &merge_size1[0], 1);
+        REQUIRE(m.info->last_error == "Cannot merge configs without any decryption keys"sv);
+        m.info->last_error = nullptr;
+        hashes = config_merge(m.members, merge_hash1, &merge_data1[1], &merge_size1[1], 1);
+        REQUIRE(m.members->last_error == "Cannot merge configs without any decryption keys"sv);
+        m.members->last_error = nullptr;
 
         REQUIRE(groups_members_size(m.members) == 0);
     }

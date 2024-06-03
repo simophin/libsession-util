@@ -191,34 +191,28 @@ LIBSESSION_C_API int groups_members_init(
 
 LIBSESSION_C_API bool groups_members_get(
         config_object* conf, config_group_member* member, const char* session_id) {
-    try {
-        conf->last_error = nullptr;
+    return wrap_exceptions(conf, [&]{
         if (auto c = unbox<groups::Members>(conf)->get(session_id)) {
             c->into(*member);
             return true;
         }
-    } catch (const std::exception& e) {
-        copy_c_str(conf->_error_buf, e.what());
-        conf->last_error = conf->_error_buf;
-    }
-    return false;
+        return false;
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_members_get_or_construct(
         config_object* conf, config_group_member* member, const char* session_id) {
-    try {
-        conf->last_error = nullptr;
+    return wrap_exceptions(conf, [&]{
         unbox<groups::Members>(conf)->get_or_construct(session_id).into(*member);
         return true;
-    } catch (const std::exception& e) {
-        copy_c_str(conf->_error_buf, e.what());
-        conf->last_error = conf->_error_buf;
-        return false;
-    }
+    }, false);
 }
 
 LIBSESSION_C_API void groups_members_set(config_object* conf, const config_group_member* member) {
-    unbox<groups::Members>(conf)->set(groups::member{*member});
+    return wrap_exceptions(conf, [&]{
+        unbox<groups::Members>(conf)->set(groups::member{*member});
+    });
+    
 }
 
 LIBSESSION_C_API bool groups_members_erase(config_object* conf, const char* session_id) {

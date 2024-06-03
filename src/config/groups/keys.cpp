@@ -1378,12 +1378,38 @@ const groups::Keys& unbox(const config_group_keys* conf) {
     return *static_cast<const groups::Keys*>(conf->internals);
 }
 
-void set_error(config_group_keys* conf, std::string_view e) {
-    if (e.size() > 255)
-        e.remove_suffix(e.size() - 255);
-    std::memcpy(conf->_error_buf, e.data(), e.size());
-    conf->_error_buf[e.size()] = 0;
-    conf->last_error = conf->_error_buf;
+// Wraps a labmda and, if an exception is thrown, sets an error message in the internals.error string
+// and updates the last_error pointer in the outer (C) config_object struct to point at it.
+//
+// No return value: accepts void and pointer returns; pointer returns will become nullptr on error
+template <std::invocable Call>
+decltype(auto) wrap_exceptions(config_group_keys* conf, Call&& f) {
+    using Ret = std::invoke_result_t<Call>;
+
+    try {
+        conf->last_error = nullptr;
+        return std::invoke(std::forward<Call>(f));
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
+    if constexpr (std::is_pointer_v<Ret>)
+        return nullptr;
+    else static_assert(std::is_void_v<Ret>, "Don't know how to return an error value!");
+}
+
+// Same as above but accepts callbacks with value returns on errors: returns `f()` on success,
+// `error_return` on exception
+template <std::invocable Call, typename Ret>
+Ret wrap_exceptions(config_group_keys* conf, Call&& f, Ret error_return) {
+    try {
+        conf->last_error = nullptr;
+        return std::invoke(std::forward<Call>(f));
+    } catch (const std::exception& e) {
+        copy_c_str(conf->_error_buf, e.what());
+        conf->last_error = conf->_error_buf;
+    }
+    return error_return;
 }
 }  // namespace
 
@@ -1450,16 +1476,13 @@ LIBSESSION_C_API bool groups_keys_load_admin_key(
         const unsigned char* secret,
         config_object* info,
         config_object* members) {
-    try {
+    return wrap_exceptions(conf, [&]{
         unbox(conf).load_admin_key(
                 ustring_view{secret, 32},
                 *unbox<groups::Info>(info),
                 *unbox<groups::Members>(members));
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
-    return true;
+        return true;
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_rekey(
@@ -1471,15 +1494,13 @@ LIBSESSION_C_API bool groups_keys_rekey(
     assert(info && members && out && outlen);
     auto& keys = unbox(conf);
     ustring_view to_push;
-    try {
+
+    return wrap_exceptions(conf, [&]{
         to_push = keys.rekey(*unbox<groups::Info>(info), *unbox<groups::Members>(members));
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
-    *out = to_push.data();
-    *outlen = to_push.size();
-    return true;
+        *out = to_push.data();
+        *outlen = to_push.size();
+        return true;
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_pending_config(
@@ -1502,18 +1523,15 @@ LIBSESSION_C_API bool groups_keys_load_message(
         config_object* info,
         config_object* members) {
     assert(data && info && members);
-    try {
+    return wrap_exceptions(conf, [&]{
         unbox(conf).load_key_message(
                 msg_hash,
                 ustring_view{data, datalen},
                 timestamp_ms,
                 *unbox<groups::Info>(info),
                 *unbox<groups::Members>(members));
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
-    return true;
+        return true;
+    }, false);
 }
 
 LIBSESSION_C_API config_string_list* groups_keys_current_hashes(const config_group_keys* conf) {
@@ -1566,7 +1584,7 @@ LIBSESSION_C_API bool groups_keys_decrypt_message(
         size_t* plaintext_len) {
     assert(ciphertext_in && plaintext_out && plaintext_len);
 
-    try {
+    return wrap_exceptions(conf, [&]{
         auto [sid, plaintext] =
                 unbox(conf).decrypt_message(ustring_view{ciphertext_in, ciphertext_len});
         std::memcpy(session_id, sid.c_str(), sid.size() + 1);
@@ -1574,10 +1592,7 @@ LIBSESSION_C_API bool groups_keys_decrypt_message(
         std::memcpy(*plaintext_out, plaintext.data(), plaintext.size());
         *plaintext_len = plaintext.size();
         return true;
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-    }
-    return false;
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_key_supplement(
@@ -1591,16 +1606,14 @@ LIBSESSION_C_API bool groups_keys_key_supplement(
     std::vector<std::string> session_ids;
     for (size_t i = 0; i < sids_len; i++)
         session_ids.emplace_back(sids[i]);
-    try {
+
+    return wrap_exceptions(conf, [&]{
         auto msg = unbox(conf).key_supplement(session_ids);
         *message = static_cast<unsigned char*>(malloc(msg.size()));
         *message_len = msg.size();
         std::memcpy(*message, msg.data(), msg.size());
         return true;
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
+    }, false);
 }
 
 LIBSESSION_EXPORT int groups_keys_current_generation(config_group_keys* conf) {
@@ -1614,15 +1627,12 @@ LIBSESSION_C_API bool groups_keys_swarm_make_subaccount_flags(
         bool del,
         unsigned char* sign_value) {
     assert(sign_value);
-    try {
+    return wrap_exceptions(conf, [&]{
         auto val = unbox(conf).swarm_make_subaccount(session_id, write, del);
         assert(val.size() == 100);
         std::memcpy(sign_value, val.data(), val.size());
         return true;
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_swarm_make_subaccount(
@@ -1652,10 +1662,14 @@ LIBSESSION_C_API bool groups_keys_swarm_verify_subaccount(
         const char* group_id,
         const unsigned char* session_ed25519_secretkey,
         const unsigned char* signing_value) {
-    return groups::Keys::swarm_verify_subaccount(
-            group_id,
-            ustring_view{session_ed25519_secretkey, 64},
-            ustring_view{signing_value, 100});
+    try {
+        return groups::Keys::swarm_verify_subaccount(
+                group_id,
+                ustring_view{session_ed25519_secretkey, 64},
+                ustring_view{signing_value, 100});
+    } catch (...) {
+        return false;
+    }
 }
 
 LIBSESSION_C_API bool groups_keys_swarm_subaccount_sign(
@@ -1668,7 +1682,7 @@ LIBSESSION_C_API bool groups_keys_swarm_subaccount_sign(
         char* subaccount_sig,
         char* signature) {
     assert(msg && signing_value && subaccount && subaccount_sig && signature);
-    try {
+    return wrap_exceptions(conf, [&]{
         auto auth = unbox(conf).swarm_subaccount_sign(
                 ustring_view{msg, msg_len}, ustring_view{signing_value, 100});
         assert(auth.subaccount.size() == 48);
@@ -1678,10 +1692,7 @@ LIBSESSION_C_API bool groups_keys_swarm_subaccount_sign(
         std::memcpy(subaccount_sig, auth.subaccount_sig.c_str(), auth.subaccount_sig.size() + 1);
         std::memcpy(signature, auth.signature.c_str(), auth.signature.size() + 1);
         return true;
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_swarm_subaccount_sign_binary(
@@ -1694,7 +1705,7 @@ LIBSESSION_C_API bool groups_keys_swarm_subaccount_sign_binary(
         unsigned char* subaccount_sig,
         unsigned char* signature) {
     assert(msg && signing_value && subaccount && subaccount_sig && signature);
-    try {
+    return wrap_exceptions(conf, [&]{
         auto auth = unbox(conf).swarm_subaccount_sign(
                 ustring_view{msg, msg_len}, ustring_view{signing_value, 100}, true);
         assert(auth.subaccount.size() == 36);
@@ -1704,10 +1715,7 @@ LIBSESSION_C_API bool groups_keys_swarm_subaccount_sign_binary(
         std::memcpy(subaccount_sig, auth.subaccount_sig.data(), 64);
         std::memcpy(signature, auth.signature.data(), 64);
         return true;
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_swarm_subaccount_token_flags(
@@ -1716,15 +1724,12 @@ LIBSESSION_C_API bool groups_keys_swarm_subaccount_token_flags(
         bool write,
         bool del,
         unsigned char* token) {
-    try {
+    return wrap_exceptions(conf, [&]{
         auto tok = unbox(conf).swarm_subaccount_token(session_id, write, del);
         assert(tok.size() == 36);
         std::memcpy(token, tok.data(), 36);
         return true;
-    } catch (const std::exception& e) {
-        set_error(conf, e.what());
-        return false;
-    }
+    }, false);
 }
 
 LIBSESSION_C_API bool groups_keys_swarm_subaccount_token(

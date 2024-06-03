@@ -42,12 +42,10 @@ void UserProfile::set_name(std::string_view new_name) {
     set_nonempty_str(data["n"], new_name);
 }
 LIBSESSION_C_API int user_profile_set_name(config_object* conf, const char* name) {
-    try {
+    return wrap_exceptions(conf, [&]{
         unbox<UserProfile>(conf)->set_name(name);
-    } catch (const std::exception& e) {
-        return set_error(conf, SESSION_ERR_BAD_VALUE, e);
-    }
-    return 0;
+        return 0;
+    }, static_cast<int>(SESSION_ERR_BAD_VALUE));
 }
 
 profile_pic UserProfile::get_profile_pic() const {
@@ -84,13 +82,10 @@ LIBSESSION_C_API int user_profile_set_pic(config_object* conf, user_profile_pic 
     if (!url.empty())
         key = {pic.key, 32};
 
-    try {
+    return wrap_exceptions(conf, [&]{
         unbox<UserProfile>(conf)->set_profile_pic(url, key);
-    } catch (const std::exception& e) {
-        return set_error(conf, SESSION_ERR_BAD_VALUE, e);
-    }
-
-    return 0;
+        return 0;
+    }, static_cast<int>(SESSION_ERR_BAD_VALUE));
 }
 
 void UserProfile::set_nts_priority(int priority) {
