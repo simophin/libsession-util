@@ -532,11 +532,11 @@ std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
 }
 
 connection_info Network::get_connection_info(service_node target) {
-    std::once_flag cb_called;
-    std::mutex mutex;
-    std::condition_variable cv;
-    bool connection_established = false;
-    bool done = false;
+    auto cb_called = std::make_shared<std::once_flag>();
+    auto mutex = std::make_shared<std::mutex>();
+    auto cv = std::make_shared<std::condition_variable>();
+    auto connection_established = std::make_shared<bool>(false);
+    auto done = std::make_shared<bool>(false);
     auto connection_key_pair = ed25519::ed25519_key_pair();
     auto creds =
             quic::GNUTLSCreds::make_from_ed_seckey(from_unsigned_sv(connection_key_pair.second));
@@ -545,26 +545,26 @@ connection_info Network::get_connection_info(service_node target) {
             target,
             creds,
             quic::opt::keep_alive{10s},
-            [&mutex, &cv, &connection_established, &done, &cb_called](quic::connection_interface&) {
-                std::call_once(cb_called, [&]() {
+            [mutex, cv, connection_established, done, cb_called](quic::connection_interface&) {
+                std::call_once(*cb_called, [&]() {
                     {
-                        std::lock_guard<std::mutex> lock(mutex);
-                        connection_established = true;
-                        done = true;
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        *connection_established = true;
+                        *done = true;
                     }
-                    cv.notify_one();
+                    cv->notify_one();
                 });
             },
-            [this, target, &mutex, &cv, &done, &cb_called](
+            [this, target, mutex, cv, done, cb_called](
                     quic::connection_interface& conn, uint64_t) {
                 // Trigger the callback first before updating the paths in case this was triggered
                 // when try to establish a connection
-                std::call_once(cb_called, [&]() {
+                std::call_once(*cb_called, [&]() {
                     {
-                        std::lock_guard<std::mutex> lock(mutex);
-                        done = true;
+                        std::lock_guard<std::mutex> lock(*mutex);
+                        *done = true;
                     }
-                    cv.notify_one();
+                    cv->notify_one();
                 });
 
                 // When the connection is closed, update the path and connection status
@@ -588,10 +588,10 @@ connection_info Network::get_connection_info(service_node target) {
                 }
             });
 
-    std::unique_lock<std::mutex> lock(mutex);
-    cv.wait(lock, [&done] { return done; });
+    std::unique_lock<std::mutex> lock(*mutex);
+    cv->wait(lock, [&done] { return *done; });
 
-    if (!connection_established)
+    if (!*connection_established)
         return {target, nullptr, nullptr};
 
     return {target, c, c->open_stream<quic::BTRequestStream>()};
