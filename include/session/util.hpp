@@ -148,4 +148,11 @@ std::vector<ustring_view> to_view_vector(const Container& c) {
 std::vector<std::string_view> split(
         std::string_view str, std::string_view delim, bool trim = false);
 
+/// Returns protocol, host, port, path.  Port can be empty; throws on unparseable values.  protocol
+/// and host get normalized to lower-case.  Port will be null if not present in the URL, or if set
+/// to the default for the protocol.  Path can be empty (a single optional `/` after the domain will
+/// be ignored).
+std::tuple<std::string, std::string, std::optional<uint16_t>, std::optional<std::string>> parse_url(
+        std::string_view url);
+
 }  // namespace session

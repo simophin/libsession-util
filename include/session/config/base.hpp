@@ -1278,8 +1278,8 @@ void copy_c_str(char (&dest)[N], std::string_view src) {
     dest[src.size()] = 0;
 }
 
-// Wraps a labmda and, if an exception is thrown, sets an error message in the internals.error string
-// and updates the last_error pointer in the outer (C) config_object struct to point at it.
+// Wraps a labmda and, if an exception is thrown, sets an error message in the internals.error
+// string and updates the last_error pointer in the outer (C) config_object struct to point at it.
 //
 // No return value: accepts void and pointer returns; pointer returns will become nullptr on error
 template <std::invocable Call>
@@ -1295,7 +1295,8 @@ decltype(auto) wrap_exceptions(config_object* conf, Call&& f) {
     }
     if constexpr (std::is_pointer_v<Ret>)
         return static_cast<Ret>(nullptr);
-    else static_assert(std::is_void_v<Ret>, "Don't know how to return an error value!");
+    else
+        static_assert(std::is_void_v<Ret>, "Don't know how to return an error value!");
 }
 
 // Same as above but accepts callbacks with value returns on errors: returns `f()` on success,

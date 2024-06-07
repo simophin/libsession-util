@@ -163,10 +163,13 @@ LIBSESSION_C_API const char* groups_info_get_name(const config_object* conf) {
 /// Outputs:
 /// - `int` -- Returns 0 on success, non-zero on error
 LIBSESSION_C_API int groups_info_set_name(config_object* conf, const char* name) {
-    return wrap_exceptions(conf, [&]{
-        unbox<groups::Info>(conf)->set_name(name);
-        return 0;
-    }, static_cast<int>(SESSION_ERR_BAD_VALUE));
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<groups::Info>(conf)->set_name(name);
+                return 0;
+            },
+            static_cast<int>(SESSION_ERR_BAD_VALUE));
 }
 
 /// API: groups_info/groups_info_get_description
@@ -199,10 +202,13 @@ LIBSESSION_C_API const char* groups_info_get_description(const config_object* co
 /// Outputs:
 /// - `int` -- Returns 0 on success, non-zero on error
 LIBSESSION_C_API int groups_info_set_description(config_object* conf, const char* description) {
-    return wrap_exceptions(conf, [&]{
-        unbox<groups::Info>(conf)->set_description(description);
-        return 0;
-    }, static_cast<int>(SESSION_ERR_BAD_VALUE));
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<groups::Info>(conf)->set_description(description);
+                return 0;
+            },
+            static_cast<int>(SESSION_ERR_BAD_VALUE));
 }
 
 /// API: groups_info/groups_info_get_pic
@@ -244,10 +250,13 @@ LIBSESSION_C_API int groups_info_set_pic(config_object* conf, user_profile_pic p
     if (!url.empty())
         key = {pic.key, 32};
 
-    return wrap_exceptions(conf, [&]{
-        unbox<groups::Info>(conf)->set_profile_pic(url, key);
-        return 0;
-    }, static_cast<int>(SESSION_ERR_BAD_VALUE));
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<groups::Info>(conf)->set_profile_pic(url, key);
+                return 0;
+            },
+            static_cast<int>(SESSION_ERR_BAD_VALUE));
 }
 
 /// API: groups_info/groups_info_get_expiry_timer

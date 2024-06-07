@@ -295,7 +295,7 @@ TEST_CASE("Conversations (C API)", "[config][conversations][c]") {
             "bad-url",
             "room",
             "0000000000000000000000000000000000000000000000000000000000000000"_hexbytes.data()));
-    CHECK(conf->last_error == "Invalid community URL: invalid/missing protocol://"sv);
+    CHECK(conf->last_error == "Invalid URL: invalid/missing protocol://"sv);
     CHECK_FALSE(convo_info_volatile_get_or_construct_community(
             conf,
             &og,

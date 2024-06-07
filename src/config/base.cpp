@@ -651,7 +651,7 @@ LIBSESSION_EXPORT config_string_list* config_merge(
         const unsigned char** configs,
         const size_t* lengths,
         size_t count) {
-    return wrap_exceptions(conf, [&]{
+    return wrap_exceptions(conf, [&] {
         auto& config = *unbox(conf);
         std::vector<std::pair<std::string, ustring_view>> confs;
         confs.reserve(count);
@@ -667,7 +667,7 @@ LIBSESSION_EXPORT bool config_needs_push(const config_object* conf) {
 }
 
 LIBSESSION_EXPORT config_push_data* config_push(config_object* conf) {
-    return wrap_exceptions(conf, [&]{
+    return wrap_exceptions(conf, [&] {
         auto& config = *unbox(conf);
         auto [seqno, data, obs] = config.push();
 
@@ -710,7 +710,7 @@ LIBSESSION_EXPORT void config_confirm_pushed(
 }
 
 LIBSESSION_EXPORT void config_dump(config_object* conf, unsigned char** out, size_t* outlen) {
-    wrap_exceptions(conf, [&]{
+    wrap_exceptions(conf, [&] {
         assert(out && outlen);
         auto data = unbox(conf)->dump();
         *outlen = data.size();
@@ -751,15 +751,11 @@ LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size
 }
 
 LIBSESSION_EXPORT void config_add_key(config_object* conf, const unsigned char* key) {
-    wrap_exceptions(conf, [&]{
-        unbox(conf)->add_key({key, 32});
-    });   
+    wrap_exceptions(conf, [&] { unbox(conf)->add_key({key, 32}); });
 }
 
 LIBSESSION_EXPORT void config_add_key_low_prio(config_object* conf, const unsigned char* key) {
-    wrap_exceptions(conf, [&]{
-        unbox(conf)->add_key({key, 32}, /*high_priority=*/false);
-    });
+    wrap_exceptions(conf, [&] { unbox(conf)->add_key({key, 32}, /*high_priority=*/false); });
 }
 LIBSESSION_EXPORT int config_clear_keys(config_object* conf) {
     return unbox(conf)->clear_keys();
@@ -786,15 +782,11 @@ LIBSESSION_EXPORT const char* config_encryption_domain(const config_object* conf
 }
 
 LIBSESSION_EXPORT void config_set_sig_keys(config_object* conf, const unsigned char* secret) {
-    wrap_exceptions(conf, [&]{
-        unbox(conf)->set_sig_keys({secret, 64});
-    });
+    wrap_exceptions(conf, [&] { unbox(conf)->set_sig_keys({secret, 64}); });
 }
 
 LIBSESSION_EXPORT void config_set_sig_pubkey(config_object* conf, const unsigned char* pubkey) {
-    wrap_exceptions(conf, [&]{
-        unbox(conf)->set_sig_pubkey({pubkey, 32});
-    });
+    wrap_exceptions(conf, [&] { unbox(conf)->set_sig_pubkey({pubkey, 32}); });
 }
 
 LIBSESSION_EXPORT const unsigned char* config_get_sig_pubkey(const config_object* conf) {

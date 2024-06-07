@@ -18,6 +18,12 @@ typedef enum CONNECTION_STATUS {
     CONNECTION_STATUS_DISCONNECTED = 3,
 } CONNECTION_STATUS;
 
+typedef enum CLIENT_PLATFORM {
+    CLIENT_PLATFORM_ANDROID = 0,
+    CLIENT_PLATFORM_DESKTOP = 1,
+    CLIENT_PLATFORM_IOS = 2,
+} CLIENT_PLATFORM;
+
 typedef struct network_object {
     // Internal opaque object pointer; calling code should leave this alone.
     void* internals;
@@ -217,6 +223,66 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
         const network_server_destination server,
         const unsigned char* body,
         size_t body_size,
+        int64_t timeout_ms,
+        network_onion_response_callback_t callback,
+        void* ctx);
+
+/// API: network/network_upload_to_server
+///
+/// Uploads a file to a server.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object.
+/// - `server` -- [in] struct containing information about the server the request should be sent to.
+/// - `data` -- [in] data to upload to the file server.
+/// - `data_len` -- [in] size of the `data`.
+/// - `file_name` -- [in, optional] name of the file being uploaded. MUST be null terminated.
+/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `callback` -- [in] callback to be called with the result of the request.
+/// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
+/// to NULL if unused.
+LIBSESSION_EXPORT void network_upload_to_server(
+        network_object* network,
+        const network_server_destination server,
+        const unsigned char* data,
+        size_t data_len,
+        const char* file_name,
+        int64_t timeout_ms,
+        network_onion_response_callback_t callback,
+        void* ctx);
+
+/// API: network/network_download_from_server
+///
+/// Downloads a file from a server.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object.
+/// - `server` -- [in] struct containing information about file to be downloaded.
+/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `callback` -- [in] callback to be called with the result of the request.
+/// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
+/// to NULL if unused.
+LIBSESSION_EXPORT void network_download_from_server(
+        network_object* network,
+        const network_server_destination server,
+        int64_t timeout_ms,
+        network_onion_response_callback_t callback,
+        void* ctx);
+
+/// API: network/network_get_client_version
+///
+/// Retrieves the version information for the given platform.
+///
+/// Inputs:
+/// - `network` -- [in] Pointer to the network object.
+/// - `platform` -- [in] the platform to retrieve the client version for.
+/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `callback` -- [in] callback to be called with the result of the request.
+/// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
+/// to NULL if unused.
+LIBSESSION_EXPORT void network_get_client_version(
+        network_object* network,
+        CLIENT_PLATFORM platform,
         int64_t timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx);

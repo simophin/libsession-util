@@ -53,7 +53,7 @@ TEST_CASE("config data dict encoding", "[config][data][dict]") {
     d["D"] = config::dict{{"x", 1}, {"y", 2}};
     d["d"] = config::dict{{"e", config::dict{{"f", config::dict{{"g", ""}}}}}};
 
-    static_assert(oxenc::detail::bt_input_dict_container<config::dict>);
+    static_assert(oxenc::bt_input_dict_container<config::dict>);
 
     CHECK(oxenc::bt_serialize(d) ==
           "d1:B1:x1:Dd1:xi1e1:yi2ee1:ai23e1:cli-3ei4e1:11:2e1:dd1:ed1:fd1:g0:eeee");

@@ -59,8 +59,14 @@ void Builder::set_destination(network_destination destination) {
     else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
         host_.emplace(dest->host);
         endpoint_.emplace(dest->endpoint);
-        protocol_.emplace(dest->protocol);
         method_.emplace(dest->method);
+
+        // Remove the '://' from the protocol if it was given
+        size_t pos = dest->protocol.find("://");
+        if (pos != std::string::npos)
+            protocol_.emplace(dest->protocol.substr(0, pos));
+        else
+            protocol_.emplace(dest->protocol);
 
         if (dest->port)
             port_.emplace(*dest->port);

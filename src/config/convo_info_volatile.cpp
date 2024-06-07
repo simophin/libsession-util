@@ -496,21 +496,27 @@ int convo_info_volatile_init(
 
 LIBSESSION_C_API bool convo_info_volatile_get_1to1(
         config_object* conf, convo_info_volatile_1to1* convo, const char* session_id) {
-    return wrap_exceptions(conf, [&]{
-        if (auto c = unbox<ConvoInfoVolatile>(conf)->get_1to1(session_id)) {
-            c->into(*convo);
-            return true;
-        }
-        return false;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                if (auto c = unbox<ConvoInfoVolatile>(conf)->get_1to1(session_id)) {
+                    c->into(*convo);
+                    return true;
+                }
+                return false;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_get_or_construct_1to1(
         config_object* conf, convo_info_volatile_1to1* convo, const char* session_id) {
-    return wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)->get_or_construct_1to1(session_id).into(*convo);
-        return true;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->get_or_construct_1to1(session_id).into(*convo);
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_get_community(
@@ -518,13 +524,16 @@ LIBSESSION_C_API bool convo_info_volatile_get_community(
         convo_info_volatile_community* og,
         const char* base_url,
         const char* room) {
-    return wrap_exceptions(conf, [&]{
-        if (auto c = unbox<ConvoInfoVolatile>(conf)->get_community(base_url, room)) {
-            c->into(*og);
-            return true;
-        }
-        return false;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                if (auto c = unbox<ConvoInfoVolatile>(conf)->get_community(base_url, room)) {
+                    c->into(*og);
+                    return true;
+                }
+                return false;
+            },
+            false);
 }
 LIBSESSION_C_API bool convo_info_volatile_get_or_construct_community(
         config_object* conf,
@@ -532,57 +541,70 @@ LIBSESSION_C_API bool convo_info_volatile_get_or_construct_community(
         const char* base_url,
         const char* room,
         unsigned const char* pubkey) {
-    return wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)
-                ->get_or_construct_community(base_url, room, ustring_view{pubkey, 32})
-                .into(*convo);
-        return true;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)
+                        ->get_or_construct_community(base_url, room, ustring_view{pubkey, 32})
+                        .into(*convo);
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_get_group(
         config_object* conf, convo_info_volatile_group* convo, const char* id) {
-    return wrap_exceptions(conf, [&]{
-        if (auto c = unbox<ConvoInfoVolatile>(conf)->get_group(id)) {
-            c->into(*convo);
-            return true;
-        }
-        return false;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                if (auto c = unbox<ConvoInfoVolatile>(conf)->get_group(id)) {
+                    c->into(*convo);
+                    return true;
+                }
+                return false;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_get_or_construct_group(
         config_object* conf, convo_info_volatile_group* convo, const char* id) {
-    return wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)->get_or_construct_group(id).into(*convo);
-        return true;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->get_or_construct_group(id).into(*convo);
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_get_legacy_group(
         config_object* conf, convo_info_volatile_legacy_group* convo, const char* id) {
-    return wrap_exceptions(conf, [&]{
-        if (auto c = unbox<ConvoInfoVolatile>(conf)->get_legacy_group(id)) {
-            c->into(*convo);
-            return true;
-        }
-        return false;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                if (auto c = unbox<ConvoInfoVolatile>(conf)->get_legacy_group(id)) {
+                    c->into(*convo);
+                    return true;
+                }
+                return false;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_get_or_construct_legacy_group(
         config_object* conf, convo_info_volatile_legacy_group* convo, const char* id) {
-    return wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)->get_or_construct_legacy_group(id).into(*convo);
-        return true;
-    }, false);
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->get_or_construct_legacy_group(id).into(*convo);
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API void convo_info_volatile_set_1to1(
         config_object* conf, const convo_info_volatile_1to1* convo) {
-    wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)->set(convo::one_to_one{*convo});
-    });
+    wrap_exceptions(conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::one_to_one{*convo}); });
 }
 LIBSESSION_C_API void convo_info_volatile_set_community(
         config_object* conf, const convo_info_volatile_community* convo) {
@@ -590,15 +612,12 @@ LIBSESSION_C_API void convo_info_volatile_set_community(
 }
 LIBSESSION_C_API void convo_info_volatile_set_group(
         config_object* conf, const convo_info_volatile_group* convo) {
-    wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)->set(convo::group{*convo});
-    });
+    wrap_exceptions(conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::group{*convo}); });
 }
 LIBSESSION_C_API void convo_info_volatile_set_legacy_group(
         config_object* conf, const convo_info_volatile_legacy_group* convo) {
-    wrap_exceptions(conf, [&]{
-        unbox<ConvoInfoVolatile>(conf)->set(convo::legacy_group{*convo});
-    });
+    wrap_exceptions(
+            conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::legacy_group{*convo}); });
 }
 
 LIBSESSION_C_API bool convo_info_volatile_erase_1to1(config_object* conf, const char* session_id) {

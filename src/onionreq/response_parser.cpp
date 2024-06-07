@@ -36,12 +36,17 @@ ustring ResponseParser::decrypt(ustring ciphertext) const {
     try {
         return d.decrypt(enc_type_, ciphertext, destination_x25519_public_key_);
     } catch (const std::exception& e) {
-        if (enc_type_ == session::onionreq::EncryptType::xchacha20)
-            return d.decrypt(
-                    session::onionreq::EncryptType::aes_gcm,
-                    ciphertext,
-                    destination_x25519_public_key_);
-        else
+        if (enc_type_ == session::onionreq::EncryptType::xchacha20) {
+            try {
+                return d.decrypt(
+                        session::onionreq::EncryptType::aes_gcm,
+                        ciphertext,
+                        destination_x25519_public_key_);
+            } catch (...) {
+                throw std::runtime_error{
+                        "Decryption failed (XChaCha20-Poly1305, falling back to AES256-GCM)"};
+            }
+        } else
             throw;
     }
 }
