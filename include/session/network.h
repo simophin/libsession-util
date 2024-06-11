@@ -88,6 +88,17 @@ LIBSESSION_EXPORT bool network_init(
 /// - `network` -- [in] Pointer to network_object object
 LIBSESSION_EXPORT void network_free(network_object* network);
 
+/// API: network/network_suspend
+///
+/// Suspends the network preventing any further requests from creating new connections and paths.
+/// This function also calls the `close_connections` function.
+LIBSESSION_EXPORT void network_suspend(network_object* network);
+
+/// API: network/network_resume
+///
+/// Resumes the network allowing new requests to creating new connections and paths.
+LIBSESSION_EXPORT void network_resume(network_object* network);
+
 /// API: network/network_close_connections
 ///
 /// Closes any currently active connections.

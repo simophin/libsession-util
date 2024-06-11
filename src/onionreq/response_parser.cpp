@@ -43,8 +43,7 @@ ustring ResponseParser::decrypt(ustring ciphertext) const {
                         ciphertext,
                         destination_x25519_public_key_);
             } catch (...) {
-                throw std::runtime_error{
-                        "Decryption failed (XChaCha20-Poly1305, falling back to AES256-GCM)"};
+                throw std::runtime_error{std::string(decryption_failed_error)};
             }
         } else
             throw;

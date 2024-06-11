@@ -48,21 +48,29 @@ struct onion_path {
     uint8_t timeout_count;
 
     bool operator==(const onion_path& other) const {
-        return nodes == other.nodes && failure_count == other.failure_count &&
-               timeout_count == other.timeout_count;
+        // The `conn_info` and failure/timeout counts can be reset for a path in a number
+        // of situations so just use the nodes to determine if the paths match
+        return nodes == other.nodes;
     }
 };
 
 struct request_info {
+    enum class RetryReason {
+        decryption_failure,
+        redirect,
+    };
+
+    std::string request_id;
     service_node target;
     std::string endpoint;
     std::optional<ustring> body;
+    std::optional<ustring> original_body;
     std::optional<session::onionreq::x25519_pubkey> swarm_pubkey;
     onion_path path;
     PathType path_type;
     std::chrono::milliseconds timeout;
     bool node_destination;
-    bool is_retry;
+    std::optional<RetryReason> retry_reason;
 };
 
 class Network {
@@ -88,6 +96,7 @@ class Network {
 
     std::thread disk_write_thread;
 
+    bool suspended = false;
     ConnectionStatus status;
     oxen::quic::Network net;
     std::vector<onion_path> standard_paths;
@@ -110,6 +119,17 @@ class Network {
     // use testnet or mainnet, all requests should be made via a single Network instance.
     Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths);
     ~Network();
+
+    /// API: network/suspend
+    ///
+    /// Suspends the network preventing any further requests from creating new connections and
+    /// paths.  This function also calls the `close_connections` function.
+    void suspend();
+
+    /// API: network/resume
+    ///
+    /// Resumes the network allowing new requests to creating new connections and paths.
+    void resume();
 
     /// API: network/close_connections
     ///
@@ -301,8 +321,10 @@ class Network {
     /// - `target` -- [in] the target service node to connect to.
     ///
     /// Returns:
-    /// - `connection_info` -- The connection info for the target service node.
-    connection_info get_connection_info(PathType path_type, service_node target);
+    /// - A pair of the connection info for the target service node and an optional error if the
+    /// connnection was unable to be established.
+    std::pair<connection_info, std::optional<std::string>> get_connection_info(
+            PathType path_type, service_node target);
 
     /// API: network/with_paths_and_pool
     ///
@@ -432,7 +454,8 @@ class Network {
             std::vector<service_node> target_nodes,
             std::function<
                     void(std::optional<connection_info> valid_guard_node,
-                         std::vector<service_node> unused_nodes)> callback);
+                         std::vector<service_node> unused_nodes,
+                         std::optional<std::string>)> callback);
 
     /// API: network/get_service_nodes
     ///
@@ -480,9 +503,11 @@ class Network {
     /// - `swarm_pubkey` -- [in, optional] pubkey for the swarm the request is associated with.
     /// Should be NULL if the request is not associated with a swarm.
     /// - `timeout` -- [in] timeout in milliseconds to use for the request.
-    /// - `is_retry` -- [in] flag indicating whether this request is a retry. Generally only used
-    /// for internal purposes for cases which should retry automatically (like receiving a `421`) in
-    /// order to prevent subsequent retries.
+    /// - `existing_request_id` -- [in] the request id for the existing request when this request is
+    /// a retry. Mostly to simplify debugging.
+    /// - `retry_reason` -- [in] the reason we are retrying the request (if it's a retry). Generally
+    /// only used for internal purposes (like
+    // receiving a `421`) in order to prevent subsequent retries.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void send_onion_request(
             PathType type,
@@ -490,40 +515,35 @@ class Network {
             std::optional<ustring> body,
             std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
             std::chrono::milliseconds timeout,
-            bool is_retry,
+            std::optional<std::string> existing_request_id,
+            std::optional<request_info::RetryReason> retry_reason,
             network_response_callback_t handle_response);
 
-    /// API: network/process_snode_response
+    /// API: network/process_v3_onion_response
     ///
-    /// Processes the response from an onion request sent to a service node destination.
+    /// Processes a v3 onion request response.
     ///
     /// Inputs:
     /// - `builder` -- [in] the builder that was used to build the onion request.
     /// - `response` -- [in] the response data returned from the destination.
-    /// - `info` -- [in] the information for the request that was made.
-    /// - `handle_response` -- [in] callback to be called with updated response information after
-    /// processing the error.
-    void process_snode_response(
-            session::onionreq::Builder builder,
-            std::string response,
-            request_info info,
-            network_response_callback_t handle_response);
-
-    /// API: network/process_server_response
     ///
-    /// Processes the response from an onion request sent to a server destination.
+    /// Outputs:
+    /// - A pair containing the status code and body of the decrypted onion request response.
+    std::pair<int16_t, std::optional<std::string>> process_v3_onion_response(
+            session::onionreq::Builder builder, std::string response);
+
+    /// API: network/process_v4_onion_response
+    ///
+    /// Processes a v4 onion request response.
     ///
     /// Inputs:
     /// - `builder` -- [in] the builder that was used to build the onion request.
     /// - `response` -- [in] the response data returned from the destination.
-    /// - `info` -- [in] the information for the request that was made.
-    /// - `handle_response` -- [in] callback to be called with updated response information after
-    /// processing the error.
-    void process_server_response(
-            session::onionreq::Builder builder,
-            std::string response,
-            request_info info,
-            network_response_callback_t handle_response);
+    ///
+    /// Outputs:
+    /// - A pair containing the status code and body of the decrypted onion request response.
+    std::pair<int16_t, std::optional<std::string>> process_v4_onion_response(
+            session::onionreq::Builder builder, std::string response);
 
     /// API: network/handle_errors
     ///
@@ -544,6 +564,19 @@ class Network {
             std::optional<int16_t> status_code,
             std::optional<std::string> response,
             std::optional<network_response_callback_t> handle_response);
+
+    /// API: network/handle_node_error
+    ///
+    /// Convenience method to increment the failure count for a given node and path (if a node
+    /// doesn't have an associated path then just create one with the single node).  This just calls
+    /// into the 'handle_errors' function in a way that will trigger an update to the failure
+    /// counts.
+    ///
+    /// Inputs:
+    /// - `node` -- [in] the node to increment the failure count for.
+    /// - `path_type` -- [in] type of path the node (or provided path) belong to.
+    /// - `path` -- [in] path to increment the failure count for.
+    void handle_node_error(service_node node, PathType path_type, onion_path path);
 };
 
 }  // namespace session::network

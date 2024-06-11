@@ -24,6 +24,7 @@
 #include "session/onionreq/builder.hpp"
 #include "session/onionreq/key_types.hpp"
 #include "session/onionreq/response_parser.hpp"
+#include "session/random.hpp"
 #include "session/util.hpp"
 
 using namespace oxen;
@@ -507,6 +508,21 @@ void Network::disk_write_thread_loop() {
     }
 }
 
+void Network::suspend() {
+    net.call([this]() mutable {
+        suspended = true;
+        close_connections();
+        log::info(cat, "Suspended.");
+    });
+}
+
+void Network::resume() {
+    net.call([this]() mutable {
+        suspended = false;
+        log::info(cat, "Resumed.");
+    });
+}
+
 void Network::close_connections() {
     net.call([this]() mutable {
         endpoint.reset();
@@ -563,7 +579,14 @@ std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
     });
 }
 
-connection_info Network::get_connection_info(PathType path_type, service_node target) {
+std::pair<connection_info, std::optional<std::string>> Network::get_connection_info(
+        PathType path_type, service_node target) {
+    auto currently_suspended = net.call_get([this]() -> bool { return suspended; });
+
+    // If the network is currently suspended then don't try to open a connection
+    if (currently_suspended)
+        return {{target, nullptr, nullptr}, "Network is suspended."};
+
     auto cb_called = std::make_shared<std::once_flag>();
     auto mutex = std::make_shared<std::mutex>();
     auto cv = std::make_shared<std::condition_variable>();
@@ -589,7 +612,7 @@ connection_info Network::get_connection_info(PathType path_type, service_node ta
                     });
             },
             [this, path_type, target, mutex, cv, done, cb_called](
-                    quic::connection_interface& conn, uint64_t) {
+                    quic::connection_interface& conn, uint64_t error_code) {
                 // Trigger the callback first before updating the paths in case this was triggered
                 // when try to establish a connection
                 if (cb_called) {
@@ -615,30 +638,22 @@ connection_info Network::get_connection_info(PathType path_type, service_node ta
                     conn.reference_id() == target_path->conn_info.conn->reference_id()) {
                     target_path->conn_info.conn.reset();
                     target_path->conn_info.stream.reset();
-                    handle_errors(
-                            {target,
-                             "",
-                             std::nullopt,
-                             std::nullopt,
-                             *target_path,
-                             path_type,
-                             0ms,
-                             false,
-                             false},
-                            false,
-                            std::nullopt,
-                            std::nullopt,
-                            std::nullopt);
-                }
+                    handle_node_error(target, path_type, *target_path);
+                } else if (error_code == static_cast<uint64_t>(NGTCP2_ERR_HANDSHAKE_TIMEOUT))
+                    // Depending on the state of the snode pool cache it's possible for certain
+                    // errors to result in being permanently unable to establish a connection, to
+                    // avoid this we handle those error codes and drop
+                    handle_node_error(
+                            target, path_type, {{target, nullptr, nullptr}, {target}, 0, 0});
             });
 
     std::unique_lock<std::mutex> lock(*mutex);
     cv->wait(lock, [&done] { return *done; });
 
     if (!*connection_established)
-        return {target, nullptr, nullptr};
+        return {{target, nullptr, nullptr}, "Network is unreachable."};
 
-    return {target, c, c->open_stream<quic::BTRequestStream>()};
+    return {{target, c, c->open_stream<quic::BTRequestStream>()}, std::nullopt};
 }
 
 // MARK: Snode Pool and Onion Path
@@ -648,7 +663,8 @@ using paths_and_pool_result =
 using paths_and_pool_info = std::tuple<
         std::vector<onion_path>,
         std::vector<service_node>,
-        std::chrono::system_clock::time_point>;
+        std::chrono::system_clock::time_point,
+        bool>;
 
 void Network::with_paths_and_pool(
         PathType path_type,
@@ -657,10 +673,14 @@ void Network::with_paths_and_pool(
                 void(std::vector<onion_path> updated_paths,
                      std::vector<service_node> pool,
                      std::optional<std::string> error)> callback) {
-    auto [current_paths, pool, last_pool_update] =
+    auto [current_paths, pool, last_pool_update, currently_suspended] =
             net.call_get([this, path_type]() -> paths_and_pool_info {
-                return {paths_for_type(path_type), snode_pool, last_snode_pool_update};
+                return {paths_for_type(path_type), snode_pool, last_snode_pool_update, suspended};
             });
+
+    // If the network is currently suspended then fail immediately
+    if (currently_suspended)
+        return callback({}, {}, "Network is suspended");
 
     // Check if the current data is valid, and if so just return it
     auto current_valid_paths = valid_paths(current_paths);
@@ -672,10 +692,17 @@ void Network::with_paths_and_pool(
 
     auto [updated_paths, updated_pool, error] = paths_and_pool_loop->call_get(
             [this, path_type, excluded_node]() mutable -> paths_and_pool_result {
-                auto [current_paths, pool, last_pool_update] =
+                auto [current_paths, pool, last_pool_update, currently_suspended] =
                         net.call_get([this, path_type]() -> paths_and_pool_info {
-                            return {paths_for_type(path_type), snode_pool, last_snode_pool_update};
+                            return {paths_for_type(path_type),
+                                    snode_pool,
+                                    last_snode_pool_update,
+                                    suspended};
                         });
+
+                // If the network is currently suspended then fail immediately
+                if (currently_suspended)
+                    return {{}, {}, "Network is suspended"};
 
                 // Check if the current data is valid, and if so just return it
                 auto current_valid_paths = valid_paths(current_paths);
@@ -696,6 +723,8 @@ void Network::with_paths_and_pool(
 
                 // Populate the snode pool if needed
                 if (!pool_valid) {
+                    log::info(cat, "Snode pool cache no longer valid, need to refetch.");
+
                     // Define the response handler to avoid code duplication
                     auto handle_nodes_response =
                             [](std::promise<std::vector<service_node>>&& prom) {
@@ -893,11 +922,13 @@ void Network::with_paths_and_pool(
                                     path_type,
                                     nodes_to_test[i],
                                     [prom](std::optional<connection_info> valid_guard_node,
-                                           std::vector<service_node> unused_nodes) {
+                                           std::vector<service_node> unused_nodes,
+                                           std::optional<std::string> error) {
                                         try {
                                             if (!valid_guard_node)
                                                 throw std::runtime_error{
-                                                        "Failed to find valid guard node."};
+                                                        error.value_or("Failed to find valid guard "
+                                                                       "node.")};
                                             prom->set_value({*valid_guard_node, unused_nodes});
                                         } catch (...) {
                                             prom->set_exception(std::current_exception());
@@ -1043,8 +1074,15 @@ void Network::with_path(
         std::optional<service_node> excluded_node,
         std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
                 callback) {
-    auto current_paths = net.call_get(
-            [this, path_type]() -> std::vector<onion_path> { return paths_for_type(path_type); });
+    auto [current_paths, currently_suspended] =
+            net.call_get([this, path_type]() -> std::pair<std::vector<onion_path>, bool> {
+                return {paths_for_type(path_type), suspended};
+            });
+
+    // If the network is currently suspended then fail immediately
+    if (currently_suspended)
+        return callback(std::nullopt, "Network is suspended");
+
     std::pair<std::optional<onion_path>, uint8_t> path_info =
             find_possible_path(excluded_node, current_paths);
     auto& [target_path, paths_count] = path_info;
@@ -1069,19 +1107,34 @@ void Network::with_path(
                     if (target_path_it == current_paths.end())
                         return {std::nullopt, current_paths.size()};
 
+                    // It's possible that multiple requests were queued up waiting on the connection
+                    // the be reestablished so check to see if the path is now valid and return it
+                    // if it is
+                    if (target_path_it->conn_info.is_valid())
+                        return {*target_path_it, current_paths.size()};
+
                     // Try to retrieve a valid connection for the guard node
                     log::info(
                             cat,
-                            "Connection to {} path no longer valid, attempting reconnection.",
+                            "Connection to {} for {} path no longer valid, attempting "
+                            "reconnection.",
+                            target_path_it->nodes[0],
                             path_type_name(path_type));
-                    auto info = get_connection_info(path_type, path.nodes[0]);
+                    auto [info, error] = get_connection_info(path_type, path.nodes[0]);
 
                     // It's possible that the connection was created successfully, and reported as
                     // valid, but isn't actually valid (eg. it was shutdown immediately due to the
                     // network being unreachable) so to avoid this we wait for either the connection
                     // to be established or the connection to fail before continuing
-                    if (!info.is_valid())
+                    if (!info.is_valid()) {
+                        log::info(
+                                cat,
+                                "Reconnection to {} for {} path failed with error: {}.",
+                                target_path_it->nodes[0],
+                                path_type_name(path_type),
+                                error.value_or("Unknown error."));
                         return {std::nullopt, current_paths.size()};
+                    }
 
                     // If the connection info is valid and it's a standard path then update the
                     // connection status back to connected
@@ -1090,7 +1143,7 @@ void Network::with_path(
 
                     // No need to call the 'paths_changed' callback as the paths haven't
                     // actually changed, just their connection info
-                    auto updated_path = onion_path{std::move(info), std::move(path.nodes), 0, 0};
+                    auto updated_path = onion_path{std::move(info), path.nodes, 0, 0};
                     auto paths_count = net.call_get(
                             [this, path_type, path, updated_path]() mutable -> uint8_t {
                                 switch (path_type) {
@@ -1228,9 +1281,15 @@ void Network::find_valid_guard_node_recursive(
         std::vector<service_node> target_nodes,
         std::function<
                 void(std::optional<connection_info> valid_guard_node,
-                     std::vector<service_node> unused_nodes)> callback) {
+                     std::vector<service_node> unused_nodes,
+                     std::optional<std::string>)> callback) {
     if (target_nodes.empty())
-        return callback(std::nullopt, {});
+        return callback(std::nullopt, {}, "Failed to find valid guard node.");
+
+    // If the network is currently suspended then fail immediately
+    auto currently_suspended = net.call_get([this]() -> bool { return suspended; });
+    if (currently_suspended)
+        return callback(std::nullopt, {}, "Network is suspended");
 
     auto target_node = target_nodes.front();
     log::info(cat, "Testing guard snode: {}", target_node.to_string());
@@ -1258,7 +1317,7 @@ void Network::find_valid_guard_node_recursive(
                                 "Outdated node version ({})"_format(fmt::join(version, "."))};
 
                     log::info(cat, "Guard snode {} valid.", target_node.to_string());
-                    cb(info, remaining_nodes);
+                    cb(info, remaining_nodes, std::nullopt);
                 } catch (const std::exception& e) {
                     // Log the error and loop after a slight delay (don't want to drain the pool
                     // too quickly if the network goes down)
@@ -1284,10 +1343,10 @@ void Network::get_service_nodes(
         std::optional<int> limit,
         std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                 callback) {
-    auto info = get_connection_info(PathType::standard, node);
+    auto [info, error] = get_connection_info(PathType::standard, node);
 
     if (!info.is_valid())
-        return callback({}, "Network is unreachable.");
+        return callback({}, error.value_or("Unknown error."));
 
     nlohmann::json params{
             {"active_only", true},
@@ -1341,10 +1400,10 @@ void Network::get_version(
         std::function<void(
                 std::vector<int> version, connection_info info, std::optional<std::string> error)>
                 callback) {
-    auto info = get_connection_info(path_type, node);
+    auto [info, error] = get_connection_info(path_type, node);
 
     if (!info.is_valid())
-        return callback({}, info, "Network is unreachable.");
+        return callback({}, info, error.value_or("Unknown error."));
 
     oxenc::bt_dict_producer payload;
     info.stream->command(
@@ -1389,6 +1448,8 @@ void Network::get_swarm(
         return callback(*cached_swarm);
 
     // Pick a random node from the snode pool to fetch the swarm from
+    log::info(cat, "No cached swarm for {}, fetching from random node.", swarm_pubkey.hex());
+
     with_paths_and_pool(
             PathType::standard,
             std::nullopt,
@@ -1416,7 +1477,8 @@ void Network::get_swarm(
                         ustring{quic::to_usv(payload.dump())},
                         swarm_pubkey,
                         quic::DEFAULT_TIMEOUT,
-                        false,
+                        std::nullopt,
+                        std::nullopt,
                         [this, swarm_pubkey, cb = std::move(cb)](
                                 bool success,
                                 bool timeout,
@@ -1524,7 +1586,8 @@ void Network::send_onion_request(
         std::optional<ustring> body,
         std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
         std::chrono::milliseconds timeout,
-        bool is_retry,
+        std::optional<std::string> existing_request_id,
+        std::optional<request_info::RetryReason> retry_reason,
         network_response_callback_t handle_response) {
     with_path(
             path_type,
@@ -1535,7 +1598,8 @@ void Network::send_onion_request(
              body,
              swarm_pubkey,
              timeout,
-             is_retry,
+             existing_request_id,
+             retry_reason,
              cb = std::move(handle_response)](
                     std::optional<onion_path> path, std::optional<std::string> error) {
                 if (!path)
@@ -1556,15 +1620,17 @@ void Network::send_onion_request(
                     auto onion_req_payload = builder.build(payload);
 
                     request_info info{
+                            existing_request_id.value_or(random::random_base32(4)),
                             path->nodes[0],
                             "onion_req",
                             onion_req_payload,
+                            body,
                             swarm_pubkey,
                             *path,
                             path_type,
                             timeout,
                             node_for_destination(destination).has_value(),
-                            is_retry};
+                            retry_reason};
 
                     send_request(
                             info,
@@ -1583,17 +1649,106 @@ void Network::send_onion_request(
                                 if (!success || timeout)
                                     return cb(success, timeout, status_code, response);
 
-                                // Ensure the response is long enough to be processed, if not then
-                                // handle it as an error
-                                if (!ResponseParser::response_long_enough(
-                                            builder.enc_type, response->size()))
-                                    return handle_errors(info, timeout, status_code, response, cb);
+                                try {
+                                    // Ensure the response is long enough to be processed, if not
+                                    // then handle it as an error
+                                    if (!ResponseParser::response_long_enough(
+                                                builder.enc_type, response->size()))
+                                        throw status_code_exception{
+                                                status_code,
+                                                "Response is too short to be an onion request "
+                                                "response: " +
+                                                        *response};
 
-                                // Otherwise, process the onion request response
-                                if (std::holds_alternative<service_node>(destination))
-                                    process_snode_response(builder, *response, info, cb);
-                                else if (std::holds_alternative<ServerDestination>(destination))
-                                    process_server_response(builder, *response, info, cb);
+                                    // Otherwise, process the onion request response
+                                    std::pair<int16_t, std::optional<std::string>>
+                                            processed_response;
+
+                                    // The SnodeDestination runs via V3 onion requests and the
+                                    // ServerDestination runs via V4
+                                    if (std::holds_alternative<service_node>(destination))
+                                        processed_response =
+                                                process_v3_onion_response(builder, *response);
+                                    else if (std::holds_alternative<ServerDestination>(destination))
+                                        processed_response =
+                                                process_v4_onion_response(builder, *response);
+
+                                    // If we got a non 2xx status code, return the error
+                                    auto& [processed_status_code, processed_body] =
+                                            processed_response;
+                                    if (processed_status_code < 200 || processed_status_code > 299)
+                                        throw status_code_exception{
+                                                processed_status_code,
+                                                processed_body.value_or("Request returned "
+                                                                        "non-success status "
+                                                                        "code.")};
+
+                                    // Try process the body in case it was a batch request which
+                                    // failed
+                                    std::optional<nlohmann::json> results;
+                                    if (processed_body) {
+                                        try {
+                                            auto processed_body_json =
+                                                    nlohmann::json::parse(*processed_body);
+
+                                            // If it wasn't a batch/sequence request then assume it
+                                            // was successful and return no error
+                                            if (processed_body_json.contains("results"))
+                                                results = processed_body_json["results"];
+                                        } catch (...) {
+                                        }
+                                    }
+
+                                    // If there was no 'results' array then it wasn't a batch
+                                    // request so we can stop here and return
+                                    if (!results)
+                                        return cb(
+                                                true, false, processed_status_code, processed_body);
+
+                                    // Otherwise we want to check if all of the results have the
+                                    // same status code and, if so, handle that failure case
+                                    // (default the 'error_body' to the 'processed_body' in case we
+                                    // don't get an explicit error)
+                                    int16_t single_status_code = -1;
+                                    std::optional<std::string> error_body = processed_body;
+                                    for (const auto& result : results->items()) {
+                                        if (result.value().contains("code") &&
+                                            result.value()["code"].is_number() &&
+                                            (single_status_code == -1 ||
+                                             result.value()["code"].get<int16_t>() !=
+                                                     single_status_code))
+                                            single_status_code =
+                                                    result.value()["code"].get<int16_t>();
+                                        else {
+                                            // Either there was no code, or the code was different
+                                            // from a former code in which case there wasn't an
+                                            // individual detectable error (ie. it needs specific
+                                            // handling) so return no error
+                                            single_status_code = 200;
+                                            break;
+                                        }
+
+                                        if (result.value().contains("body") &&
+                                            result.value()["body"].is_string())
+                                            error_body = result.value()["body"].get<std::string>();
+                                    }
+
+                                    // If all results contained the same error then handle it as a
+                                    // single error
+                                    if (single_status_code < 200 || single_status_code > 299)
+                                        throw status_code_exception{
+                                                single_status_code,
+                                                error_body.value_or("Sub-request returned "
+                                                                    "non-success status code.")};
+
+                                    // Otherwise some requests succeeded and others failed so
+                                    // succeed with the processed data
+                                    return cb(true, false, processed_status_code, processed_body);
+                                } catch (const status_code_exception& e) {
+                                    handle_errors(info, false, e.status_code, e.what(), cb);
+                                } catch (const std::exception& e) {
+                                    handle_errors(info, false, -1, e.what(), cb);
+                                }
                             });
                 } catch (const std::exception& e) {
                     cb(false, false, -1, e.what());
@@ -1608,7 +1763,14 @@ void Network::send_onion_request(
         std::chrono::milliseconds timeout,
         network_response_callback_t handle_response) {
     send_onion_request(
-            PathType::standard, destination, body, swarm_pubkey, timeout, false, handle_response);
+            PathType::standard,
+            destination,
+            body,
+            swarm_pubkey,
+            timeout,
+            std::nullopt,
+            std::nullopt,
+            handle_response);
 }
 
 void Network::upload_file_to_server(
@@ -1648,7 +1810,8 @@ void Network::upload_file_to_server(
             data,
             std::nullopt,
             timeout,
-            false,
+            std::nullopt,
+            std::nullopt,
             handle_response);
 }
 
@@ -1678,7 +1841,8 @@ void Network::download_file(
             std::nullopt,
             std::nullopt,
             timeout,
-            false,
+            std::nullopt,
+            std::nullopt,
             handle_response);
 }
 
@@ -1702,112 +1866,81 @@ void Network::get_client_version(
             std::nullopt,
             pubkey,
             timeout,
-            false,
+            std::nullopt,
+            std::nullopt,
             handle_response);
 }
 
 // MARK: Response Handling
 
-// The SnodeDestination runs via V3 onion requests
-void Network::process_snode_response(
-        Builder builder,
-        std::string response,
-        request_info info,
-        network_response_callback_t handle_response) {
+std::pair<int16_t, std::optional<std::string>> Network::process_v3_onion_response(
+        Builder builder, std::string response) {
+    std::string base64_iv_and_ciphertext;
     try {
-        std::string base64_iv_and_ciphertext;
+        nlohmann::json response_json = nlohmann::json::parse(response);
 
-        try {
-            nlohmann::json response_json = nlohmann::json::parse(response);
+        if (!response_json.contains("result") || !response_json["result"].is_string())
+            throw std::runtime_error{"JSON missing result field."};
 
-            if (!response_json.contains("result") || !response_json["result"].is_string())
-                throw std::runtime_error{"JSON missing result field."};
-
-            base64_iv_and_ciphertext = response_json["result"].get<std::string>();
-        } catch (...) {
-            base64_iv_and_ciphertext = response;
-        }
-
-        if (!oxenc::is_base64(base64_iv_and_ciphertext))
-            throw std::runtime_error{"Invalid base64 encoded IV and ciphertext."};
-
-        ustring iv_and_ciphertext;
-        oxenc::from_base64(
-                base64_iv_and_ciphertext.begin(),
-                base64_iv_and_ciphertext.end(),
-                std::back_inserter(iv_and_ciphertext));
-        auto parser = ResponseParser(builder);
-        auto result = parser.decrypt(iv_and_ciphertext);
-        auto result_json = nlohmann::json::parse(result);
-        int16_t status_code;
-        std::string body;
-
-        if (result_json.contains("status_code") && result_json["status_code"].is_number())
-            status_code = result_json["status_code"].get<int16_t>();
-        else if (result_json.contains("status") && result_json["status"].is_number())
-            status_code = result_json["status"].get<int16_t>();
-        else
-            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
-
-        if (result_json.contains("body") && result_json["body"].is_string())
-            body = result_json["body"].get<std::string>();
-        else
-            body = result_json.dump();
-
-        // If we got a non 2xx status code, return the error
-        if (status_code < 200 || status_code > 299)
-            return handle_errors(info, false, status_code, body, handle_response);
-
-        handle_response(true, false, status_code, body);
-    } catch (const std::exception& e) {
-        handle_response(false, false, -1, e.what());
+        base64_iv_and_ciphertext = response_json["result"].get<std::string>();
+    } catch (...) {
+        base64_iv_and_ciphertext = response;
     }
+
+    if (!oxenc::is_base64(base64_iv_and_ciphertext))
+        throw std::runtime_error{"Invalid base64 encoded IV and ciphertext: " + response + "."};
+
+    ustring iv_and_ciphertext;
+    oxenc::from_base64(
+            base64_iv_and_ciphertext.begin(),
+            base64_iv_and_ciphertext.end(),
+            std::back_inserter(iv_and_ciphertext));
+    auto parser = ResponseParser(builder);
+    auto result = parser.decrypt(iv_and_ciphertext);
+    auto result_json = nlohmann::json::parse(result);
+    int16_t status_code;
+    std::string body;
+
+    if (result_json.contains("status_code") && result_json["status_code"].is_number())
+        status_code = result_json["status_code"].get<int16_t>();
+    else if (result_json.contains("status") && result_json["status"].is_number())
+        status_code = result_json["status"].get<int16_t>();
+    else
+        throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
+
+    if (result_json.contains("body") && result_json["body"].is_string())
+        body = result_json["body"].get<std::string>();
+    else
+        body = result_json.dump();
+
+    return {status_code, body};
 }
 
-// The ServerDestination runs via V4 onion requests
-void Network::process_server_response(
-        Builder builder,
-        std::string response,
-        request_info info,
-        network_response_callback_t handle_response) {
-    try {
-        ustring response_data{to_unsigned(response.data()), response.size()};
-        auto parser = ResponseParser(builder);
-        auto result = parser.decrypt(response_data);
+std::pair<int16_t, std::optional<std::string>> Network::process_v4_onion_response(
+        Builder builder, std::string response) {
+    ustring response_data{to_unsigned(response.data()), response.size()};
+    auto parser = ResponseParser(builder);
+    auto result = parser.decrypt(response_data);
 
-        // Process the bencoded response
-        oxenc::bt_list_consumer result_bencode{result};
+    // Process the bencoded response
+    oxenc::bt_list_consumer result_bencode{result};
 
-        if (result_bencode.is_finished() || !result_bencode.is_string())
-            throw std::runtime_error{"Invalid bencoded response"};
+    if (result_bencode.is_finished() || !result_bencode.is_string())
+        throw std::runtime_error{"Invalid bencoded response"};
 
-        auto response_info_string = result_bencode.consume_string();
-        int16_t status_code;
-        nlohmann::json response_info_json = nlohmann::json::parse(response_info_string);
+    auto response_info_string = result_bencode.consume_string();
+    int16_t status_code;
+    nlohmann::json response_info_json = nlohmann::json::parse(response_info_string);
 
-        if (response_info_json.contains("code") && response_info_json["code"].is_number())
-            status_code = response_info_json["code"].get<int16_t>();
-        else
-            throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
+    if (response_info_json.contains("code") && response_info_json["code"].is_number())
+        status_code = response_info_json["code"].get<int16_t>();
+    else
+        throw std::runtime_error{"Invalid JSON response, missing required code field."};
 
-        // If we have a status code that is not in the 2xx range, return the error
-        if (status_code < 200 || status_code > 299) {
-            if (result_bencode.is_finished())
-                return handle_errors(info, false, status_code, std::nullopt, handle_response);
+    if (result_bencode.is_finished())
+        return {status_code, std::nullopt};
 
-            return handle_errors(
-                    info, false, status_code, result_bencode.consume_string(), handle_response);
-        }
-
-        // If there is no body just return the success status
-        if (result_bencode.is_finished())
-            return handle_response(true, false, status_code, std::nullopt);
-
-        // Otherwise return the result
-        handle_response(true, false, status_code, result_bencode.consume_string());
-    } catch (const std::exception& e) {
-        handle_response(false, false, -1, e.what());
-    }
+    return {status_code, result_bencode.consume_string()};
 }
 
 // MARK: Error Handling
@@ -1865,6 +1998,25 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
     return {status_code, response_string};
 }
 
+void Network::handle_node_error(service_node node, PathType path_type, onion_path path) {
+    handle_errors(
+            {"Node Error",
+             node,
+             "",
+             std::nullopt,
+             std::nullopt,
+             std::nullopt,
+             path,
+             path_type,
+             0ms,
+             false,
+             std::nullopt},
+            false,
+            std::nullopt,
+            std::nullopt,
+            std::nullopt);
+}
+
 void Network::handle_errors(
         request_info info,
         bool timeout_,
@@ -1873,6 +2025,30 @@ void Network::handle_errors(
         std::optional<network_response_callback_t> handle_response) {
     bool timeout = timeout_;
     auto status_code = status_code_.value_or(-1);
+
+    // There is an issue which can occur where we get invalid data back and are unable to decrypt
+    // it, if we do see this behaviour then we want to retry the request on the off chance it
+    // resolves itself
+    //
+    // When testing this case the retry always resulted in a 421 error, if that occurs we want to go
+    // through the standard 421 behaviour (which, in this case, would involve a 3rd retry against
+    // another node in the swarm to confirm the redirect)
+    if (!info.retry_reason && response && *response == session::onionreq::decryption_failed_error) {
+        log::info(
+                cat,
+                "Received decryption failure in request {} for {}, retrying.",
+                info.request_id,
+                path_type_name(info.path_type));
+        return send_onion_request(
+                info.path_type,
+                info.target,
+                info.original_body,
+                info.swarm_pubkey,
+                info.timeout,
+                info.request_id,
+                request_info::RetryReason::decryption_failure,
+                (*handle_response));
+    }
 
     // A number of server errors can return HTML data but no status code, we want to extract those
     // cases so they can be handled properly below
@@ -1941,7 +2117,8 @@ void Network::handle_errors(
 
                 // If this was the first 421 then we want to retry using another node in the
                 // swarm to get confirmation that we should switch to a different swarm
-                if (!info.is_retry) {
+                if (!info.retry_reason ||
+                    info.retry_reason != request_info::RetryReason::redirect) {
                     CSRNG rng;
                     std::vector<session::network::service_node> swarm_copy = cached_swarm;
                     std::shuffle(swarm_copy.begin(), swarm_copy.end(), rng);
@@ -1959,13 +2136,20 @@ void Network::handle_errors(
                     if (!random_node)
                         throw std::invalid_argument{"No other nodes in the swarm."};
 
+                    log::info(
+                            cat,
+                            "Received 421 error in request {} for {}, retrying once before "
+                            "updating swarm.",
+                            info.request_id,
+                            path_type_name(info.path_type));
                     return send_onion_request(
                             info.path_type,
                             *random_node,
-                            info.body,
+                            info.original_body,
                             info.swarm_pubkey,
                             info.timeout,
-                            true,
+                            info.request_id,
+                            request_info::RetryReason::redirect,
                             (*handle_response));
                 }
 
@@ -1985,6 +2169,12 @@ void Network::handle_errors(
 
                 if (swarm.empty())
                     throw std::invalid_argument{"No snodes in the response."};
+
+                log::info(
+                        cat,
+                        "Retry for request {} resulted in another 421 for {}, updating swarm.",
+                        info.request_id,
+                        path_type_name(info.path_type));
 
                 // Update the cache
                 net.call([this, swarm_pubkey = *info.swarm_pubkey, swarm]() mutable {
@@ -2079,6 +2269,14 @@ void Network::handle_errors(
 
             // Set the failure count of the guard node to match the threshold so we drop it
             updated_failure_counts[updated_path.nodes[0].to_string()] = snode_failure_threshold;
+        } else if (updated_path.nodes.size() < path_size) {
+            // If the path doesn't have enough nodes then it's likely that this failure was
+            // triggered when trying to establish a new path and, as such, we should increase the
+            // failure count of the guard node since it is probably invalid
+            auto failure_count =
+                    updated_failure_counts.try_emplace(updated_path.nodes[0].to_string(), 0)
+                            .first->second;
+            updated_failure_counts[updated_path.nodes[0].to_string()] = failure_count + 1;
         }
     }
 
@@ -2089,6 +2287,7 @@ void Network::handle_errors(
 
     net.call([this,
               path_type = info.path_type,
+              target_node = info.target,
               swarm_pubkey = info.swarm_pubkey,
               old_path = info.path,
               updated_failure_counts,
@@ -2096,6 +2295,8 @@ void Network::handle_errors(
               &cv,
               &mtx,
               &done]() mutable {
+        auto already_handled_failure = false;
+
         // Drop the path if invalid
         if (updated_path.failure_count >= path_failure_threshold ||
             updated_path.timeout_count >= path_timeout_threshold) {
@@ -2145,13 +2346,14 @@ void Network::handle_errors(
                         path_description);
             else {
                 // If the path was already dropped then the snode pool would have already been
-                // updated so no need to continue
+                // updated so update the `already_handled_failure` to avoid double-handle the
+                // failure
+                already_handled_failure = true;
                 log::info(
                         cat,
                         "Path already dropped for {}: [{}]",
                         path_type_name(path_type),
                         path_description);
-                return;
             }
         } else {
             switch (path_type) {
@@ -2171,12 +2373,16 @@ void Network::handle_errors(
             }
         }
 
-        // Update the snode failure counts
-        snode_failure_counts = updated_failure_counts;
+        // If we hadn't already handled the failure then update the failure counts and connection
+        // status
+        if (!already_handled_failure) {
+            // Update the snode failure counts
+            snode_failure_counts = updated_failure_counts;
 
-        // Update the network status if we've removed all standard paths
-        if (standard_paths.empty())
-            update_status(ConnectionStatus::disconnected);
+            // Update the network status if we've removed all standard paths
+            if (standard_paths.empty())
+                update_status(ConnectionStatus::disconnected);
+        }
 
         // Since we've finished updating the path and failure count states we can stop blocking
         // the caller (no need to wait for the snode cache to update)
@@ -2185,6 +2391,10 @@ void Network::handle_errors(
             done = true;
         }
         cv.notify_one();
+
+        // We've already handled the failure so don't update the cache
+        if (already_handled_failure)
+            return;
 
         // Update the snode cache
         {
@@ -2214,6 +2424,12 @@ void Network::handle_errors(
                             snode_pool.end(),
                             old_path.nodes[i],
                             updated_path.nodes[i]);
+
+            // If the target node is invalid then remove it from the snode pool
+            if (updated_failure_counts[target_node.to_string()] >= snode_failure_threshold)
+                snode_pool.erase(
+                        std::remove(snode_pool.begin(), snode_pool.end(), target_node),
+                        snode_pool.end());
 
             need_pool_write = true;
             need_swarm_write = (swarm_pubkey && swarm_cache.contains(swarm_pubkey->hex()));
@@ -2302,6 +2518,14 @@ LIBSESSION_C_API bool network_init(
 
 LIBSESSION_C_API void network_free(network_object* network) {
     delete network;
+}
+
+LIBSESSION_C_API void network_suspend(network_object* network) {
+    unbox(network).suspend();
+}
+
+LIBSESSION_C_API void network_resume(network_object* network) {
+    unbox(network).resume();
 }
 
 LIBSESSION_C_API void network_close_connections(network_object* network) {
