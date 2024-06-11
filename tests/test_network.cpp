@@ -115,7 +115,8 @@ TEST_CASE("Network error handling", "[network]") {
     auto x_pk_hex = "d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72";
     auto target = service_node{ed_pk, "0.0.0.0", uint16_t{0}};
     auto target2 = service_node{ed_pk2, "0.0.0.1", uint16_t{1}};
-    auto path = onion_path{{{target}, nullptr, nullptr}, {target}, 0};
+    auto target3 = service_node{ed_pk2, "0.0.0.2", uint16_t{2}};
+    auto path = onion_path{{{target}, nullptr, nullptr}, {target, target2, target3}, 0};
     auto mock_request = request_info{
             "AAAA",
             target,
@@ -137,6 +138,8 @@ TEST_CASE("Network error handling", "[network]") {
     for (auto code : codes_with_no_changes) {
         network.set_paths(PathType::standard, {path});
         network.set_failure_count(target, 0);
+        network.set_failure_count(target2, 0);
+        network.set_failure_count(target3, 0);
         network.handle_errors(
                 mock_request,
                 false,
@@ -155,12 +158,16 @@ TEST_CASE("Network error handling", "[network]") {
         CHECK(result.status_code == code);
         CHECK_FALSE(result.response.has_value());
         CHECK(network.get_failure_count(target) == 0);
+        CHECK(network.get_failure_count(target2) == 0);
+        CHECK(network.get_failure_count(target3) == 0);
         CHECK(network.get_failure_count(PathType::standard, path) == 0);
     }
 
     // Check general error handling (first failure)
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
+    network.set_failure_count(target2, 0);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
             false,
@@ -178,10 +185,12 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
     CHECK(network.get_failure_count(target) == 0);
+    CHECK(network.get_failure_count(target2) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) == 1);
 
     // Check general error handling with no response (too many path failures)
-    path = onion_path{{{target}, nullptr, nullptr}, {target, target2}, 9};
+    path = onion_path{{{target}, nullptr, nullptr}, {target, target2, target3}, 9};
     auto mock_request2 = request_info{
             "BBBB",
             target,
@@ -197,6 +206,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 0);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request2,
             false,
@@ -217,11 +227,13 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(target) == 3);  // Guard node should be set to failure threshold
     CHECK(network.get_failure_count(target2) ==
           1);  // Other nodes get their failure count incremented
+    CHECK(network.get_failure_count(target3) ==
+          1);  // Other nodes get their failure count incremented
     CHECK(network.get_failure_count(PathType::standard, path) ==
           0);  // Path will have been dropped and reset
 
     // Check general error handling with a path and specific node failure (first failure)
-    path = onion_path{{{target}, nullptr, nullptr}, {target, target2}, 0};
+    path = onion_path{{{target}, nullptr, nullptr}, {target, target2, target3}, 0};
     auto mock_request3 = request_info{
             "CCCC",
             target,
@@ -238,6 +250,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 0);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request3,
             false,
@@ -257,6 +270,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.response == response);
     CHECK(network.get_failure_count(target) == 0);
     CHECK(network.get_failure_count(target2) == 1);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) ==
           1);  // Incremented because conn_info is invalid
 
@@ -276,6 +290,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 9);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request4,
             false,
@@ -295,6 +310,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.response == response);
     CHECK(network.get_failure_count(target) == 0);
     CHECK(network.get_failure_count(target2) == 10);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) ==
           1);  // Incremented because conn_info is invalid
 
@@ -302,6 +318,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 0);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
             false,
@@ -319,7 +336,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.status_code == 421);
     CHECK(network.get_failure_count(target) == 0);
     CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
+    CHECK(network.get_failure_count(PathType::standard, path) == 1);
 
     // Check the retry request of a 421 with no response data is handled like any other error
     auto mock_request5 = request_info{
@@ -336,6 +354,8 @@ TEST_CASE("Network error handling", "[network]") {
             request_info::RetryReason::redirect};
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
+    network.set_failure_count(target2, 0);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request5,
             false,
@@ -352,6 +372,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(network.get_failure_count(target) == 0);
+    CHECK(network.get_failure_count(target2) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) == 1);
 
     // Check the retry request of a 421 with non-swarm response data is handled like any other error
@@ -371,6 +393,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(network.get_failure_count(target) == 0);
+    CHECK(network.get_failure_count(target2) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) == 1);
 
     // Check the retry request of a 421 instructs to replace the swarm
@@ -384,6 +408,8 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_swarm(x25519_pubkey::from_hex(x_pk_hex), {target});
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
+    network.set_failure_count(target2, 0);
+    network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request5,
             false,
@@ -401,6 +427,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
     CHECK(network.get_failure_count(target) == 0);
+    CHECK(network.get_failure_count(target2) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) == 0);
 
     network.get_swarm(x25519_pubkey::from_hex(x_pk_hex), [ed_pk](std::vector<service_node> swarm) {
@@ -438,6 +466,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.timeout);
     CHECK(result.status_code == -1);
     CHECK(network.get_failure_count(target) == 0);
+    CHECK(network.get_failure_count(target2) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) == 0);
 
     // Check a server response starting with '500 Internal Server Error' is reported as a `500`
@@ -458,6 +488,8 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK(network.get_failure_count(target) == 0);
+    CHECK(network.get_failure_count(target2) == 0);
+    CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) == 0);
 }
 
