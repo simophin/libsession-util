@@ -282,6 +282,7 @@ class Network {
             case PathType::upload: return upload_paths;
             case PathType::download: return download_paths;
         }
+        return standard_paths;  // Default
     };
 
     /// API: network/update_status

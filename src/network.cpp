@@ -86,6 +86,7 @@ namespace {
             case PathType::upload: return "upload";
             case PathType::download: return "download";
         }
+        return "standard";  // Default
     }
 
     // The number of paths we want to maintain.
@@ -95,6 +96,7 @@ namespace {
             case PathType::upload: return 1;
             case PathType::download: return 1;
         }
+        return 2;  // Default
     }
 
     service_node node_from_json(nlohmann::json json) {
