@@ -9,7 +9,10 @@
 #include <cassert>
 #include <stdexcept>
 
+#include "session/ed25519.hpp"
 #include "session/export.h"
+#include "session/platform.h"
+#include "session/platform.hpp"
 #include "session/xed25519.hpp"
 
 namespace session {
