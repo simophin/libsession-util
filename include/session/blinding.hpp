@@ -3,7 +3,6 @@
 #include <string>
 #include <string_view>
 
-#include "util.hpp"
 #include "platform.hpp"
 #include "sodium_array.hpp"
 
