@@ -84,10 +84,6 @@ std::vector<std::string> ConfigBase::merge(
                             ustring_view{_keys.front().data(), _keys.front().size()},
                             unwrapped,
                             storage_namespace());
-                    log::warning(
-                            cat,
-                            "Found double wraped message in namespace {}",
-                            static_cast<std::int16_t>(storage_namespace()));
                     parsed.emplace_back(h, keep_alive.emplace_back(std::move(unwrapped2)));
                 } catch (...) {
                     parsed.emplace_back(h, keep_alive.emplace_back(std::move(unwrapped)));
