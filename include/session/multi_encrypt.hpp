@@ -8,8 +8,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "sodium_array.hpp"
 #include "types.hpp"
-#include "util.hpp"
 
 // Helper functions for implementing multiply encrypted messages by creating separate copies of the
 // message for each message recipient.  This is used most prominently in group key update messages
