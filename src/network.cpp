@@ -16,6 +16,7 @@
 #include <string_view>
 #include <thread>
 
+#include "session/blinding.hpp"
 #include "session/ed25519.hpp"
 #include "session/export.h"
 #include "session/file.hpp"
@@ -80,7 +81,10 @@ namespace {
     constexpr auto node_not_found_prefix_no_status = "Next node not found: "sv;
     constexpr auto ALPN = "oxenstorage"sv;
 
-    std::string path_type_name(PathType path_type) {
+    std::string path_type_name(PathType path_type, bool single_path_mode) {
+        if (single_path_mode)
+            "single_path";
+
         switch (path_type) {
             case PathType::standard: return "standard";
             case PathType::upload: return "upload";
@@ -90,7 +94,10 @@ namespace {
     }
 
     // The number of paths we want to maintain.
-    uint8_t target_path_count(PathType path_type) {
+    uint8_t target_path_count(PathType path_type, bool single_path_mode) {
+        if (single_path_mode)
+            return 1;
+
         switch (path_type) {
             case PathType::standard: return 2;
             case PathType::upload: return 1;
@@ -248,9 +255,14 @@ namespace {
 
 // MARK: Initialization
 
-Network::Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths) :
+Network::Network(
+        std::optional<fs::path> cache_path,
+        bool use_testnet,
+        bool single_path_mode,
+        bool pre_build_paths) :
         use_testnet{use_testnet},
         should_cache_to_disk{cache_path},
+        single_path_mode{single_path_mode},
         cache_path{cache_path.value_or(default_cache_path)} {
     paths_and_pool_loop = std::make_shared<quic::Loop>();
 
@@ -649,8 +661,10 @@ std::pair<connection_info, std::optional<std::string>> Network::get_connection_i
                             target, path_type, {{target, nullptr, nullptr}, {target}, 0, 0});
             });
 
-    std::unique_lock<std::mutex> lock(*mutex);
-    cv->wait(lock, [&done] { return *done; });
+    if (!*done) {
+        std::unique_lock<std::mutex> lock(*mutex);
+        cv->wait(lock, [&done] { return *done; });
+    }
 
     if (!*connection_established)
         return {{target, nullptr, nullptr}, "Network is unreachable."};
@@ -852,7 +866,10 @@ void Network::with_paths_and_pool(
                 if (!paths_valid) {
                     try {
                         // Get the possible guard nodes
-                        log::info(cat, "Building paths for {}.", path_type_name(path_type));
+                        log::info(
+                                cat,
+                                "Building paths for {}.",
+                                path_type_name(path_type, single_path_mode));
                         std::vector<service_node> nodes_to_exclude;
                         std::vector<service_node> possible_guard_nodes;
 
@@ -888,7 +905,8 @@ void Network::with_paths_and_pool(
                         // Split the possible nodes list into a list of lists (one list could run
                         // out before the other but in most cases this should work fine)
                         size_t required_paths =
-                                (target_path_count(path_type) - current_valid_paths.size());
+                                (target_path_count(path_type, single_path_mode) -
+                                 current_valid_paths.size());
                         size_t chunk_size = (possible_guard_nodes.size() / required_paths);
                         std::vector<std::vector<service_node>> nodes_to_test;
                         auto start = 0;
@@ -955,10 +973,11 @@ void Network::with_paths_and_pool(
                         // Make sure we ended up getting enough valid nodes
                         auto have_enough_guard_nodes =
                                 (current_valid_paths.size() + valid_nodes.size() >=
-                                 target_path_count(path_type));
+                                 target_path_count(path_type, single_path_mode));
                         auto have_enough_unused_nodes =
                                 (unused_nodes.size() >=
-                                 ((path_size - 1) * target_path_count(path_type)));
+                                 ((path_size - 1) *
+                                  target_path_count(path_type, single_path_mode)));
 
                         if (!have_enough_guard_nodes || !have_enough_unused_nodes)
                             throw std::runtime_error{"Not enough remaining nodes."};
@@ -986,14 +1005,14 @@ void Network::with_paths_and_pool(
                             log::info(
                                     cat,
                                     "Built new onion request path for {}: [{}]",
-                                    path_type_name(path_type),
+                                    path_type_name(path_type, single_path_mode),
                                     path_description);
                         }
                     } catch (const std::exception& e) {
                         log::info(
                                 cat,
                                 "Unable to build paths for {} due to error: {}",
-                                path_type_name(path_type),
+                                path_type_name(path_type, single_path_mode),
                                 e.what());
                         return {{}, {}, e.what()};
                     }
@@ -1067,7 +1086,7 @@ std::pair<bool, bool> Network::validate_paths_and_pool_sizes(
     auto cache_has_expired =
             (cache_duration <= 0s && cache_duration > snode_cache_expiration_duration);
 
-    return {(paths.size() >= target_path_count(path_type)),
+    return {(paths.size() >= target_path_count(path_type, single_path_mode)),
             (pool.size() >= min_snode_pool_count && !cache_has_expired)};
 }
 
@@ -1121,7 +1140,7 @@ void Network::with_path(
                             "Connection to {} for {} path no longer valid, attempting "
                             "reconnection.",
                             target_path_it->nodes[0],
-                            path_type_name(path_type));
+                            path_type_name(path_type, single_path_mode));
                     auto [info, error] = get_connection_info(path_type, path.nodes[0]);
 
                     // It's possible that the connection was created successfully, and reported as
@@ -1133,10 +1152,17 @@ void Network::with_path(
                                 cat,
                                 "Reconnection to {} for {} path failed with error: {}.",
                                 target_path_it->nodes[0],
-                                path_type_name(path_type),
+                                path_type_name(path_type, single_path_mode),
                                 error.value_or("Unknown error."));
                         return {std::nullopt, current_paths.size()};
                     }
+
+                    // Knowing that the reconnection succeeded is helpful for debugging
+                    log::info(
+                            cat,
+                            "Reconnection to {} for {} path successful.",
+                            target_path_it->nodes[0],
+                            path_type_name(path_type, single_path_mode));
 
                     // If the connection info is valid and it's a standard path then update the
                     // connection status back to connected
@@ -1201,7 +1227,7 @@ void Network::with_path(
                 });
 
     // Build additional paths in the background if we don't have enough
-    if (paths_count < target_path_count(path_type)) {
+    if (paths_count < target_path_count(path_type, single_path_mode)) {
         std::thread build_additional_paths_thread(
                 &Network::with_paths_and_pool,
                 this,
@@ -1850,6 +1876,7 @@ void Network::download_file(
 
 void Network::get_client_version(
         Platform platform,
+        onionreq::ed25519_seckey seckey,
         std::chrono::milliseconds timeout,
         network_response_callback_t handle_response) {
     std::string endpoint;
@@ -1860,11 +1887,28 @@ void Network::get_client_version(
         case Platform::ios: endpoint = "/session_version?platform=ios"; break;
     }
 
+    // Generate the auth signature
+    auto blinded_keys = blind_version_key_pair(to_unsigned_sv(seckey.view()));
+    auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+    auto signature = blind_version_sign(to_unsigned_sv(seckey.view()), platform, timestamp);
     auto pubkey = x25519_pubkey::from_hex(file_server_pubkey);
+    std::string blinded_pk_hex;
+    blinded_pk_hex.reserve(66);
+    blinded_pk_hex += "07";
+    oxenc::to_hex(
+            blinded_keys.first.begin(),
+            blinded_keys.first.end(),
+            std::back_inserter(blinded_pk_hex));
+
+    auto headers = std::vector<std::pair<std::string, std::string>>{};
+    headers.emplace_back("X-FS-Pubkey", blinded_pk_hex);
+    headers.emplace_back("X-FS-Timestamp", "{}"_format(timestamp));
+    headers.emplace_back("X-FS-Signature", oxenc::to_base64(signature));
+
     send_onion_request(
             PathType::standard,
             ServerDestination{
-                    "http", std::string(file_server), endpoint, pubkey, 80, std::nullopt, "GET"},
+                    "http", std::string(file_server), endpoint, pubkey, 80, headers, "GET"},
             std::nullopt,
             pubkey,
             timeout,
@@ -2040,7 +2084,7 @@ void Network::handle_errors(
                 cat,
                 "Received decryption failure in request {} for {}, retrying.",
                 info.request_id,
-                path_type_name(info.path_type));
+                path_type_name(info.path_type, single_path_mode));
         return send_onion_request(
                 info.path_type,
                 info.target,
@@ -2058,7 +2102,7 @@ void Network::handle_errors(
         const std::unordered_map<std::string, std::pair<int16_t, bool>> response_map = {
                 {"500 Internal Server Error", {500, false}},
                 {"502 Bad Gateway", {502, false}},
-                {"503 Service Unavailable", {502, false}},
+                {"503 Service Unavailable", {503, false}},
                 {"504 Gateway Timeout", {504, true}},
         };
 
@@ -2143,7 +2187,7 @@ void Network::handle_errors(
                             "Received 421 error in request {} for {}, retrying once before "
                             "updating swarm.",
                             info.request_id,
-                            path_type_name(info.path_type));
+                            path_type_name(info.path_type, single_path_mode));
                     return send_onion_request(
                             info.path_type,
                             *random_node,
@@ -2176,7 +2220,7 @@ void Network::handle_errors(
                         cat,
                         "Retry for request {} resulted in another 421 for {}, updating swarm.",
                         info.request_id,
-                        path_type_name(info.path_type));
+                        path_type_name(info.path_type, single_path_mode));
 
                 // Update the cache
                 net.call([this, swarm_pubkey = *info.swarm_pubkey, swarm]() mutable {
@@ -2246,6 +2290,67 @@ void Network::handle_errors(
                 auto failure_count =
                         updated_failure_counts.try_emplace(snode_it->to_string(), 0).first->second;
                 updated_failure_counts[snode_it->to_string()] = failure_count + 1;
+
+                // If the specific node has failed too many times then we should try to repair the
+                // existing path by replace the bad node with another one
+                if (updated_failure_counts[snode_it->to_string()] >= snode_failure_threshold) {
+                    try {
+                        // If the node that's gone bad is the guard node then we just have to drop
+                        // the path
+                        if (snode_it == updated_path.nodes.begin())
+                            throw std::runtime_error{"Cannot recover if guard node is bad"};
+
+                        // Try to find an unused node to patch the path
+                        auto [paths, unused_snodes] = net.call_get(
+                                [this, path_type = info.path_type]()
+                                        -> std::pair<
+                                                std::vector<onion_path>,
+                                                std::vector<service_node>> {
+                                    return {paths_for_type(path_type), snode_pool};
+                                });
+                        std::vector<service_node> path_nodes;
+
+                        for (const auto& path : paths)
+                            path_nodes.insert(
+                                    path_nodes.end(), path.nodes.begin(), path.nodes.end());
+
+                        unused_snodes.erase(
+                                std::remove_if(
+                                        unused_snodes.begin(),
+                                        unused_snodes.end(),
+                                        [&](const service_node& node) {
+                                            return std::find(
+                                                           path_nodes.begin(),
+                                                           path_nodes.end(),
+                                                           node) != path_nodes.end();
+                                        }),
+                                unused_snodes.end());
+
+                        if (unused_snodes.empty())
+                            throw std::runtime_error{"No remaining nodes"};
+
+                        CSRNG rng;
+                        std::shuffle(unused_snodes.begin(), unused_snodes.end(), rng);
+
+                        std::replace(
+                                updated_path.nodes.begin(),
+                                updated_path.nodes.end(),
+                                *snode_it,
+                                unused_snodes.front());
+                        log::info(
+                                cat,
+                                "Found bad node in path for {}, replacing node.",
+                                path_type_name(info.path_type, single_path_mode));
+                    } catch (...) {
+                        // There aren't enough unused nodes remaining so we need to drop the path
+                        updated_path.failure_count = path_failure_threshold;
+
+                        log::info(
+                                cat,
+                                "Unable to replace bad node in path for {}.",
+                                path_type_name(info.path_type, single_path_mode));
+                    }
+                }
             }
         }
     }
@@ -2344,7 +2449,7 @@ void Network::handle_errors(
                 log::info(
                         cat,
                         "Dropping path for {}: [{}]",
-                        path_type_name(path_type),
+                        path_type_name(path_type, single_path_mode),
                         path_description);
             else {
                 // If the path was already dropped then the snode pool would have already been
@@ -2354,7 +2459,7 @@ void Network::handle_errors(
                 log::info(
                         cat,
                         "Path already dropped for {}: [{}]",
-                        path_type_name(path_type),
+                        path_type_name(path_type, single_path_mode),
                         path_description);
             }
         } else {
@@ -2499,6 +2604,7 @@ LIBSESSION_C_API bool network_init(
         network_object** network,
         const char* cache_path_,
         bool use_testnet,
+        bool single_path_mode,
         bool pre_build_paths,
         char* error) {
     try {
@@ -2507,7 +2613,7 @@ LIBSESSION_C_API bool network_init(
             cache_path = cache_path_;
 
         auto n = std::make_unique<session::network::Network>(
-                cache_path, use_testnet, pre_build_paths);
+                cache_path, use_testnet, single_path_mode, pre_build_paths);
         auto n_object = std::make_unique<network_object>();
 
         n_object->internals = n.release();
@@ -2813,6 +2919,7 @@ LIBSESSION_C_API void network_download_from_server(
 LIBSESSION_C_API void network_get_client_version(
         network_object* network,
         CLIENT_PLATFORM platform,
+        const unsigned char* ed25519_secret,
         int64_t timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx) {
@@ -2821,6 +2928,7 @@ LIBSESSION_C_API void network_get_client_version(
     try {
         unbox(network).get_client_version(
                 static_cast<Platform>(platform),
+                onionreq::ed25519_seckey::from_bytes({ed25519_secret, 64}),
                 std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
                         bool success,

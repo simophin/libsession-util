@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 
+#include "platform.hpp"
 #include "sodium_array.hpp"
 
 namespace session {
@@ -138,6 +139,15 @@ std::pair<uc32, cleared_uc32> blind15_key_pair(
 std::pair<uc32, cleared_uc32> blind25_key_pair(
         ustring_view ed25519_sk, ustring_view server_pk, uc32* k_prime = nullptr);
 
+/// Computes a version-blinded key pair.
+///
+/// Takes the Ed25519 secret key (64 bytes, or 32-byte seed).  Returns the blinded public key and
+/// private key (NOT a seed).
+///
+/// It is recommended to pass the full 64-byte libsodium-style secret key for `ed25519_sk` (i.e.
+/// seed + appended pubkey) as with just the 32-byte seed the public key has to be recomputed.
+std::pair<uc32, cleared_uc64> blind_version_key_pair(ustring_view ed25519_sk);
+
 /// Computes a verifiable 15-blinded signature that validates with the blinded pubkey that would
 /// be returned from blind15_key_pair().
 ///
@@ -157,6 +167,16 @@ ustring blind15_sign(ustring_view ed25519_sk, std::string_view server_pk_in, ust
 /// It is recommended to pass the full 64-byte libsodium-style secret key for `ed25519_sk` (i.e.
 /// seed + appended pubkey) as with just the 32-byte seed the public key has to be recomputed.
 ustring blind25_sign(ustring_view ed25519_sk, std::string_view server_pk, ustring_view message);
+
+/// Computes a verifiable version-blinded signature that validates with the version-blinded pubkey
+/// that would be returned from blind_version_key_pair.
+///
+/// Takes the Ed25519 secret key (64 bytes, or 32-byte seed).  Returns the blinded public key,
+/// signature and timestamp.
+///
+/// It is recommended to pass the full 64-byte libsodium-style secret key for `ed25519_sk` (i.e.
+/// seed + appended pubkey) as with just the 32-byte seed the public key has to be recomputed.
+ustring blind_version_sign(ustring_view ed25519_sk, Platform platform, uint64_t timestamp);
 
 /// Takes in a standard session_id and returns a flag indicating whether it matches the given
 /// blinded_id for a given server_pk.

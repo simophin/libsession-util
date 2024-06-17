@@ -25,8 +25,14 @@ class TestNetwork {
   public:
     Network network;
 
-    TestNetwork(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths) :
-            network(cache_path, use_testnet, pre_build_paths) {}
+    TestNetwork(
+            std::optional<fs::path> cache_path,
+            bool use_testnet,
+            bool single_path_mode,
+            bool pre_build_paths) :
+            network(cache_path, use_testnet, single_path_mode, pre_build_paths) {}
+
+    void set_snode_pool(std::vector<service_node> pool) { network.snode_pool = pool; }
 
     void set_paths(PathType path_type, std::vector<onion_path> paths) {
         switch (path_type) {
@@ -116,6 +122,7 @@ TEST_CASE("Network error handling", "[network]") {
     auto target = service_node{ed_pk, "0.0.0.0", uint16_t{0}};
     auto target2 = service_node{ed_pk2, "0.0.0.1", uint16_t{1}};
     auto target3 = service_node{ed_pk2, "0.0.0.2", uint16_t{2}};
+    auto target4 = service_node{ed_pk2, "0.0.0.3", uint16_t{3}};
     auto path = onion_path{{{target}, nullptr, nullptr}, {target, target2, target3}, 0};
     auto mock_request = request_info{
             "AAAA",
@@ -130,7 +137,7 @@ TEST_CASE("Network error handling", "[network]") {
             true,
             std::nullopt};
     Result result;
-    auto network = TestNetwork(std::nullopt, true, false);
+    auto network = TestNetwork(std::nullopt, true, true, false);
 
     // Check the handling of the codes which make no changes
     auto codes_with_no_changes = {400, 404, 406, 425};
@@ -287,6 +294,7 @@ TEST_CASE("Network error handling", "[network]") {
             0ms,
             true,
             std::nullopt};
+    network.set_snode_pool({target, target2, target3, target4});
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 9);
@@ -498,7 +506,7 @@ TEST_CASE("Network onion request", "[send_onion_request][network]") {
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
             "144.76.164.202",
             uint16_t{35400}};
-    auto network = Network(std::nullopt, true, false);
+    auto network = Network(std::nullopt, true, true, false);
     std::promise<Result> result_promise;
 
     network.send_onion_request(
@@ -534,7 +542,7 @@ TEST_CASE("Network onion request", "[send_onion_request][network]") {
 
 TEST_CASE("Network direct request C API", "[network_send_request][network]") {
     network_object* network;
-    network_init(&network, nullptr, true, false, nullptr);
+    network_init(&network, nullptr, true, true, false, nullptr);
     std::array<uint8_t, 4> target_ip = {144, 76, 164, 202};
     auto test_service_node = network_service_node{};
     test_service_node.quic_port = 35400;

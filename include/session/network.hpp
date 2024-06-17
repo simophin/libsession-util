@@ -4,6 +4,7 @@
 
 #include "onionreq/builder.hpp"
 #include "onionreq/key_types.hpp"
+#include "platform.hpp"
 #include "types.hpp"
 
 namespace session::network {
@@ -25,12 +26,6 @@ enum class PathType {
     standard,
     upload,
     download,
-};
-
-enum class Platform {
-    android,
-    desktop,
-    ios,
 };
 
 struct connection_info {
@@ -77,6 +72,7 @@ class Network {
   private:
     const bool use_testnet;
     const bool should_cache_to_disk;
+    const bool single_path_mode;
     const fs::path cache_path;
 
     // Disk thread state
@@ -117,7 +113,10 @@ class Network {
 
     // Constructs a new network with the given cache path and a flag indicating whether it should
     // use testnet or mainnet, all requests should be made via a single Network instance.
-    Network(std::optional<fs::path> cache_path, bool use_testnet, bool pre_build_paths);
+    Network(std::optional<fs::path> cache_path,
+            bool use_testnet,
+            bool single_path_mode,
+            bool pre_build_paths);
     ~Network();
 
     /// API: network/suspend
@@ -262,10 +261,12 @@ class Network {
     ///
     /// Inputs:
     /// - `platform` -- [in] the platform to retrieve the client version for.
+    /// - `seckey` -- [in] the users ed25519 secret key (to generated blinded auth).
     /// - `timeout` -- [in] timeout in milliseconds to use for the request.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void get_client_version(
             Platform platform,
+            onionreq::ed25519_seckey seckey,
             std::chrono::milliseconds timeout,
             network_response_callback_t handle_response);
 
@@ -277,6 +278,9 @@ class Network {
     /// Inputs:
     /// - 'path_type' - [in] the type of paths to retrieve.
     std::vector<onion_path> paths_for_type(PathType type) const {
+        if (single_path_mode)
+            return standard_paths;
+
         switch (type) {
             case PathType::standard: return standard_paths;
             case PathType::upload: return upload_paths;
