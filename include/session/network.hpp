@@ -322,6 +322,7 @@ class Network {
     /// closed in case it fails to establish) before returning the connection.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - 'path_type' - [in] the type of paths to retrieve.
     /// - `target` -- [in] the target service node to connect to.
     ///
@@ -329,7 +330,7 @@ class Network {
     /// - A pair of the connection info for the target service node and an optional error if the
     /// connnection was unable to be established.
     std::pair<connection_info, std::optional<std::string>> get_connection_info(
-            PathType path_type, service_node target);
+            std::string request_id, PathType path_type, service_node target);
 
     /// API: network/with_paths_and_pool
     ///
@@ -337,12 +338,14 @@ class Network {
     /// cache is empty it will first be populated from the network.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - `path_type` -- [in] the type of path the request should be sent along.
     /// - `excluded_node` -- [in, optional] node which should not be included in the path.
     /// - `callback` -- [in] callback to be triggered once we have built the paths and service node
     /// pool.  NOTE: If we are unable to build the paths or retrieve the service node pool the
     /// callback will be triggered with empty lists and an error.
     void with_paths_and_pool(
+            std::string request_id,
             PathType path_type,
             std::optional<service_node> excluded_node,
             std::function<
@@ -357,11 +360,13 @@ class Network {
     /// service nodes in the snode pool.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - `path_type` -- [in] the type of path the request should be sent along.
     /// - `excluded_node` -- [in, optional] node which should not be included in the path.
     /// - `callback` -- [in] callback to be triggered once we have a valid path, NULL if we are
     /// unable to find a valid path.
     void with_path(
+            std::string request_id,
             PathType path_type,
             std::optional<service_node> excluded_node,
             std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
@@ -430,6 +435,7 @@ class Network {
     /// successfully retrieves nodes or the list is drained.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
     /// drained.
     /// - `limit` -- [in, optional] the number of service nodes to retrieve.
@@ -437,6 +443,7 @@ class Network {
     /// `target_nodes` and haven't gotten a successful response then the callback will be invoked
     /// with an empty vector and an error string.
     void get_service_nodes_recursive(
+            std::string request_id,
             std::vector<service_node> target_nodes,
             std::optional<int> limit,
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
@@ -448,6 +455,7 @@ class Network {
     /// received or the list is drained.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - `path_type` -- [in] the type of path to validate the size for.
     /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
     /// drained.
@@ -455,6 +463,7 @@ class Network {
     /// we drain the `target_nodes` and haven't gotten a successful response then the callback will
     /// be invoked with a std::nullopt `valid_guard_node` and `unused_nodes`.
     void find_valid_guard_node_recursive(
+            std::string request_id,
             PathType path_type,
             std::vector<service_node> target_nodes,
             std::function<
@@ -467,11 +476,13 @@ class Network {
     /// Retrieves all or a random subset of service nodes from the given node.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - `node` -- [in] node to retrieve the service nodes from.
     /// - `limit` -- [in, optional] the number of service nodes to retrieve.
     /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If an error
     /// occurs an empty list and an error will be provided.
     void get_service_nodes(
+            std::string request_id,
             service_node node,
             std::optional<int> limit,
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
@@ -482,6 +493,7 @@ class Network {
     /// Retrieves the version information for a given service node.
     ///
     /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
     /// - 'type' - [in] the type of paths to send the request across.
     /// - `node` -- [in] node to retrieve the version from.
     /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
@@ -489,6 +501,7 @@ class Network {
     /// - `callback` -- [in] callback to be triggered with the result of the request.  NOTE: If an
     /// error occurs an empty list and an error will be provided.
     void get_version(
+            std::string request_id,
             PathType path_type,
             service_node node,
             std::optional<std::chrono::milliseconds> timeout,
