@@ -31,7 +31,7 @@ ustring hash(const size_t size, ustring_view msg, std::optional<ustring_view> ke
     if (result_code != 0)
         throw std::runtime_error{"Hash generation failed"};
 
-    return {result, size};
+    return to_unsigned(static_cast<unsigned char*>(result));
 }
 
 }  // namespace session::hash

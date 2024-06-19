@@ -45,16 +45,22 @@ if(NOT BUILD_STATIC_DEPS)
 endif()
 
 
-add_libsession_util_library(crypto
+SET(LIBSESSION_UTIL_SOURCE_FILES
     blinding.cpp
     curve25519.cpp
     ed25519.cpp
-    hash.cpp
     multi_encrypt.cpp
     random.cpp
     session_encrypt.cpp
     util.cpp
-    xed25519.cpp
+    xed25519.cpp )
+
+if (NOT MSVC)
+    list(APPEND LIBSESSION_UTIL_SOURCE_FILES hash.cpp)
+endif()
+
+
+add_libsession_util_library(crypto ${LIBSESSION_UTIL_SOURCE_FILES}
 )
 
 add_libsession_util_library(config

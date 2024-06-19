@@ -1,6 +1,7 @@
 add_subdirectory(Catch2)
 
-add_executable(testAll
+
+set(SOURCE_FILES
     test_blinding.cpp
     test_bt_merge.cpp
     test_bugs.cpp
@@ -16,14 +17,19 @@ add_executable(testAll
     test_group_keys.cpp
     test_group_info.cpp
     test_group_members.cpp
-    test_hash.cpp
     test_multi_encrypt.cpp
     test_onionreq.cpp
     test_proto.cpp
     test_random.cpp
     test_session_encrypt.cpp
     test_xed25519.cpp
-    )
+)
+
+if (NOT MSVC)
+    list(APPEND SOURCE_FILES test_hash.cpp)
+endif()
+
+add_executable(testAll ${SOURCE_FILES})
 
 target_link_libraries(testAll PRIVATE
     libsession::config
