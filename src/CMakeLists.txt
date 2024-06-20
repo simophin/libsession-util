@@ -55,9 +55,9 @@ SET(LIBSESSION_UTIL_SOURCE_FILES
     util.cpp
     xed25519.cpp )
 
-if (NOT MSVC)
+# if (NOT MSVC)
     list(APPEND LIBSESSION_UTIL_SOURCE_FILES hash.cpp)
-endif()
+# endif()
 
 
 add_libsession_util_library(crypto ${LIBSESSION_UTIL_SOURCE_FILES}

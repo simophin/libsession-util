@@ -25,9 +25,9 @@ set(SOURCE_FILES
     test_xed25519.cpp
 )
 
-if (NOT MSVC)
+# if (NOT MSVC)
     list(APPEND SOURCE_FILES test_hash.cpp)
-endif()
+# endif()
 
 add_executable(testAll ${SOURCE_FILES})
 
