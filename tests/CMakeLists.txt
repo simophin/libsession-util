@@ -1,7 +1,6 @@
 add_subdirectory(Catch2)
 
-
-set(SOURCE_FILES
+add_executable(testAll
     test_blinding.cpp
     test_bt_merge.cpp
     test_bugs.cpp
@@ -17,6 +16,7 @@ set(SOURCE_FILES
     test_group_keys.cpp
     test_group_info.cpp
     test_group_members.cpp
+    test_hash.cpp
     test_multi_encrypt.cpp
     test_onionreq.cpp
     test_proto.cpp
@@ -25,17 +25,18 @@ set(SOURCE_FILES
     test_xed25519.cpp
 )
 
-# if (NOT MSVC)
-    list(APPEND SOURCE_FILES test_hash.cpp)
-# endif()
 
-add_executable(testAll ${SOURCE_FILES})
-
-target_link_libraries(testAll PRIVATE
+set(TEST_ALL_LIBS
     libsession::config
-    libsession::onionreq
     libsodium::sodium-internal
-    Catch2::Catch2WithMain)
+    Catch2::Catch2WithMain
+)
+
+if (ENABLE_ONIONREQ)
+    list(APPEND TEST_ALL_LIBS libsession::onionreq)
+endif()
+
+target_link_libraries(testAll PRIVATE ${TEST_ALL_LIBS})
 
 add_custom_target(check COMMAND testAll)
 
