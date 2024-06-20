@@ -1286,7 +1286,7 @@ std::pair<std::string, ustring> Keys::decrypt_message(ustring_view ciphertext) c
     //
     // Removing any null padding bytes from the end
     //
-    if (auto pos = plain.find_last_not_of(0); pos != std::string::npos)
+    if (auto pos = plain.find_last_not_of((unsigned char)0); pos != std::string::npos)
         plain.resize(pos + 1);
 
     //
