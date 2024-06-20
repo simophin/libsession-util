@@ -26,17 +26,15 @@ add_executable(testAll
 )
 
 
-set(TEST_ALL_LIBS
+target_link_libraries(testAll PRIVATE
     libsession::config
     libsodium::sodium-internal
     Catch2::Catch2WithMain
 )
 
 if (ENABLE_ONIONREQ)
-    list(APPEND TEST_ALL_LIBS libsession::onionreq)
+    target_link_libraries(testAll PRIVATE libsession::onionreq)
 endif()
-
-target_link_libraries(testAll PRIVATE ${TEST_ALL_LIBS})
 
 add_custom_target(check COMMAND testAll)
 
