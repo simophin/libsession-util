@@ -55,7 +55,7 @@ LIBSESSION_EXPORT int groups_members_init(
         const unsigned char* ed25519_secretkey,
         const unsigned char* dump,
         size_t dumplen,
-        char* error) __attribute__((warn_unused_result));
+        char* error) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_members_get
 ///
@@ -71,8 +71,9 @@ LIBSESSION_EXPORT int groups_members_init(
 /// Output:
 /// - `bool` -- Returns true if member exists
 LIBSESSION_EXPORT bool groups_members_get(
-        config_object* conf, config_group_member* member, const char* session_id)
-        __attribute__((warn_unused_result));
+        config_object* conf,
+        config_group_member* member,
+        const char* session_id) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_members_get_or_construct
 ///
@@ -94,8 +95,9 @@ LIBSESSION_EXPORT bool groups_members_get(
 /// - `bool` -- Returns true if the call succeeds, false if an error occurs (e.g. because of an
 ///   invalid session_id).
 LIBSESSION_EXPORT bool groups_members_get_or_construct(
-        config_object* conf, config_group_member* member, const char* session_id)
-        __attribute__((warn_unused_result));
+        config_object* conf,
+        config_group_member* member,
+        const char* session_id) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_members_set
 ///
