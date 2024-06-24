@@ -97,25 +97,26 @@ target_link_libraries(config
     libzstd::static
 )
 
-add_libsession_util_library(onionreq
-    onionreq/builder.cpp
-    onionreq/hop_encryption.cpp
-    onionreq/key_types.cpp
-    onionreq/parser.cpp
-    onionreq/response_parser.cpp
-    network.cpp
-)
+if(ENABLE_ONIONREQ)
+    add_libsession_util_library(onionreq
+        onionreq/builder.cpp
+        onionreq/hop_encryption.cpp
+        onionreq/key_types.cpp
+        onionreq/parser.cpp
+        onionreq/response_parser.cpp
+        network.cpp
+    )
 
-target_link_libraries(onionreq
-    PUBLIC
-    crypto
-    quic
-    PRIVATE
-    nlohmann_json::nlohmann_json
-    libsodium::sodium-internal
-    nettle::nettle
-)
-
+    target_link_libraries(onionreq
+        PUBLIC
+        crypto
+        quic
+        PRIVATE
+        nlohmann_json::nlohmann_json
+        libsodium::sodium-internal
+        nettle::nettle
+    )
+endif()
 
 if(WARNINGS_AS_ERRORS AND NOT USE_LTO AND CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION MATCHES "^11\\.")
     # GCC 11 has an overzealous (and false) stringop-overread warning, but only when LTO is off.

@@ -80,6 +80,9 @@ option(STATIC_LIBSTD "Statically link libstdc++/libgcc" ${default_static_libstd}
 
 option(USE_LTO "Use Link-Time Optimization" ${use_lto_default})
 
+# Provide this as an option for now because GMP and Desktop are sometimes unhappy with each other.
+option(ENABLE_ONIONREQ "Build with onion request functionality" ON)
+
 if(USE_LTO)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT IPO_ENABLED OUTPUT ipo_error)
