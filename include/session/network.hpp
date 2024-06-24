@@ -289,6 +289,20 @@ class Network {
         return standard_paths;  // Default
     };
 
+    /// API: network/all_path_nodes
+    ///
+    /// Internal function to retrieve all of the nodes current used in paths
+    std::vector<service_node> all_path_nodes() const {
+        std::vector<service_node> result;
+
+        for (auto& paths : {&standard_paths, &upload_paths, &download_paths})
+            for (auto& path : *paths)
+                for (auto& node : path.nodes)
+                    result.emplace_back(node);
+
+        return result;
+    };
+
     /// API: network/update_status
     ///
     /// Internal function to update the connection status and trigger the `status_changed` hook if

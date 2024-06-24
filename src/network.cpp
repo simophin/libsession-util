@@ -2062,7 +2062,7 @@ std::pair<int16_t, std::optional<std::string>> Network::process_v3_onion_respons
     }
 
     if (!oxenc::is_base64(base64_iv_and_ciphertext))
-        throw std::runtime_error{"Invalid base64 encoded IV and ciphertext: " + response + "."};
+        throw std::runtime_error{"Invalid base64 encoded IV and ciphertext."};
 
     ustring iv_and_ciphertext;
     oxenc::from_base64(
@@ -2385,6 +2385,7 @@ void Network::handle_errors(
     }
 
     // Check if we got an error specifying the specific node that failed
+    std::vector<service_node> nodes_to_drop;
     auto updated_failure_counts = net.call_get(
             [this]() -> std::unordered_map<std::string, uint8_t> { return snode_failure_counts; });
     auto updated_path = info.path;
@@ -2421,7 +2422,9 @@ void Network::handle_errors(
 
                 // If the specific node has failed too many times then we should try to repair the
                 // existing path by replace the bad node with another one
-                if (updated_failure_counts[snode_it->to_string()] >= snode_failure_threshold) {
+                if (failure_count + 1 >= snode_failure_threshold) {
+                    nodes_to_drop.emplace_back(*snode_it);
+
                     try {
                         // If the node that's gone bad is the guard node then we just have to drop
                         // the path
@@ -2429,18 +2432,12 @@ void Network::handle_errors(
                             throw std::runtime_error{"Cannot recover if guard node is bad"};
 
                         // Try to find an unused node to patch the path
-                        auto [paths, unused_snodes] = net.call_get(
-                                [this, path_type = info.path_type]()
-                                        -> std::pair<
-                                                std::vector<onion_path>,
-                                                std::vector<service_node>> {
-                                    return {paths_for_type(path_type), snode_pool};
+                        auto [path_nodes, unused_snodes] = net.call_get(
+                                [this]() -> std::pair<
+                                                 std::vector<service_node>,
+                                                 std::vector<service_node>> {
+                                    return {all_path_nodes(), snode_pool};
                                 });
-                        std::vector<service_node> path_nodes;
-
-                        for (const auto& path : paths)
-                            path_nodes.insert(
-                                    path_nodes.end(), path.nodes.begin(), path.nodes.end());
 
                         unused_snodes.erase(
                                 std::remove_if(
@@ -2500,10 +2497,14 @@ void Network::handle_errors(
                 auto failure_count =
                         updated_failure_counts.try_emplace(it.to_string(), 0).first->second;
                 updated_failure_counts[it.to_string()] = failure_count + 1;
+
+                if (failure_count + 1 >= snode_failure_threshold)
+                    nodes_to_drop.emplace_back(it);
             }
 
             // Set the failure count of the guard node to match the threshold so we drop it
             updated_failure_counts[updated_path.nodes[0].to_string()] = snode_failure_threshold;
+            nodes_to_drop.emplace_back(updated_path.nodes[0]);
         } else if (updated_path.nodes.size() < path_size) {
             // If the path doesn't have enough nodes then it's likely that this failure was
             // triggered when trying to establish a new path and, as such, we should increase the
@@ -2512,8 +2513,15 @@ void Network::handle_errors(
                     updated_failure_counts.try_emplace(updated_path.nodes[0].to_string(), 0)
                             .first->second;
             updated_failure_counts[updated_path.nodes[0].to_string()] = failure_count + 1;
+
+            if (failure_count + 1 >= snode_failure_threshold)
+                nodes_to_drop.emplace_back(updated_path.nodes[0]);
         }
     }
+
+    // If the target node has become invalid then add it to the list for removal
+    if (updated_failure_counts[info.target.to_string()] >= snode_failure_threshold)
+        nodes_to_drop.emplace_back(info.target);
 
     // Update the cache (want to wait until this has been completed incase)
     std::condition_variable cv;
@@ -2528,6 +2536,7 @@ void Network::handle_errors(
               old_path = info.path,
               updated_failure_counts,
               updated_path,
+              nodes_to_drop,
               &cv,
               &mtx,
               &done]() mutable {
@@ -2638,36 +2647,28 @@ void Network::handle_errors(
         {
             std::lock_guard lock{snode_cache_mutex};
 
+            // Update the snode pool with the updated node failure counts
             for (size_t i = 0; i < updated_path.nodes.size(); ++i)
-                if (updated_failure_counts.try_emplace(updated_path.nodes[i].to_string(), 0)
-                            .first->second >= snode_failure_threshold) {
-                    snode_pool.erase(
-                            std::remove(snode_pool.begin(), snode_pool.end(), old_path.nodes[i]),
-                            snode_pool.end());
+                std::replace(
+                        snode_pool.begin(),
+                        snode_pool.end(),
+                        old_path.nodes[i],
+                        updated_path.nodes[i]);
 
-                    if (swarm_pubkey)
-                        if (swarm_cache.contains(swarm_pubkey->hex())) {
-                            auto updated_swarm = swarm_cache[swarm_pubkey->hex()];
-                            updated_swarm.erase(
-                                    std::remove(
-                                            updated_swarm.begin(),
-                                            updated_swarm.end(),
-                                            old_path.nodes[i]),
-                                    updated_swarm.end());
-                            swarm_cache[swarm_pubkey->hex()] = updated_swarm;
-                        }
-                } else
-                    std::replace(
-                            snode_pool.begin(),
-                            snode_pool.end(),
-                            old_path.nodes[i],
-                            updated_path.nodes[i]);
-
-            // If the target node is invalid then remove it from the snode pool
-            if (updated_failure_counts[target_node.to_string()] >= snode_failure_threshold)
+            // Drop any nodes which have been added to the list to drop
+            for (auto& node : nodes_to_drop) {
                 snode_pool.erase(
-                        std::remove(snode_pool.begin(), snode_pool.end(), target_node),
-                        snode_pool.end());
+                        std::remove(snode_pool.begin(), snode_pool.end(), node), snode_pool.end());
+
+                if (swarm_pubkey)
+                    if (swarm_cache.contains(swarm_pubkey->hex())) {
+                        auto updated_swarm = swarm_cache[swarm_pubkey->hex()];
+                        updated_swarm.erase(
+                                std::remove(updated_swarm.begin(), updated_swarm.end(), node),
+                                updated_swarm.end());
+                        swarm_cache[swarm_pubkey->hex()] = updated_swarm;
+                    }
+            }
 
             need_pool_write = true;
             need_swarm_write = (swarm_pubkey && swarm_cache.contains(swarm_pubkey->hex()));
