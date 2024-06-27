@@ -19,3 +19,5 @@
 [submodule "external/protobuf"]
 	path = external/protobuf
 	url = https://github.com/protocolbuffers/protobuf.git
+[submodule "external/oxen-libquic/"]
+	url = https://github.com/oxen-io/oxen-libquic/

@@ -114,13 +114,15 @@ if(CMAKE_CROSSCOMPILING)
 endif()
 
 set(LIBQUIC_BUILD_TESTS OFF CACHE BOOL "")
-system_or_submodule(OXENQUIC quic liboxenquic>=1.1.0 oxen-libquic)
+if(ENABLE_ONIONREQ)
+  system_or_submodule(OXENQUIC quic liboxenquic>=1.1.0 oxen-libquic)
+endif()
 
 if(NOT TARGET oxenc::oxenc)
     # The oxenc target will already exist if we load libquic above via submodule
     set(OXENC_BUILD_TESTS OFF CACHE BOOL "")
     set(OXENC_BUILD_DOCS OFF CACHE BOOL "")
-    system_or_submodule(OXENC oxenc liboxenc>=1.1.0 external/oxen-libquic/oxen-encoding)
+    system_or_submodule(OXENC oxenc liboxenc>=1.1.0 oxen-libquic/external/oxen-encoding)
 endif()
 
 if(NOT TARGET oxen::logging)

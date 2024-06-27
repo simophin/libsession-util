@@ -11,6 +11,7 @@
 #include <memory>
 #include <type_traits>
 #include <vector>
+#include <optional>
 
 #include "types.hpp"
 

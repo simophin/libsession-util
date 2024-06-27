@@ -1,3 +1,4 @@
+#include <charconv>
 #include <session/util.hpp>
 
 namespace session {
