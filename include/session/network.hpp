@@ -61,7 +61,6 @@ struct request_info {
     std::optional<ustring> body;
     std::optional<ustring> original_body;
     std::optional<session::onionreq::x25519_pubkey> swarm_pubkey;
-    onion_path path;
     PathType path_type;
     std::chrono::milliseconds timeout;
     bool node_destination;
@@ -585,6 +584,7 @@ class Network {
     ///
     /// Inputs:
     /// - `info` -- [in] the information for the request that was made.
+    /// - `path` -- [in] the onion path the request was sent along.
     /// - `timeout` -- [in, optional] flag indicating whether the request timed out.
     /// - `status_code` -- [in, optional] the status code returned from the network.
     /// - `response` -- [in, optional] response data returned from the network.
@@ -592,6 +592,7 @@ class Network {
     /// information after processing the error.
     void handle_errors(
             request_info info,
+            onion_path path,
             bool timeout,
             std::optional<int16_t> status_code,
             std::optional<std::string> response,
