@@ -551,11 +551,6 @@ void Network::close_connections() {
             }
         }
 
-        // Clear the paths (rebuild them on reconnection)
-        standard_paths.clear();
-        upload_paths.clear();
-        download_paths.clear();
-
         update_status(ConnectionStatus::disconnected);
         log::info(cat, "Closed all connections.");
     });
@@ -1156,20 +1151,127 @@ void Network::with_path(
     if (currently_suspended)
         return callback(std::nullopt, "Network is suspended");
 
-    auto current_valid_paths = valid_paths(current_paths);
     std::pair<std::optional<onion_path>, uint8_t> path_info =
-            find_possible_path(excluded_node, current_valid_paths);
+            find_possible_path(excluded_node, current_paths);
     auto& [target_path, paths_count] = path_info;
 
-    // If we somehow have invalid paths then remove them from the cache
-    if (current_paths.size() != current_valid_paths.size()) {
-        net.call([this, path_type, current_valid_paths]() mutable {
-            switch (path_type) {
-                case PathType::standard: standard_paths = current_valid_paths; break;
-                case PathType::upload: upload_paths = current_valid_paths; break;
-                case PathType::download: download_paths = current_valid_paths; break;
-            }
-        });
+    // The path doesn't have a valid connection so we should try to reconnect (we will end
+    // up updating the `paths` value so should do this in a blocking way)
+    if (target_path && !target_path->conn_info.is_valid()) {
+        log::trace(
+                cat,
+                "{} found invalid connection for {}, will try to recover.",
+                __PRETTY_FUNCTION__,
+                request_id);
+
+        path_info = paths_and_pool_loop->call_get(
+                [this, path_type, request_id, path = *target_path]() mutable
+                -> std::pair<std::optional<onion_path>, uint8_t> {
+                    // Since this may have been blocked by another thread we should start by
+                    // making sure the target path is still one of the current paths
+                    auto current_paths =
+                            net.call_get([this, path_type]() -> std::vector<onion_path> {
+                                return paths_for_type(path_type);
+                            });
+                    auto target_path_it =
+                            std::find(current_paths.begin(), current_paths.end(), path);
+
+                    // If we didn't find the path then don't bother continuing
+                    if (target_path_it == current_paths.end()) {
+                        log::trace(
+                                cat,
+                                "{} path with invalid connection for {} no longer exists.",
+                                __PRETTY_FUNCTION__,
+                                request_id);
+                        return {std::nullopt, current_paths.size()};
+                    }
+
+                    // It's possible that multiple requests were queued up waiting on the connection
+                    // the be reestablished so check to see if the path is now valid and return it
+                    // if it is
+                    if (target_path_it->conn_info.is_valid()) {
+                        log::trace(
+                                cat,
+                                "{} connection to {} for {} has already been recovered.",
+                                __PRETTY_FUNCTION__,
+                                target_path_it->nodes[0],
+                                request_id);
+                        return {*target_path_it, current_paths.size()};
+                    }
+
+                    // Try to retrieve a valid connection for the guard node
+                    log::info(
+                            cat,
+                            "Connection to {} with type {} for {} path no longer valid, attempting "
+                            "reconnection.",
+                            target_path_it->nodes[0],
+                            path_type_name(path_type, single_path_mode),
+                            request_id);
+                    auto [info, error] = get_connection_info(request_id, path_type, path.nodes[0]);
+
+                    // It's possible that the connection was created successfully, and reported as
+                    // valid, but isn't actually valid (eg. it was shutdown immediately due to the
+                    // network being unreachable) so to avoid this we wait for either the connection
+                    // to be established or the connection to fail before continuing
+                    if (!info.is_valid()) {
+                        log::info(
+                                cat,
+                                "Reconnection to {} with type {} for {} path failed with error: "
+                                "{}.",
+                                target_path_it->nodes[0],
+                                path_type_name(path_type, single_path_mode),
+                                request_id,
+                                error.value_or("Unknown error."));
+                        return {std::nullopt, current_paths.size()};
+                    }
+
+                    // Knowing that the reconnection succeeded is helpful for debugging
+                    log::info(
+                            cat,
+                            "Reconnection to {} with type {} for {} path successful.",
+                            target_path_it->nodes[0],
+                            path_type_name(path_type, single_path_mode),
+                            request_id);
+
+                    // If the connection info is valid and it's a standard path then update the
+                    // connection status back to connected
+                    if (path_type == PathType::standard)
+                        update_status(ConnectionStatus::connected);
+
+                    // No need to call the 'paths_changed' callback as the paths haven't
+                    // actually changed, just their connection info
+                    auto updated_path = onion_path{std::move(info), path.nodes, 0, 0};
+                    auto paths_count = net.call_get(
+                            [this, path_type, path, updated_path]() mutable -> uint8_t {
+                                switch (path_type) {
+                                    case PathType::standard:
+                                        std::replace(
+                                                standard_paths.begin(),
+                                                standard_paths.end(),
+                                                path,
+                                                updated_path);
+                                        return standard_paths.size();
+
+                                    case PathType::upload:
+                                        std::replace(
+                                                upload_paths.begin(),
+                                                upload_paths.end(),
+                                                path,
+                                                updated_path);
+                                        return upload_paths.size();
+
+                                    case PathType::download:
+                                        std::replace(
+                                                download_paths.begin(),
+                                                download_paths.end(),
+                                                path,
+                                                updated_path);
+                                        return download_paths.size();
+                                }
+                            });
+
+                    return {updated_path, paths_count};
+                });
     }
 
     // If we didn't get a target path then we have to build paths
