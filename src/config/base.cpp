@@ -368,6 +368,7 @@ ustring ConfigBase::dump() {
 
     auto d = make_dump();
     _needs_dump = false;
+    this->last_dumped = d;
     return d;
 }
 
@@ -397,9 +398,10 @@ ConfigBase::ConfigBase(
     if (sodium_init() == -1)
         throw std::runtime_error{"libsodium initialization failed!"};
 
-    if (dump)
+    if (dump) {
         init_from_dump(from_unsigned_sv(*dump));
-    else
+        this->last_dumped = ustring{*dump};
+    } else
         _config = std::make_unique<ConfigMessage>();
 
     init_sig_keys(ed25519_pubkey, ed25519_secretkey);
