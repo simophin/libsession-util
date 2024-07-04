@@ -51,6 +51,12 @@ void contact_info::set_nickname(std::string n) {
     nickname = std::move(n);
 }
 
+void contact_info::set_nickname_truncated(std::string n) {
+    if (n.size() > MAX_NAME_LENGTH)
+        n.resize(MAX_NAME_LENGTH);
+    set_nickname(n);
+}
+
 Contacts::Contacts(ustring_view ed25519_secretkey, std::optional<ustring_view> dumped) :
         ConfigBase{dumped} {
     load_key(ed25519_secretkey);
@@ -256,6 +262,11 @@ void Contacts::set_name(std::string_view session_id, std::string name) {
 void Contacts::set_nickname(std::string_view session_id, std::string nickname) {
     auto c = get_or_construct(session_id);
     c.set_nickname(std::move(nickname));
+    set(c);
+}
+void Contacts::set_nickname_truncated(std::string_view session_id, std::string nickname) {
+    auto c = get_or_construct(session_id);
+    c.set_nickname_truncated(std::move(nickname));
     set(c);
 }
 void Contacts::set_profile_pic(std::string_view session_id, profile_pic pic) {

@@ -308,6 +308,18 @@ struct member {
     /// - `name` -- Name to assign to the contact
     void set_name(std::string name);
 
+    /// API: groups/member::set_name_truncated
+    ///
+    /// Sets a name; this is exactly the same as assigning to .name directly, except that we truncate
+    /// if the given name is longer than MAX_NAME_LENGTH.
+    ///
+    /// Note that you can set a longer name directly into the `.name` member, but it will be
+    /// truncated when serializing the record.
+    ///
+    /// Inputs:
+    /// - `name` -- Name to assign to the contact
+    void set_name_truncated(std::string name);
+
   private:
     friend class Members;
     void load(const dict& info_dict);
