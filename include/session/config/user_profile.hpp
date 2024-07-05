@@ -89,7 +89,8 @@ class UserProfile final : public ConfigBase {
 
     /// API: user_profile/UserProfile::set_name_truncated
     ///
-    /// Sets the user profile name; if given an empty string then the name is removed. Same as the `set_name` function but truncates the name if it's too long.
+    /// Sets the user profile name; if given an empty string then the name is removed. Same as the
+    /// `set_name` function but truncates the name if it's too long.
     ///
     /// Inputs:
     /// - `new_name` -- The name to be put into the user profile

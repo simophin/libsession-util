@@ -310,8 +310,8 @@ struct member {
 
     /// API: groups/member::set_name_truncated
     ///
-    /// Sets a name; this is exactly the same as assigning to .name directly, except that we truncate
-    /// if the given name is longer than MAX_NAME_LENGTH.
+    /// Sets a name; this is exactly the same as assigning to .name directly, except that we
+    /// truncate if the given name is longer than MAX_NAME_LENGTH.
     ///
     /// Note that you can set a longer name directly into the `.name` member, but it will be
     /// truncated when serializing the record.
