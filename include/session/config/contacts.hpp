@@ -209,8 +209,9 @@ class Contacts : public ConfigBase {
 
     /// API: contacts/contacts::set_nickname_truncated
     ///
-    /// Alternative to `set()` for setting a single field. The same as `set_name` except truncates the value when it's too long.  (If setting multiple fields at once you
-    /// should use `set()` instead).
+    /// Alternative to `set()` for setting a single field. The same as `set_name` except truncates
+    /// the value when it's too long.  (If setting multiple fields at once you should use `set()`
+    /// instead).
     ///
     /// Inputs:
     /// - `session_id` -- hex string of the session id
