@@ -608,7 +608,7 @@ LIBSESSION_C_API void convo_info_volatile_set_1to1(
 }
 LIBSESSION_C_API void convo_info_volatile_set_community(
         config_object* conf, const convo_info_volatile_community* convo) {
-    unbox<ConvoInfoVolatile>(conf)->set(convo::community{*convo});
+    wrap_exceptions(conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::community{*convo}); });
 }
 LIBSESSION_C_API void convo_info_volatile_set_group(
         config_object* conf, const convo_info_volatile_group* convo) {
@@ -621,34 +621,26 @@ LIBSESSION_C_API void convo_info_volatile_set_legacy_group(
 }
 
 LIBSESSION_C_API bool convo_info_volatile_erase_1to1(config_object* conf, const char* session_id) {
-    try {
-        return unbox<ConvoInfoVolatile>(conf)->erase_1to1(session_id);
-    } catch (...) {
-        return false;
-    }
+    return wrap_exceptions(
+            conf, [&] { return unbox<ConvoInfoVolatile>(conf)->erase_1to1(session_id); }, false);
 }
 LIBSESSION_C_API bool convo_info_volatile_erase_community(
         config_object* conf, const char* base_url, const char* room) {
-    try {
-        return unbox<ConvoInfoVolatile>(conf)->erase_community(base_url, room);
-    } catch (...) {
-        return false;
-    }
+    return wrap_exceptions(
+            conf,
+            [&] { return unbox<ConvoInfoVolatile>(conf)->erase_community(base_url, room); },
+            false);
 }
 LIBSESSION_C_API bool convo_info_volatile_erase_group(config_object* conf, const char* group_id) {
-    try {
-        return unbox<ConvoInfoVolatile>(conf)->erase_group(group_id);
-    } catch (...) {
-        return false;
-    }
+    return wrap_exceptions(
+            conf, [&] { return unbox<ConvoInfoVolatile>(conf)->erase_group(group_id); }, false);
 }
 LIBSESSION_C_API bool convo_info_volatile_erase_legacy_group(
         config_object* conf, const char* group_id) {
-    try {
-        return unbox<ConvoInfoVolatile>(conf)->erase_legacy_group(group_id);
-    } catch (...) {
-        return false;
-    }
+    return wrap_exceptions(
+            conf,
+            [&] { return unbox<ConvoInfoVolatile>(conf)->erase_legacy_group(group_id); },
+            false);
 }
 
 LIBSESSION_C_API size_t convo_info_volatile_size(const config_object* conf) {
