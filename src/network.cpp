@@ -2244,6 +2244,7 @@ void Network::handle_errors(
     // cases so they can be handled properly below
     if (status_code == -1 && response) {
         const std::unordered_map<std::string, std::pair<int16_t, bool>> response_map = {
+                {"400 Bad Request", {400, false}},
                 {"500 Internal Server Error", {500, false}},
                 {"502 Bad Gateway", {502, false}},
                 {"503 Service Unavailable", {503, false}},
