@@ -45,9 +45,7 @@ void UserProfile::set_name(std::string_view new_name) {
     set_nonempty_str(data["n"], new_name);
 }
 void UserProfile::set_name_truncated(std::string new_name) {
-    if (new_name.size() > contact_info::MAX_NAME_LENGTH)
-        new_name.resize(contact_info::MAX_NAME_LENGTH);
-    set_name(new_name);
+    set_name(utf8_truncate(std::move(new_name), contact_info::MAX_NAME_LENGTH));
 }
 LIBSESSION_C_API int user_profile_set_name(config_object* conf, const char* name) {
     return wrap_exceptions(
