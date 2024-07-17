@@ -71,7 +71,7 @@ TEST_CASE("Group Members", "[config][groups][members]") {
     // 10 admins:
     for (int i = 0; i < 10; i++) {
         auto m = gmem1.get_or_construct(sids[i]);
-        m.accept_promotion();
+        m.set_promotion_accepted();
         m.name = "Admin " + std::to_string(i);
         m.profile_picture.url = "http://example.com/" + std::to_string(i);
         m.profile_picture.key =
@@ -122,14 +122,14 @@ TEST_CASE("Group Members", "[config][groups][members]") {
             CHECK_FALSE(m.should_remove_messages());
             CHECK_FALSE(m.supplement);
             if (i < 10) {
-                CHECK_FALSE(m.invite_needs_send());
+                CHECK_FALSE(m.invite_not_sent());
                 CHECK_FALSE(m.invite_pending());
                 CHECK(m.admin);
                 CHECK(m.name == "Admin " + std::to_string(i));
                 CHECK_FALSE(m.profile_picture.empty());
                 CHECK(m.promoted());
             } else {
-                CHECK(m.invite_needs_send());
+                CHECK(m.invite_not_sent());
                 CHECK(m.invite_pending());
                 CHECK_FALSE(m.admin);
                 CHECK_FALSE(m.promoted());
@@ -203,7 +203,7 @@ TEST_CASE("Group Members", "[config][groups][members]") {
                           : ""_hexbytes));
             CHECK(m.profile_picture.url ==
                   (i < 20 ? "http://example.com/" + std::to_string(i) : ""));
-            CHECK(m.invite_needs_send() == (i >= 10 && i < 50));
+            CHECK(m.invite_not_sent() == (i >= 10 && i < 50));
             CHECK(m.invite_pending() == (i >= 10 && i < 58));
             CHECK(m.invite_failed() == (55 <= i && i < 58));
             CHECK(m.supplement == (i % 2 && 50 < i && i < 58));
@@ -229,7 +229,7 @@ TEST_CASE("Group Members", "[config][groups][members]") {
             gmem1.set(m);
         } else if (i == 58) {
             auto m = gmem1.get(sids[i]).value();
-            m.accept_promotion();
+            m.set_promotion_accepted();
             gmem1.set(m);
         } else if (i == 59) {
             auto m = gmem1.get(sids[i]).value();
@@ -257,7 +257,7 @@ TEST_CASE("Group Members", "[config][groups][members]") {
                           : ""_hexbytes));
             CHECK(m.profile_picture.url ==
                   (i < 20 ? "http://example.com/" + std::to_string(i) : ""));
-            CHECK(m.invite_needs_send() == (i >= 10 && i < 50));
+            CHECK(m.invite_not_sent() == (i >= 10 && i < 50));
             CHECK(m.invite_pending() == ((i >= 10 && i < 50) || i == 53 || (i >= 55 && i < 58)));
             CHECK(m.invite_failed() == (i == 57));
             CHECK(m.supplement == (i == 55 || i == 57));
