@@ -2814,6 +2814,7 @@ LIBSESSION_C_API bool network_init(
 }
 
 LIBSESSION_C_API void network_free(network_object* network) {
+    delete static_cast<session::network::Network*>(network->internals);
     delete network;
 }
 
