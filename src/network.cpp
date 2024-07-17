@@ -983,6 +983,7 @@ void Network::with_paths_and_pool(
                             find_valid_guard_node_recursive(
                                     request_id,
                                     path_type,
+                                    0,
                                     nodes_to_test[i],
                                     [prom](std::optional<connection_info> valid_guard_node,
                                            std::vector<service_node> unused_nodes,
@@ -1029,10 +1030,23 @@ void Network::with_paths_and_pool(
                         for (auto& info : valid_nodes) {
                             std::vector<service_node> path{info.node};
 
-                            for (auto i = 0; i < path_size - 1; i++) {
+                            while (path.size() < path_size) {
+                                if (unused_nodes.empty())
+                                    throw std::runtime_error{"Not enough remaining nodes."};
+
                                 auto node = unused_nodes.back();
                                 unused_nodes.pop_back();
-                                path.push_back(node);
+
+                                // Ensure we don't put two nodes with the same IP into the same path
+                                auto snode_with_ip_it = std::find_if(
+                                        path.begin(),
+                                        path.end(),
+                                        [&node](const auto& existing_node) {
+                                            return existing_node.to_ipv4() == node.to_ipv4();
+                                        });
+
+                                if (snode_with_ip_it == path.end())
+                                    path.push_back(node);
                             }
 
                             paths_result.emplace_back(onion_path{std::move(info), path, 0, 0});
@@ -1390,6 +1404,7 @@ void Network::get_service_nodes_recursive(
 void Network::find_valid_guard_node_recursive(
         std::string request_id,
         PathType path_type,
+        int64_t test_attempt,
         std::vector<service_node> target_nodes,
         std::function<
                 void(std::optional<connection_info> valid_guard_node,
@@ -1412,7 +1427,13 @@ void Network::find_valid_guard_node_recursive(
             path_type,
             target_node,
             3s,
-            [this, path_type, target_node, target_nodes, request_id, cb = std::move(callback)](
+            [this,
+             path_type,
+             test_attempt,
+             target_node,
+             target_nodes,
+             request_id,
+             cb = std::move(callback)](
                     std::vector<int> version,
                     connection_info info,
                     std::optional<std::string> error) {
@@ -1446,12 +1467,31 @@ void Network::find_valid_guard_node_recursive(
                             target_node.to_string(),
                             request_id,
                             e.what());
-                    std::thread retry_thread(
-                            [this, path_type, remaining_nodes, request_id, cb = std::move(cb)] {
-                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                                find_valid_guard_node_recursive(
-                                        request_id, path_type, remaining_nodes, cb);
-                            });
+
+                    // Delay the next test based on the error we received
+                    std::chrono::duration delay = std::chrono::milliseconds(100);
+
+                    // If we got a network unreachable error then we want to delay on an exponential
+                    // curve so that we don't trash the battery life in the device loses connection
+                    if (error) {
+                        std::chrono::duration maxDelay = 3s;
+                        delay = std::chrono::milliseconds(std::min(
+                                std::chrono::duration_cast<std::chrono::milliseconds>(maxDelay)
+                                        .count(),
+                                static_cast<long long>(100 * std::pow(2, test_attempt))));
+                    }
+                    
+                    std::thread retry_thread([this,
+                                              delay,
+                                              path_type,
+                                              test_attempt,
+                                              remaining_nodes,
+                                              request_id,
+                                              cb = std::move(cb)] {
+                        std::this_thread::sleep_for(delay);
+                        find_valid_guard_node_recursive(
+                                request_id, path_type, test_attempt + 1, remaining_nodes, cb);
+                    });
                     retry_thread.detach();
                 }
             });

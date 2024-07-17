@@ -470,6 +470,7 @@ class Network {
     /// Inputs:
     /// - 'request_id' - [in] id for the request which triggered the call.
     /// - `path_type` -- [in] the type of path to validate the size for.
+    /// - `test_attempt` -- [in] the number of test which have occurred before this one.
     /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
     /// drained.
     /// - `callback` -- [in] callback to be triggered once we make a successful request.  NOTE: If
@@ -478,6 +479,7 @@ class Network {
     void find_valid_guard_node_recursive(
             std::string request_id,
             PathType path_type,
+            int64_t test_attempt,
             std::vector<service_node> target_nodes,
             std::function<
                     void(std::optional<connection_info> valid_guard_node,
