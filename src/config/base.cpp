@@ -656,6 +656,7 @@ using namespace session;
 using namespace session::config;
 
 LIBSESSION_EXPORT void config_free(config_object* conf) {
+    delete static_cast<internals<>*>(conf->internals);
     delete conf;
 }
 

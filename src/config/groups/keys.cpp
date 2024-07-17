@@ -1456,6 +1456,7 @@ LIBSESSION_C_API int groups_keys_init(
 }
 
 LIBSESSION_C_API void groups_keys_free(config_group_keys* conf) {
+    delete static_cast<groups::Keys*>(conf->internals);
     delete conf;
 }
 
