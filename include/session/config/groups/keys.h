@@ -74,6 +74,25 @@ LIBSESSION_EXPORT int groups_keys_init(
         size_t dumplen,
         char* error) LIBSESSION_WARN_UNUSED;
 
+/// API: base/groups_keys_free
+///
+/// Frees a config keys object created with groups_keys_init.
+///
+/// Inputs:
+/// - `conf` -- [in] Pointer to config_group_keys object
+LIBSESSION_EXPORT void groups_keys_free(config_group_keys* conf);
+
+/// API: base/groups_keys_storage_namespace
+///
+/// Returns the numeric namespace in which config_group_keys messages should be stored.
+///
+/// Inputs:
+/// - `conf` -- [in] Pointer to config_group_keys object
+///
+/// Outputs:
+/// - `int16_t` -- integer of the namespace
+LIBSESSION_EXPORT int16_t groups_keys_storage_namespace(const config_group_keys* conf);
+
 /// API: groups/groups_keys_size
 ///
 /// Returns the number of decryption keys stored in this Keys object.  Mainly for
