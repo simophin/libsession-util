@@ -8,7 +8,7 @@ extern "C" {
 #include "../profile_pic.h"
 #include "../util.h"
 
-enum groups_members_invite_status { INVITE_SENT = 1, INVITE_FAILED = 2 };
+enum groups_members_invite_status { INVITE_SENT = 1, INVITE_FAILED = 2, INVITE_NOT_SENT = 3 };
 enum groups_members_remove_status { REMOVED_MEMBER = 1, REMOVED_MEMBER_AND_MESSAGES = 2 };
 
 typedef struct config_group_member {
@@ -19,7 +19,8 @@ typedef struct config_group_member {
     user_profile_pic profile_pic;
 
     bool admin;
-    int invited;   // 0 == unset, INVITE_SENT = invited, INVITED_FAILED = invite failed to send
+    int invited;   // 0 == unset, INVITE_SENT = invited, INVITED_FAILED = invite failed to send,
+                   // INVITE_NOT_SENT = invite hasn't been sent yet
     int promoted;  // same value as `invited`, but for promotion-to-admin
     int removed;   // 0 == unset, REMOVED_MEMBER = removed, REMOVED_MEMBER_AND_MESSAGES = remove
                    // member and their messages
