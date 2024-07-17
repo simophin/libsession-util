@@ -41,8 +41,9 @@ contact_info::contact_info(std::string sid) : session_id{std::move(sid)} {
 
 void contact_info::set_name(std::string n) {
     if (n.size() > MAX_NAME_LENGTH)
-        n.resize(MAX_NAME_LENGTH);
-    name = std::move(n);
+        name = std::move(utf8_truncate(std::move(n), MAX_NAME_LENGTH));
+    else
+        name = std::move(n);
 }
 
 void contact_info::set_nickname(std::string n) {
@@ -52,9 +53,7 @@ void contact_info::set_nickname(std::string n) {
 }
 
 void contact_info::set_nickname_truncated(std::string n) {
-    if (n.size() > MAX_NAME_LENGTH)
-        n.resize(MAX_NAME_LENGTH);
-    set_nickname(n);
+    set_nickname(utf8_truncate(std::move(n), MAX_NAME_LENGTH));
 }
 
 Contacts::Contacts(ustring_view ed25519_secretkey, std::optional<ustring_view> dumped) :
