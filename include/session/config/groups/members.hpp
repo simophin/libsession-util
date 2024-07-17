@@ -81,14 +81,11 @@ struct member {
     ///
     /// Member variable
     ///
-    /// Flag that is set to indicate to the group that this member is an admin.
+    /// Flag that is set to indicate to the group that this member has been promoted to an admin.
     ///
     /// Note that this is only informative but isn't a permission gate: someone could still possess
     /// the admin keys without this (e.g. if they cleared the flag to appear invisible), or could
     /// have lost (or never had) the keys even if this is set.
-    ///
-    /// See also `promoted()` if you want to check for either an admin or someone being promoted to
-    /// admin.
     bool admin = false;
 
     /// API: groups/member::supplement
@@ -129,16 +126,16 @@ struct member {
         supplement = false;
     }
 
-    /// API: groups/member::invite_needs_send
+    /// API: groups/member::invite_not_sent
     ///
-    /// Returns whether the user needs an invite sent to them.  Returns true if so (whether or
-    /// not that invitation has been sent).
+    /// Returns true if there has never been an attempt to send an invitation to the user.  Returns
+    /// false otherwise.
     ///
     /// Inputs: none
     ///
     /// Outputs:
     /// - `bool` -- true if the user needs an invitation to be sent, false otherwise.
-    bool invite_needs_send() const { return invite_status == INVITE_NOT_SENT; }
+    bool invite_not_sent() const { return invite_status == INVITE_NOT_SENT; }
 
     /// API: groups/member::invite_pending
     ///
@@ -197,25 +194,25 @@ struct member {
         promotion_status = INVITE_FAILED;
     }
 
-    /// API: groups/member::accept_promotion
+    /// API: groups/member::set_promotion_accepted
     ///
     /// This marks the user as having accepted a promotion to admin in the group.
-    void accept_promotion() {
+    void set_promotion_accepted() {
         admin = true;
         invite_status = 0;
         promotion_status = 0;
     }
 
-    /// API: groups/member::promotion_needs_send
+    /// API: groups/member::promotion_not_sent
     ///
-    /// Returns whether the user needs a promotion to admin status to be sent.
-    /// Returns true if so (whether or not that promotion has failed).
+    /// Returns true if the user is an admin but there has never been an attempt to send a promotion
+    /// to admin status sent to them. Returns false otherwise.
     ///
     /// Inputs: None
     ///
     /// Outputs:
     /// - `bool` -- true if the user needs a promotion to be sent, false otherwise.
-    bool promotion_needs_send() const { return promotion_status == INVITE_NOT_SENT; }
+    bool promotion_not_sent() const { return admin && promotion_status == INVITE_NOT_SENT; }
 
     /// API: groups/member::promotion_pending
     ///
@@ -226,7 +223,7 @@ struct member {
     ///
     /// Outputs:
     /// - `bool` -- true if the user has a pending promotion, false otherwise.
-    bool promotion_pending() const { return promotion_status > 0; }
+    bool promotion_pending() const { return admin && promotion_status > 0; }
 
     /// API: groups/member::promotion_failed
     ///
@@ -237,7 +234,7 @@ struct member {
     ///
     /// Outputs:
     /// - `bool` -- true if the user has a failed pending promotion
-    bool promotion_failed() const { return promotion_status == INVITE_FAILED; }
+    bool promotion_failed() const { return admin && promotion_status == INVITE_FAILED; }
 
     /// API: groups/member::promoted
     ///
