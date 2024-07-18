@@ -81,7 +81,8 @@ struct member {
     ///
     /// Member variable
     ///
-    /// Flag that is set to indicate to the group that this member is an admin or has been promoted to admin.
+    /// Flag that is set to indicate to the group that this member is an admin or has been promoted
+    /// to admin.
     ///
     /// Note that this is only informative but isn't a permission gate: someone could still possess
     /// the admin keys without this (e.g. if they cleared the flag to appear invisible), or could
