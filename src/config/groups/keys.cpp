@@ -1432,6 +1432,15 @@ LIBSESSION_C_API int groups_keys_init(
     return SESSION_ERR_NONE;
 }
 
+LIBSESSION_C_API void groups_keys_free(config_group_keys* conf) {
+    delete static_cast<groups::Keys*>(conf->internals);
+    delete conf;
+}
+
+LIBSESSION_EXPORT int16_t groups_keys_storage_namespace(const config_group_keys* conf) {
+    return static_cast<int16_t>(unbox(conf).storage_namespace());
+}
+
 LIBSESSION_C_API size_t groups_keys_size(const config_group_keys* conf) {
     return unbox(conf).size();
 }
