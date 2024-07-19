@@ -1480,7 +1480,7 @@ void Network::find_valid_guard_node_recursive(
                                         .count(),
                                 static_cast<long long>(100 * std::pow(2, test_attempt))));
                     }
-                    
+
                     std::thread retry_thread([this,
                                               delay,
                                               path_type,
@@ -2749,8 +2749,12 @@ std::vector<network_service_node> convert_service_nodes(
     std::vector<network_service_node> converted_nodes;
     for (auto& node : nodes) {
         auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
+        auto ipv4 = node.to_ipv4();
         network_service_node converted_node;
-        std::memcpy(converted_node.ip, node.host().data(), sizeof(converted_node.ip));
+        converted_node.ip[0] = (ipv4.addr >> 24) & 0xFF;
+        converted_node.ip[1] = (ipv4.addr >> 16) & 0xFF;
+        converted_node.ip[2] = (ipv4.addr >> 8) & 0xFF;
+        converted_node.ip[3] = ipv4.addr & 0xFF;
         strncpy(converted_node.ed25519_pubkey_hex, ed25519_pubkey_hex.c_str(), 64);
         converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
         converted_node.quic_port = node.port();
