@@ -41,14 +41,19 @@ contact_info::contact_info(std::string sid) : session_id{std::move(sid)} {
 
 void contact_info::set_name(std::string n) {
     if (n.size() > MAX_NAME_LENGTH)
-        n.resize(MAX_NAME_LENGTH);
-    name = std::move(n);
+        name = std::move(utf8_truncate(std::move(n), MAX_NAME_LENGTH));
+    else
+        name = std::move(n);
 }
 
 void contact_info::set_nickname(std::string n) {
     if (n.size() > MAX_NAME_LENGTH)
         throw std::invalid_argument{"Invalid contact nickname: exceeds maximum length"};
     nickname = std::move(n);
+}
+
+void contact_info::set_nickname_truncated(std::string n) {
+    set_nickname(utf8_truncate(std::move(n), MAX_NAME_LENGTH));
 }
 
 Contacts::Contacts(ustring_view ed25519_secretkey, std::optional<ustring_view> dumped) :
@@ -259,6 +264,11 @@ void Contacts::set_name(std::string_view session_id, std::string name) {
 void Contacts::set_nickname(std::string_view session_id, std::string nickname) {
     auto c = get_or_construct(session_id);
     c.set_nickname(std::move(nickname));
+    set(c);
+}
+void Contacts::set_nickname_truncated(std::string_view session_id, std::string nickname) {
+    auto c = get_or_construct(session_id);
+    c.set_nickname_truncated(std::move(nickname));
     set(c);
 }
 void Contacts::set_profile_pic(std::string_view session_id, profile_pic pic) {

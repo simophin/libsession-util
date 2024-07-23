@@ -35,6 +35,10 @@ void Info::set_name(std::string_view new_name) {
     set_nonempty_str(data["n"], new_name);
 }
 
+void Info::set_name_truncated(std::string new_name) {
+    set_name(utf8_truncate(std::move(new_name), NAME_MAX_LENGTH));
+}
+
 std::optional<std::string_view> Info::get_description() const {
     if (auto* s = data["o"].string(); s && !s->empty())
         return *s;
@@ -45,6 +49,10 @@ void Info::set_description(std::string_view new_desc) {
     if (new_desc.size() > DESCRIPTION_MAX_LENGTH)
         throw std::invalid_argument{"Invalid group description: exceeds maximum length"};
     set_nonempty_str(data["o"], new_desc);
+}
+
+void Info::set_description_truncated(std::string new_desc) {
+    set_description(utf8_truncate(std::move(new_desc), DESCRIPTION_MAX_LENGTH));
 }
 
 profile_pic Info::get_profile_pic() const {

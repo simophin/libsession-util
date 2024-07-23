@@ -44,6 +44,9 @@ void UserProfile::set_name(std::string_view new_name) {
         throw std::invalid_argument{"Invalid profile name: exceeds maximum length"};
     set_nonempty_str(data["n"], new_name);
 }
+void UserProfile::set_name_truncated(std::string new_name) {
+    set_name(utf8_truncate(std::move(new_name), contact_info::MAX_NAME_LENGTH));
+}
 LIBSESSION_C_API int user_profile_set_name(config_object* conf, const char* name) {
     try {
         unbox<UserProfile>(conf)->set_name(name);

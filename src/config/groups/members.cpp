@@ -174,6 +174,10 @@ void member::set_name(std::string n) {
     name = std::move(n);
 }
 
+void member::set_name_truncated(std::string n) {
+    set_name(utf8_truncate(std::move(n), MAX_NAME_LENGTH));
+}
+
 }  // namespace session::config::groups
 
 using namespace session;
