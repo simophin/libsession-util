@@ -53,6 +53,7 @@ add_libsession_util_library(crypto
     multi_encrypt.cpp
     random.cpp
     session_encrypt.cpp
+    sodium_array.cpp
     util.cpp
     xed25519.cpp
 )

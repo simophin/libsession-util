@@ -304,32 +304,26 @@ std::pair<uc32, cleared_uc32> blind25_key_pair(
 static const auto version_blinding_hash_key_sig = to_unsigned_sv("VersionCheckKey_sig"sv);
 
 std::pair<uc32, cleared_uc64> blind_version_key_pair(ustring_view ed25519_sk) {
-    std::array<unsigned char, 64> ed_sk_tmp;
-    if (ed25519_sk.size() == 32) {
-        std::array<unsigned char, 32> pk_ignore;
-        crypto_sign_ed25519_seed_keypair(pk_ignore.data(), ed_sk_tmp.data(), ed25519_sk.data());
-        ed25519_sk = {ed_sk_tmp.data(), 64};
-    }
-    if (ed25519_sk.size() != 64)
+    if (ed25519_sk.size() != 32 && ed25519_sk.size() != 64)
         throw std::invalid_argument{
                 "blind_version_key_pair: Invalid ed25519_sk is not the expected 32- or 64-byte "
                 "value"};
 
-    uc32 seed;
+    std::pair<uc32, cleared_uc64> result;
+    auto& [pk, sk] = result;
     crypto_generichash_blake2b(
-            seed.data(),
-            seed.size(),
+            sk.data(),
+            32,
             ed25519_sk.data(),
             32,
             version_blinding_hash_key_sig.data(),
             version_blinding_hash_key_sig.size());
 
-    uc32 pk;
-    cleared_uc64 sk;
-    if (0 != crypto_sign_ed25519_seed_keypair(pk.data(), sk.data(), seed.data()))
+    // Reuse `sk` to avoid needing extra secure erasing:
+    if (0 != crypto_sign_ed25519_seed_keypair(pk.data(), sk.data(), sk.data()))
         throw std::runtime_error{"blind_version_key_pair: ed25519 generation from seed failed"};
 
-    return {pk, sk};
+    return result;
 }
 
 static const auto hash_key_seed = to_unsigned_sv("SessCommBlind25_seed"sv);
@@ -518,8 +512,7 @@ LIBSESSION_C_API bool session_blind15_key_pair(
         unsigned char* blinded_pk_out,
         unsigned char* blinded_sk_out) {
     try {
-        auto result = session::blind15_key_pair({ed25519_seckey, 64}, {server_pk, 32});
-        auto [b_pk, b_sk] = result;
+        auto [b_pk, b_sk] = session::blind15_key_pair({ed25519_seckey, 64}, {server_pk, 32});
         std::memcpy(blinded_pk_out, b_pk.data(), b_pk.size());
         std::memcpy(blinded_sk_out, b_sk.data(), b_sk.size());
         return true;
@@ -534,8 +527,7 @@ LIBSESSION_C_API bool session_blind25_key_pair(
         unsigned char* blinded_pk_out,
         unsigned char* blinded_sk_out) {
     try {
-        auto result = session::blind25_key_pair({ed25519_seckey, 64}, {server_pk, 32});
-        auto [b_pk, b_sk] = result;
+        auto [b_pk, b_sk] = session::blind25_key_pair({ed25519_seckey, 64}, {server_pk, 32});
         std::memcpy(blinded_pk_out, b_pk.data(), b_pk.size());
         std::memcpy(blinded_sk_out, b_sk.data(), b_sk.size());
         return true;
@@ -549,8 +541,7 @@ LIBSESSION_C_API bool session_blind_version_key_pair(
         unsigned char* blinded_pk_out,
         unsigned char* blinded_sk_out) {
     try {
-        auto result = session::blind_version_key_pair({ed25519_seckey, 64});
-        auto [b_pk, b_sk] = result;
+        auto [b_pk, b_sk] = session::blind_version_key_pair({ed25519_seckey, 64});
         std::memcpy(blinded_pk_out, b_pk.data(), b_pk.size());
         std::memcpy(blinded_sk_out, b_sk.data(), b_sk.size());
         return true;
@@ -566,9 +557,8 @@ LIBSESSION_C_API bool session_blind15_sign(
         size_t msg_len,
         unsigned char* blinded_sig_out) {
     try {
-        auto result = session::blind15_sign(
+        auto sig = session::blind15_sign(
                 {ed25519_seckey, 64}, {from_unsigned(server_pk), 32}, {msg, msg_len});
-        auto sig = result;
         std::memcpy(blinded_sig_out, sig.data(), sig.size());
         return true;
     } catch (...) {
@@ -583,9 +573,8 @@ LIBSESSION_C_API bool session_blind25_sign(
         size_t msg_len,
         unsigned char* blinded_sig_out) {
     try {
-        auto result = session::blind25_sign(
+        auto sig = session::blind25_sign(
                 {ed25519_seckey, 64}, {from_unsigned(server_pk), 32}, {msg, msg_len});
-        auto sig = result;
         std::memcpy(blinded_sig_out, sig.data(), sig.size());
         return true;
     } catch (...) {
@@ -599,9 +588,8 @@ LIBSESSION_C_API bool session_blind_version_sign(
         size_t timestamp,
         unsigned char* blinded_sig_out) {
     try {
-        auto result = session::blind_version_sign(
+        auto sig = session::blind_version_sign(
                 {ed25519_seckey, 64}, static_cast<Platform>(platform), timestamp);
-        auto sig = result;
         std::memcpy(blinded_sig_out, sig.data(), sig.size());
         return true;
     } catch (...) {
