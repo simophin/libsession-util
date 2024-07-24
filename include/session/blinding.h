@@ -6,6 +6,7 @@ extern "C" {
 
 #include <stddef.h>
 
+#include "platform.h"
 #include "export.h"
 
 /// API: crypto/session_blind15_key_pair
