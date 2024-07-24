@@ -6,8 +6,8 @@ extern "C" {
 
 #include <stddef.h>
 
-#include "platform.h"
 #include "export.h"
+#include "platform.h"
 
 /// API: crypto/session_blind15_key_pair
 ///
@@ -116,11 +116,8 @@ LIBSESSION_EXPORT bool session_blind25_sign(
 /// Computes a verifiable version-blinded signature that validates with the version-blinded pubkey
 /// that would be returned from blind_version_key_pair.
 ///
-/// Takes the Ed25519 secret key (64 bytes).  Returns the blinded public key, signature and
-/// timestamp.
-///
-/// It is recommended to pass the full 64-byte libsodium-style secret key for `ed25519_sk` (i.e.
-/// seed + appended pubkey) as with just the 32-byte seed the public key has to be recomputed.
+/// Takes the Ed25519 secret key (64 bytes), platform and unix timestamp.  Returns a version-blinded
+/// signature.
 LIBSESSION_EXPORT bool session_blind_version_sign(
         const unsigned char* ed25519_seckey, /* 64 bytes */
         CLIENT_PLATFORM platform,
