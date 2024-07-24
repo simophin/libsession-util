@@ -6,6 +6,7 @@ extern "C" {
 
 #include <stddef.h>
 
+#include "platform.h"
 #include "export.h"
 #include "platform.h"
 
