@@ -310,9 +310,10 @@ std::pair<uc32, cleared_uc64> blind_version_key_pair(ustring_view ed25519_sk) {
                 "value"};
 
     std::pair<uc32, cleared_uc64> result;
+    cleared_uc32 blind_seed;
     auto& [pk, sk] = result;
     crypto_generichash_blake2b(
-            sk.data(),
+            blind_seed.data(),
             32,
             ed25519_sk.data(),
             32,
@@ -320,7 +321,7 @@ std::pair<uc32, cleared_uc64> blind_version_key_pair(ustring_view ed25519_sk) {
             version_blinding_hash_key_sig.size());
 
     // Reuse `sk` to avoid needing extra secure erasing:
-    if (0 != crypto_sign_ed25519_seed_keypair(pk.data(), sk.data(), sk.data()))
+    if (0 != crypto_sign_ed25519_seed_keypair(pk.data(), sk.data(), blind_seed.data()))
         throw std::runtime_error{"blind_version_key_pair: ed25519 generation from seed failed"};
 
     return result;

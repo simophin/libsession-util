@@ -277,9 +277,22 @@ TEST_CASE("Version 07xxx-blinded pubkey derivation", "[blinding07][key_pair]") {
     auto [pubkey, seckey] = blind_version_key_pair(to_usv(seed1));
     CHECK(oxenc::to_hex(pubkey.begin(), pubkey.end()) ==
           "88e8adb27e7b8ce776fcc25bc1501fb2888fcac0308e52fb10044f789ae1a8fa");
+
+    CHECK(oxenc::to_hex(seckey.begin() + 32, seckey.end()) ==
+          oxenc::to_hex(pubkey.begin(), pubkey.end()));
+
+    // Hash ourselves just to make sure we get what we expect for the seed part of the secret key:
+    cleared_uc32 expect_seed;
+    static const auto hash_key = to_unsigned_sv("VersionCheckKey_sig"sv);
+    crypto_generichash_blake2b(
+            expect_seed.data(), 32, seed1.data(), 32, hash_key.data(), hash_key.size());
+
+    CHECK(oxenc::to_hex(seckey.begin(), seckey.begin() + 32) ==
+          oxenc::to_hex(expect_seed.begin(), expect_seed.end()));
+
     CHECK(oxenc::to_hex(seckey.begin(), seckey.end()) ==
-          "4091bdaafefd7ddc3398db877c894716b2b24f12dac15ad414a3e4f0b6ac1c6788e8adb27e7b8ce776fcc25b"
-          "c1501fb2888fcac0308e52fb10044f789ae1a8fa");
+          "91faddc2c36da4f7bcf24fd977d9ca5346ae7489cfd43c58cad9eaaa6ed60f69"
+          "88e8adb27e7b8ce776fcc25bc1501fb2888fcac0308e52fb10044f789ae1a8fa");
 }
 
 TEST_CASE("Version 07xxx-blinded signing", "[blinding07][sign]") {
@@ -287,8 +300,8 @@ TEST_CASE("Version 07xxx-blinded signing", "[blinding07][sign]") {
 
     auto signature = blind_version_sign(to_usv(seed1), Platform::desktop, 1234567890);
     CHECK(oxenc::to_hex(signature.begin(), signature.end()) ==
-          "adfb25eafec6fb0037fc39145e64badfbdd08cc95a77c01577ecc623fd856fb05b90a921fc6b805e6a730ca9"
-          "505e1c069f256020a76beb2ecbb6e32c47e12104");
+          "143c2c9828f7680ee81e6247bc7aa4777c4991add87cd724149b00452bed4e92"
+          "0fa57daf4627c68f43fcbddb2d465d5ea11def523f3befb2bbee39c769676305");
 }
 
 TEST_CASE("Communities session id blinded id matching", "[blinding][matching]") {
