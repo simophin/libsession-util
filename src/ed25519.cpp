@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 #include "session/export.h"
-#include "session/util.hpp"
+#include "session/sodium_array.hpp"
 
 namespace session::ed25519 {
 

@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 
+#include "../sodium_array.hpp"
 #include "base.h"
 #include "namespaces.hpp"
 
