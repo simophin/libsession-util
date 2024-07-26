@@ -2247,7 +2247,9 @@ void Network::get_client_version(
 
     // Generate the auth signature
     auto blinded_keys = blind_version_key_pair(to_unsigned_sv(seckey.view()));
-    auto timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+    auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(
+                    (std::chrono::system_clock::now()).time_since_epoch())
+                    .count();
     auto signature = blind_version_sign(to_unsigned_sv(seckey.view()), platform, timestamp);
     auto pubkey = x25519_pubkey::from_hex(file_server_pubkey);
     std::string blinded_pk_hex;
