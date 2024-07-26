@@ -39,6 +39,8 @@ MutableConfigMessage& ConfigBase::dirty() {
     if (_state != ConfigState::Dirty) {
         set_state(ConfigState::Dirty);
         _config = std::make_unique<MutableConfigMessage>(*_config, increment_seqno);
+    } else {
+        _needs_dump = true;
     }
 
     if (auto* mut = dynamic_cast<MutableConfigMessage*>(_config.get()))
