@@ -72,7 +72,7 @@ LIBSESSION_EXPORT int groups_keys_init(
         config_object* group_members_conf,
         const unsigned char* dump,
         size_t dumplen,
-        char* error) __attribute__((warn_unused_result));
+        char* error) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_keys_size
 ///
@@ -176,7 +176,7 @@ LIBSESSION_EXPORT bool groups_keys_rekey(
         config_object* info,
         config_object* members,
         const unsigned char** out,
-        size_t* outlen) __attribute__((warn_unused_result));
+        size_t* outlen) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_keys_pending_config
 ///
@@ -194,8 +194,9 @@ LIBSESSION_EXPORT bool groups_keys_rekey(
 /// - `bool` -- true if `out` and `outlen` have been updated to point to a pending config message;
 ///   false if there is no pending config message.
 LIBSESSION_EXPORT bool groups_keys_pending_config(
-        const config_group_keys* conf, const unsigned char** out, size_t* outlen)
-        __attribute__((warn_unused_result));
+        const config_group_keys* conf,
+        const unsigned char** out,
+        size_t* outlen) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_keys_load_message
 ///
@@ -224,7 +225,7 @@ LIBSESSION_EXPORT bool groups_keys_load_message(
         size_t datalen,
         int64_t timestamp_ms,
         config_object* info,
-        config_object* members) __attribute__((warn_unused_result));
+        config_object* members) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_keys_current_hashes
 ///
@@ -254,8 +255,7 @@ LIBSESSION_EXPORT config_string_list* groups_keys_current_hashes(const config_gr
 /// Outputs:
 /// - `bool` -- `true` if `rekey()` needs to be called, `false` otherwise.
 LIBSESSION_EXPORT bool groups_keys_needs_rekey(const config_group_keys* conf)
-        __attribute__((warn_unused_result));
-
+        LIBSESSION_WARN_UNUSED;
 /// API: groups/groups_keys_needs_dump
 ///
 /// Checks whether a groups_keys_dump needs to be called to save state.  This is analagous to
@@ -268,8 +268,7 @@ LIBSESSION_EXPORT bool groups_keys_needs_rekey(const config_group_keys* conf)
 ///
 /// Outputs:
 /// - `bool` -- `true` if a dump is needed, `false` otherwise.
-LIBSESSION_EXPORT bool groups_keys_needs_dump(const config_group_keys* conf)
-        __attribute__((warn_unused_result));
+LIBSESSION_EXPORT bool groups_keys_needs_dump(const config_group_keys* conf) LIBSESSION_WARN_UNUSED;
 
 /// API: groups/groups_keys_dump
 ///
