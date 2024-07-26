@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 import json
 import sys
 import argparse
+import html
 
 # Customizable mapping for output folder hierarchy
 # Add entries here to customize the output path for specific locales
@@ -55,16 +56,13 @@ def parse_xliff(file_path):
     
     return translations
 
-def unescape_ampersand(text):
-    return text.replace('&amp;', '&')
-
 def generate_icu_pattern(target):
     if isinstance(target, dict):  # It's a plural group
         pattern_parts = []
         for form, value in target.items():
             if form in ['zero', 'one', 'two', 'few', 'many', 'other', 'exact', 'fractional']:
                 # Replace {count} with #
-                value = unescape_ampersand(value.replace('{count}', '#'))
+                value = html.unescape(value.replace('{count}', '#'))
                 pattern_parts.append(f"{form} {{{value}}}")
         
         if 'other' not in target:
@@ -72,7 +70,7 @@ def generate_icu_pattern(target):
         
         return "{{count, plural, {0}}}".format(" ".join(pattern_parts))
     else:  # It's a regular string
-        return unescape_ampersand(target)
+        return html.unescape(target)
 
 def convert_xliff_to_json():
     # Determine the output path based on the mapping

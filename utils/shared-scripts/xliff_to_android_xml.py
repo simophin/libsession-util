@@ -3,7 +3,6 @@ import xml.etree.ElementTree as ET
 import sys
 import argparse
 import re
-import html
 
 # Variables that should be treated as numeric (using %d)
 NUMERIC_VARIABLES = ['count', 'total_count']
@@ -65,6 +64,14 @@ def convert_placeholders(text):
 
     return re.sub(r'\{([^}]+)\}', repl, text)
 
+def escape_android_string(text):
+    # We can use standard XML escaped characters for most things (since XLIFF is an XML format) but
+    # want the following cases escaped in a particulat way
+    text = text.replace("'", r"\'")
+    text = text.replace("&quot;", "\"")
+    text = text.replace("\"", "\\\"")
+    return text
+
 def write_android_xml(translations, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
@@ -73,11 +80,11 @@ def write_android_xml(translations, output_file):
             if isinstance(target, dict):  # It's a plural group
                 f.write(f'    <plurals name="{resname}">\n')
                 for form, value in target.items():
-                    escaped_value = html.escape(convert_placeholders(value))
+                    escaped_value = escape_android_string(convert_placeholders(value))
                     f.write(f'        <item quantity="{form}">{escaped_value}</item>\n')
                 f.write('    </plurals>\n')
             else:  # It's a regular string (for these we DON'T want to convert the placeholders)
-                escaped_target = html.escape(target)
+                escaped_target = escape_android_string(target)
                 f.write(f'    <string name="{resname}">{escaped_target}</string>\n')
         f.write('</resources>')
 

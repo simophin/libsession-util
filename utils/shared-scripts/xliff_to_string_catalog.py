@@ -5,6 +5,7 @@ import sys
 import argparse
 import re
 from colorama import Fore, Style, init
+import html
 
 # Variables that should be treated as numeric (using %lld)
 NUMERIC_VARIABLES = ['count', 'total_count']
@@ -78,10 +79,10 @@ def get_source_text(file_path, resname):
                 return source.text
     return ""  # Return empty string if source not found
 
-def unescape_ampersand(text):
-    return text.replace('&amp;', '&')
+def convert_placeholders(resname, source_text, target_text, is_plural):
+    if not is_plural:
+        return html.unescape(target_text)  # Return the target text as-is for non-plural strings
 
-def convert_placeholders(resname, source_text, target_text):
     source_vars = re.findall(r'\{([^}]+)\}', source_text)
     var_indices = {}
     for idx, var in enumerate(source_vars):
@@ -110,7 +111,7 @@ def convert_placeholders(resname, source_text, target_text):
         if indices:
             print(f"Warning: Variable '{var}' appears {len(indices)} more time(s) in source than in target for '{resname}'")
     
-    return unescape_ampersand(result)
+    return html.unescape(result)
 
 def convert_xliff_to_string_catalog():
     string_catalog = {
@@ -145,7 +146,7 @@ def convert_xliff_to_string_catalog():
                             form: {
                                 "stringUnit": {
                                     "state": "translated",
-                                    "value": convert_placeholders(resname, source_text, value)
+                                    "value": convert_placeholders(resname, source_text, value, is_plural=True)
                                 }
                             } for form, value in translation.items()
                         }
@@ -155,7 +156,7 @@ def convert_xliff_to_string_catalog():
                     string_catalog["strings"][resname]["localizations"][target_language] = {
                         "stringUnit": {
                             "state": "translated",
-                            "value": convert_placeholders(resname, source_text, translation)
+                            "value": convert_placeholders(resname, source_text, translation, is_plural=False)
                         }
                     }
 
