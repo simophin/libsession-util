@@ -120,10 +120,10 @@ TEST_CASE("Network error handling", "[network]") {
             "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab78862834829a"
             "87e0afadfed763fa8785e893dbde7f2c001ff1071aa55005c347f"_hexbytes;
     auto x_pk_hex = "d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72";
-    auto target = service_node{ed_pk, "0.0.0.0", uint16_t{0}};
-    auto target2 = service_node{ed_pk2, "0.0.0.1", uint16_t{1}};
-    auto target3 = service_node{ed_pk2, "0.0.0.2", uint16_t{2}};
-    auto target4 = service_node{ed_pk2, "0.0.0.3", uint16_t{3}};
+    auto target = service_node{ed_pk, {2, 8, 0}, "0.0.0.0", uint16_t{0}};
+    auto target2 = service_node{ed_pk2, {2, 8, 0}, "0.0.0.1", uint16_t{1}};
+    auto target3 = service_node{ed_pk2, {2, 8, 0}, "0.0.0.2", uint16_t{2}};
+    auto target4 = service_node{ed_pk2, {2, 8, 0}, "0.0.0.3", uint16_t{3}};
     auto path = onion_path{{{target}, nullptr, nullptr}, {target, target2, target3}, 0};
     auto mock_request = request_info{
             "AAAA",
@@ -222,7 +222,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
-    CHECK(network.get_failure_count(target) == 3);  // Guard node should be set to failure threshold
+    CHECK(network.get_failure_count(target) == 0);  // Guard node will have been dropped
     CHECK(network.get_failure_count(target2) ==
           1);  // Other nodes get their failure count incremented
     CHECK(network.get_failure_count(target3) ==
@@ -286,7 +286,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(result.status_code == 500);
     CHECK(result.response == response);
     CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 10);
+    CHECK(network.get_failure_count(target2) == 0);  // Node will have been dropped
     CHECK(network.get_failure_count(target3) == 0);
     CHECK(network.get_failure_count(PathType::standard, path) ==
           1);  // Incremented because conn_info is invalid
@@ -382,6 +382,14 @@ TEST_CASE("Network error handling", "[network]") {
             {{"ip", "1.1.1.1"},
              {"port_omq", 1},
              {"pubkey_ed25519", ed25519_pubkey::from_bytes(ed_pk).hex()}});
+    snodes.push_back(
+            {{"ip", "2.2.2.2"},
+             {"port_omq", 2},
+             {"pubkey_ed25519", ed25519_pubkey::from_bytes(ed_pk).hex()}});
+    snodes.push_back(
+            {{"ip", "3.3.3.3"},
+             {"port_omq", 3},
+             {"pubkey_ed25519", ed25519_pubkey::from_bytes(ed_pk).hex()}});
     nlohmann::json swarm_json{{"snodes", snodes}};
     response = swarm_json.dump();
     network.set_swarm(x25519_pubkey::from_hex(x_pk_hex), {target});
@@ -412,7 +420,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(PathType::standard, path) == 0);
 
     network.get_swarm(x25519_pubkey::from_hex(x_pk_hex), [ed_pk](std::vector<service_node> swarm) {
-        REQUIRE(swarm.size() == 1);
+        REQUIRE(swarm.size() == 3);
         CHECK(swarm.front().to_string() == "1.1.1.1:1");
         CHECK(oxenc::to_hex(swarm.front().view_remote_key()) == oxenc::to_hex(ed_pk));
     });
@@ -477,6 +485,7 @@ TEST_CASE("Network error handling", "[network]") {
 TEST_CASE("Network onion request", "[send_onion_request][network]") {
     auto test_service_node = service_node{
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
+            {2, 8, 0},
             "144.76.164.202",
             uint16_t{35400}};
     auto network = Network(std::nullopt, true, true, false);

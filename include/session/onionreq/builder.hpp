@@ -7,6 +7,10 @@
 
 #include "key_types.hpp"
 
+namespace session::network {
+struct service_node;
+}
+
 namespace session::onionreq {
 
 struct ServerDestination {
@@ -35,7 +39,7 @@ struct ServerDestination {
             method{std::move(method)} {}
 };
 
-using network_destination = std::variant<oxen::quic::RemoteAddress, ServerDestination>;
+using network_destination = std::variant<session::network::service_node, ServerDestination>;
 
 enum class EncryptType {
     aes_gcm,

@@ -11,7 +11,6 @@ namespace session::network {
 
 namespace fs = std::filesystem;
 
-using service_node = oxen::quic::RemoteAddress;
 using network_response_callback_t = std::function<void(
         bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
 
@@ -26,6 +25,39 @@ enum class PathType {
     standard,
     upload,
     download,
+};
+
+struct service_node : public oxen::quic::RemoteAddress {
+  public:
+    std::vector<int> storage_server_version;
+
+    service_node() = delete;
+
+    template <typename... Opt>
+    service_node(
+            std::string_view remote_pk, std::vector<int> storage_server_version, Opt&&... opts) :
+            oxen::quic::RemoteAddress{remote_pk, std::forward<Opt>(opts)...},
+            storage_server_version{storage_server_version} {}
+
+    template <typename... Opt>
+    service_node(ustring_view remote_pk, std::vector<int> storage_server_version, Opt&&... opts) :
+            oxen::quic::RemoteAddress{remote_pk, std::forward<Opt>(opts)...},
+            storage_server_version{storage_server_version} {}
+
+    service_node(const service_node& obj) :
+            oxen::quic::RemoteAddress{obj}, storage_server_version{obj.storage_server_version} {}
+    service_node& operator=(const service_node& obj) {
+        storage_server_version = obj.storage_server_version;
+        oxen::quic::RemoteAddress::operator=(obj);
+        _copy_internals(obj);
+        return *this;
+    }
+
+    bool operator==(const service_node& other) const {
+        return static_cast<const oxen::quic::RemoteAddress&>(*this) ==
+                       static_cast<const oxen::quic::RemoteAddress&>(other) &&
+               storage_server_version == other.storage_server_version;
+    }
 };
 
 struct connection_info {
@@ -80,6 +112,7 @@ class Network {
     bool shut_down_disk_thread = false;
     bool need_write = false;
     bool need_pool_write = false;
+    bool need_failure_counts_write = false;
     bool need_swarm_write = false;
     bool need_clear_cache = false;
 

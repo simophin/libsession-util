@@ -21,6 +21,7 @@
 #include <oxen/quic/address.hpp>
 
 #include "session/export.h"
+#include "session/network.hpp"
 #include "session/onionreq/builder.h"
 #include "session/onionreq/hop_encryption.hpp"
 #include "session/onionreq/key_types.hpp"
@@ -54,7 +55,7 @@ EncryptType parse_enc_type(std::string_view enc_type) {
 void Builder::set_destination(network_destination destination) {
     ed25519_public_key_.reset();
 
-    if (auto* dest = std::get_if<oxen::quic::RemoteAddress>(&destination))
+    if (auto* dest = std::get_if<session::network::service_node>(&destination))
         ed25519_public_key_.emplace(ed25519_pubkey::from_bytes(dest->view_remote_key()));
     else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
         host_.emplace(dest->host);
@@ -289,8 +290,9 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
     std::array<uint8_t, 4> target_ip;
     std::memcpy(target_ip.data(), ip, target_ip.size());
 
-    unbox(builder).set_destination(oxen::quic::RemoteAddress(
+    unbox(builder).set_destination(session::network::service_node(
             oxenc::from_hex({ed25519_pubkey, 64}),
+            {0},
             "{}"_format(fmt::join(target_ip, ".")),
             quic_port));
 }
