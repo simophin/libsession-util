@@ -181,7 +181,7 @@ class ConfigBase : public ConfigSig {
     // calling set_state, which sets to to true implicitly).
     bool _needs_dump = false;
 
-    ustring last_dumped = to_unsigned("");
+    ustring last_dumped;
 
     // Sets the current state; this also sets _needs_dump to true.  If transitioning to a dirty
     // state and we know our current message hash, that hash gets added to `old_hashes_` to be
@@ -1100,12 +1100,16 @@ class ConfigBase : public ConfigSig {
     /// Outputs:
     /// - `bool` -- Returns true if something has changed since last call to dump
     virtual bool needs_dump() const {
-        if(_needs_dump) {
+        // FIXME: There is an issue where modifying the config, triggering a dump and then modifying
+        // the config again won't result in this function returning true. This is a temporary
+        // workaround until a more permanent solution can be implemented (when removing this the
+        // `last_dumped` should be removed everywhere it's used).
+        if (_needs_dump) {
             return _needs_dump;
         }
         auto current_dump = this->make_dump();
         auto dump_did_change = this->last_dumped != current_dump;
-        return  dump_did_change;
+        return dump_did_change;
     }
 
     /// API: base/ConfigBase::add_key

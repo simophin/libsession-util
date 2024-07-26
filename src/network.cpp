@@ -1156,7 +1156,9 @@ void Network::with_paths_and_pool(
                                 if (unused_nodes.empty())
                                     throw std::runtime_error{"Not enough remaining nodes."};
 
-                                service_node node;
+                                // Default to using the last unused node
+                                auto node = unused_nodes.back();
+                                auto using_last_unused_node = true;
 
                                 // If this is the final node then we only want to consider nodes
                                 // which are at least the 'min_final_node_version'
@@ -1175,6 +1177,7 @@ void Network::with_paths_and_pool(
                                     if (it != unused_nodes.end()) {
                                         node = *it;
                                         unused_nodes.erase(it);
+                                        using_last_unused_node = false;
                                     } else {
                                         // If we couldn't find a suitable node then just fallback to
                                         // the old logic
@@ -1185,13 +1188,13 @@ void Network::with_paths_and_pool(
                                                 "path for {}",
                                                 path_type_name(path_type, single_path_mode),
                                                 request_id);
-                                        node = unused_nodes.back();
-                                        unused_nodes.pop_back();
                                     }
-                                } else {
-                                    node = unused_nodes.back();
-                                    unused_nodes.pop_back();
                                 }
+
+                                // If we are using the last unused node then we need to remove it
+                                // from the vector here
+                                if (using_last_unused_node)
+                                    unused_nodes.pop_back();
 
                                 // Ensure we don't put two nodes with the same IP into the same path
                                 auto snode_with_ip_it = std::find_if(
@@ -2248,8 +2251,8 @@ void Network::get_client_version(
     // Generate the auth signature
     auto blinded_keys = blind_version_key_pair(to_unsigned_sv(seckey.view()));
     auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(
-                    (std::chrono::system_clock::now()).time_since_epoch())
-                    .count();
+                             (std::chrono::system_clock::now()).time_since_epoch())
+                             .count();
     auto signature = blind_version_sign(to_unsigned_sv(seckey.view()), platform, timestamp);
     auto pubkey = x25519_pubkey::from_hex(file_server_pubkey);
     std::string blinded_pk_hex;
@@ -2632,7 +2635,7 @@ void Network::handle_errors(
               path_type = info.path_type,
               target = info.target,
               timeout,
-              old_path = info.path,
+              old_path = path,
               response,
               &cv,
               &mtx,

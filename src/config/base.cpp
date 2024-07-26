@@ -401,8 +401,10 @@ ConfigBase::ConfigBase(
     if (dump) {
         init_from_dump(from_unsigned_sv(*dump));
         this->last_dumped = ustring{*dump};
-    } else
+    } else {
         _config = std::make_unique<ConfigMessage>();
+        this->last_dumped = make_dump();
+    }
 
     init_sig_keys(ed25519_pubkey, ed25519_secretkey);
 }

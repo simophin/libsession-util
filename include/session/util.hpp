@@ -9,9 +9,9 @@
 #include <cstring>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <vector>
-#include <optional>
 
 #include "types.hpp"
 
