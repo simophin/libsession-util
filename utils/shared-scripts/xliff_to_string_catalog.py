@@ -79,39 +79,30 @@ def get_source_text(file_path, resname):
                 return source.text
     return ""  # Return empty string if source not found
 
-def convert_placeholders(resname, source_text, target_text, is_plural):
-    if not is_plural:
-        return html.unescape(target_text)  # Return the target text as-is for non-plural strings
-
-    source_vars = re.findall(r'\{([^}]+)\}', source_text)
-    var_indices = {}
-    for idx, var in enumerate(source_vars):
-        if var not in var_indices:
-            var_indices[var] = []
-        var_indices[var].append(idx + 1)
-
-    def repl(match):
-        var_name = match.group(1)
-        if var_name in var_indices:
-            if len(var_indices[var_name]) > 0:
-                index = var_indices[var_name].pop(0)
-                if var_name in NUMERIC_VARIABLES:
-                    return f"%{index}$lld"
-                else:
-                    return f"%{index}$@"
-            else:
-                print(f"Warning: Variable '{var_name}' appears more times in target than in source for '{resname}'")
-                return match.group(0)  # Keep unchanged if we've run out of indices
-        return match.group(0)  # Keep unchanged if not found in source
-
-    result = re.sub(r'\{([^}]+)\}', repl, target_text)
-
-    # Check if any variables weren't used
-    for var, indices in var_indices.items():
-        if indices:
-            print(f"Warning: Variable '{var}' appears {len(indices)} more time(s) in source than in target for '{resname}'")
+def convert_placeholders_for_plurals(resname, translations):
+    # Find the translation with the most placeholders
+    max_placeholders = max(translations.values(), key=lambda x: len(re.findall(r'\{([^}]+)\}', x)))
     
-    return html.unescape(result)
+    # Get the placeholders in order of appearance from the translation with most placeholders
+    all_placeholders = re.findall(r'\{([^}]+)\}', max_placeholders)
+
+    # Create a mapping for all placeholders
+    placeholder_mapping = {}
+    for idx, placeholder in enumerate(all_placeholders):
+        if placeholder in NUMERIC_VARIABLES:
+            placeholder_mapping[placeholder] = f"%{idx + 1}$lld"
+        else:
+            placeholder_mapping[placeholder] = f"%{idx + 1}$@"
+
+    # Apply the mapping to each plural form
+    converted_translations = {}
+    for form, value in translations.items():
+        converted_value = value
+        for placeholder, replacement in placeholder_mapping.items():
+            converted_value = converted_value.replace(f"{{{placeholder}}}", replacement)
+        converted_translations[form] = html.unescape(converted_value)
+
+    return converted_translations
 
 def convert_xliff_to_string_catalog():
     string_catalog = {
@@ -141,14 +132,15 @@ def convert_xliff_to_string_catalog():
                 source_text = get_source_text(file_path, resname)
 
                 if isinstance(translation, dict):  # It's a plural group
+                    converted_translations = convert_placeholders_for_plurals(resname, translation)
                     variations = {
                         "plural": {
                             form: {
                                 "stringUnit": {
                                     "state": "translated",
-                                    "value": convert_placeholders(resname, source_text, value, is_plural=True)
+                                    "value": value
                                 }
-                            } for form, value in translation.items()
+                            } for form, value in converted_translations.items()
                         }
                     }
                     string_catalog["strings"][resname]["localizations"][target_language] = {"variations": variations}
@@ -156,7 +148,7 @@ def convert_xliff_to_string_catalog():
                     string_catalog["strings"][resname]["localizations"][target_language] = {
                         "stringUnit": {
                             "state": "translated",
-                            "value": convert_placeholders(resname, source_text, translation, is_plural=False)
+                            "value": html.unescape(translation)  # Just unescape, don't convert placeholders
                         }
                     }
 
