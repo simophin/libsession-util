@@ -46,6 +46,8 @@ MutableConfigMessage& ConfigBase::dirty() {
     if (_state != ConfigState::Dirty) {
         set_state(ConfigState::Dirty);
         _config = std::make_unique<MutableConfigMessage>(*_config, increment_seqno);
+    } else {
+        _needs_dump = true;
     }
 
     if (auto* mut = dynamic_cast<MutableConfigMessage*>(_config.get()))
@@ -368,7 +370,6 @@ ustring ConfigBase::dump() {
 
     auto d = make_dump();
     _needs_dump = false;
-    this->last_dumped = d;
     return d;
 }
 
@@ -398,13 +399,10 @@ ConfigBase::ConfigBase(
     if (sodium_init() == -1)
         throw std::runtime_error{"libsodium initialization failed!"};
 
-    if (dump) {
+    if (dump)
         init_from_dump(from_unsigned_sv(*dump));
-        this->last_dumped = ustring{*dump};
-    } else {
+    else
         _config = std::make_unique<ConfigMessage>();
-        this->last_dumped = make_dump();
-    }
 
     init_sig_keys(ed25519_pubkey, ed25519_secretkey);
 }

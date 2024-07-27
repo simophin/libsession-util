@@ -69,9 +69,6 @@ namespace {
     // The number of times a path can fail before it's replaced.
     constexpr uint16_t path_failure_threshold = 3;
 
-    // The number of times a path can timeout before it's replaced.
-    constexpr uint16_t path_timeout_threshold = 10;
-
     // The number of times a snode can fail before it's replaced.
     constexpr uint16_t snode_failure_threshold = 3;
 
@@ -739,8 +736,7 @@ std::pair<connection_info, std::optional<std::string>> Network::get_connection_i
                     // Depending on the state of the snode pool cache it's possible for certain
                     // errors to result in being permanently unable to establish a connection, to
                     // avoid this we handle those error codes and drop
-                    handle_node_error(
-                            target, path_type, {{target, nullptr, nullptr}, {target}, 0, 0});
+                    handle_node_error(target, path_type, {{target, nullptr, nullptr}, {target}, 0});
             });
 
     if (!*done) {
@@ -1165,7 +1161,7 @@ void Network::with_paths_and_pool(
                                 //
                                 // Note: This should be able to be removed after the mandatory
                                 // service node update period for 2.8.0 finishes
-                                if (path.size() == path_size - 2) {
+                                if (path.size() == path_size - 1) {
                                     auto it = std::find_if(
                                             unused_nodes.begin(),
                                             unused_nodes.end(),
@@ -1208,7 +1204,7 @@ void Network::with_paths_and_pool(
                                     path.push_back(node);
                             }
 
-                            paths_result.emplace_back(onion_path{std::move(info), path, 0, 0});
+                            paths_result.emplace_back(onion_path{std::move(info), path, 0});
 
                             // Log that a path was built
                             std::vector<std::string> node_descriptions;
@@ -1413,7 +1409,7 @@ void Network::with_path(
 
                     // No need to call the 'paths_changed' callback as the paths haven't
                     // actually changed, just their connection info
-                    auto updated_path = onion_path{std::move(info), path.nodes, 0, 0};
+                    auto updated_path = onion_path{std::move(info), path.nodes, 0};
                     auto paths_count = net.call_get(
                             [this, path_type, path, updated_path]() mutable -> uint8_t {
                                 switch (path_type) {
@@ -1942,7 +1938,7 @@ void Network::send_request(
                 } catch (const status_code_exception& e) {
                     handle_errors(
                             info,
-                            {{target, nullptr, nullptr}, {target}, 0, 0},
+                            {{target, nullptr, nullptr}, {target}, 0},
                             false,
                             e.status_code,
                             e.what(),
@@ -1950,7 +1946,7 @@ void Network::send_request(
                 } catch (const std::exception& e) {
                     handle_errors(
                             info,
-                            {{target, nullptr, nullptr}, {target}, 0, 0},
+                            {{target, nullptr, nullptr}, {target}, 0},
                             resp.timed_out,
                             -1,
                             e.what(),
@@ -2071,6 +2067,17 @@ void Network::send_onion_request(
                                                 processed_body.value_or("Request returned "
                                                                         "non-success status "
                                                                         "code.")};
+
+                                    // For debugging purposes if the error was a redirect retry then
+                                    // we want to log that the retry was successful as this will
+                                    // help identify how often we are receiving incorrect 421 errors
+                                    if (info.retry_reason == request_info::RetryReason::redirect)
+                                        log::info(
+                                                cat,
+                                                "Received valid response after 421 retry in "
+                                                "request {} for {}.",
+                                                info.request_id,
+                                                path_type_name(info.path_type, single_path_mode));
 
                                     // Try process the body in case it was a batch request which
                                     // failed
@@ -2479,6 +2486,17 @@ void Network::handle_errors(
         }
     }
 
+    // In trace mode log all error info
+    log::trace(
+            cat,
+            "Received network error in request {} for {}, status_code: {}, timeout: {}, response: "
+            "{}.",
+            info.request_id,
+            path_type_name(info.path_type, single_path_mode),
+            status_code,
+            timeout,
+            response.value_or("(No Response)"));
+
     // A timeout could be caused because the destination is unreachable rather than the the path
     // (eg. if a user has an old SOGS which is no longer running on their device they will get a
     // timeout) so if we timed out while sending a proxied request we assume something is wrong on
@@ -2738,16 +2756,11 @@ void Network::handle_errors(
         // If we didn't find the specific node or the paths connection was closed then increment the
         // path failure count
         if (!found_invalid_node || !updated_path.conn_info.is_valid()) {
-            if (timeout)
-                updated_path.timeout_count += 1;
-            else
-                updated_path.failure_count += 1;
+            updated_path.failure_count += 1;
 
-            // If the path has failed or timed out too many times we want to drop the guard
-            // snode (marking it as invalid) and increment the failure count of each node in
-            // the path)
-            if (updated_path.failure_count >= path_failure_threshold ||
-                updated_path.timeout_count >= path_timeout_threshold) {
+            // If the path has failed too many times we want to drop the guard snode (marking it as
+            // invalid) and increment the failure count of each node in the path)
+            if (updated_path.failure_count >= path_failure_threshold) {
                 for (auto& it : updated_path.nodes) {
                     auto failure_count =
                             updated_failure_counts.try_emplace(it.to_string(), 0).first->second;
@@ -2797,8 +2810,7 @@ void Network::handle_errors(
         // Drop the path if invalid
         auto already_handled_failure = false;
 
-        if (updated_path.failure_count >= path_failure_threshold ||
-            updated_path.timeout_count >= path_timeout_threshold) {
+        if (updated_path.failure_count >= path_failure_threshold) {
             auto old_paths_size = paths_for_type(path_type).size();
 
             // Close the connection immediately (just in case there are other requests happening)

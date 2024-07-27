@@ -72,7 +72,6 @@ struct onion_path {
     connection_info conn_info;
     std::vector<service_node> nodes;
     uint8_t failure_count;
-    uint8_t timeout_count;
 
     bool operator==(const onion_path& other) const {
         // The `conn_info` and failure/timeout counts can be reset for a path in a number
