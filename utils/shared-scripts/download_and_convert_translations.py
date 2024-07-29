@@ -121,9 +121,10 @@ def main():
     else:
         for language in target_languages:
             lang_locale = language['locale']
+            lang_two_letter_code = language['twoLettersCode']
             print(f"\033[2K{Fore.WHITE}⏳ Converting translations for {lang_locale} to target format...{Style.RESET_ALL}", end='\r')
             input_file = os.path.join(DOWNLOAD_DIRECTORY, f"{lang_locale}.xliff")
-            os.system(f"python3 {CONVERSION_SCRIPT} {input_file} {OUTPUT_DIRECTORY} {lang_locale}")
+            os.system(f"python3 {CONVERSION_SCRIPT} {input_file} {OUTPUT_DIRECTORY} {lang_locale} {lang_two_letter_code}")
     
     print(f"\033[2K{Fore.GREEN}✅ All conversions complete{Style.RESET_ALL}")
 

@@ -10,6 +10,13 @@ import html
 # Format: 'input_locale': 'output_path'
 LOCALE_PATH_MAPPING = {
     'en-US': 'en',
+    'es-419': 'es_419',
+    'hy-AM': 'hy-AM',
+    'kmr-TR': 'kmr',
+    'pt-BR': 'pt_BR',
+    'pt-PT': 'pt_PT',
+    'zh-CN': 'zh_CN',
+    'zh-TW': 'zh_TW'
     # Add more mappings as needed
 }
 
@@ -18,11 +25,13 @@ parser = argparse.ArgumentParser(description='Convert an XLIFF file to JSON.')
 parser.add_argument('input_file', help='File that should be converted')
 parser.add_argument('output_directory', help='Directory to save the output files')
 parser.add_argument('locale', help='Locale for the input file')
+parser.add_argument('locale_two_letter_code', help='Two letter code for the locale')
 args = parser.parse_args()
 
 INPUT_FILE = args.input_file
 OUTPUT_DIRECTORY = args.output_directory
 LOCALE = args.locale
+LOCALE_TWO_LETTER_CODE = args.locale_two_letter_code
 
 def parse_xliff(file_path):
     tree = ET.parse(file_path)
@@ -74,7 +83,7 @@ def generate_icu_pattern(target):
 
 def convert_xliff_to_json():
     # Determine the output path based on the mapping
-    output_locale = LOCALE_PATH_MAPPING.get(LOCALE, LOCALE)
+    output_locale = LOCALE_PATH_MAPPING.get(LOCALE, LOCALE_PATH_MAPPING.get(LOCALE_TWO_LETTER_CODE, LOCALE_TWO_LETTER_CODE))
     locale_output_dir = os.path.join(OUTPUT_DIRECTORY, output_locale)
     os.makedirs(locale_output_dir, exist_ok=True)
 
