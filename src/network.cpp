@@ -305,7 +305,7 @@ void Network::load_cache_from_disk() {
         // If the cache is for the wrong network then delete everything
         auto testnet_stub = cache_path / file_testnet;
         bool cache_is_for_testnet = fs::exists(testnet_stub);
-        if (use_testnet != cache_is_for_testnet)
+        if (use_testnet != cache_is_for_testnet && fs::exists(cache_path))
             fs::remove_all(cache_path);
 
         // Create the cache directory (and swarm_dir, inside it) if needed
@@ -462,8 +462,8 @@ void Network::load_cache_from_disk() {
         swarm_cache = loaded_cache;
 
         // Remove any expired cache files
-        for (auto& cache_path : caches_to_remove)
-            fs::remove_all(cache_path);
+        for (auto& expired_cache : caches_to_remove)
+            fs::remove_all(expired_cache);
 
         log::info(
                 cat,
@@ -473,7 +473,9 @@ void Network::load_cache_from_disk() {
                 caches_to_remove.size());
     } catch (const std::exception& e) {
         log::error(cat, "Failed to load snode cache, will rebuild ({}).", e.what());
-        fs::remove_all(cache_path);
+
+        if (fs::exists(cache_path))
+            fs::remove_all(cache_path);
     }
 }
 
@@ -583,7 +585,8 @@ void Network::disk_write_thread_loop() {
             swarm_cache = {};
 
             lock.unlock();
-            fs::remove_all(cache_path);
+            if (fs::exists(cache_path))
+                fs::remove_all(cache_path);
             lock.lock();
             need_clear_cache = false;
         }
@@ -2001,6 +2004,7 @@ void Network::send_onion_request(
                     request_info info{
                             request_id,
                             path->nodes[0],
+                            destination,
                             "onion_req",
                             onion_req_payload,
                             body,
@@ -2418,6 +2422,7 @@ void Network::handle_node_error(service_node node, PathType path_type, onion_pat
     handle_errors(
             {"Node Error",
              node,
+             node,
              "",
              std::nullopt,
              std::nullopt,
@@ -2458,7 +2463,7 @@ void Network::handle_errors(
                 path_type_name(info.path_type, single_path_mode));
         return send_onion_request(
                 info.path_type,
-                info.target,
+                info.destination,
                 info.original_body,
                 info.swarm_pubkey,
                 info.timeout,
@@ -2651,8 +2656,6 @@ void Network::handle_errors(
     net.call([this,
               request_id = info.request_id,
               path_type = info.path_type,
-              target = info.target,
-              timeout,
               old_path = path,
               response,
               &cv,
@@ -2962,6 +2965,25 @@ std::vector<network_service_node> convert_service_nodes(
     return converted_nodes;
 }
 
+ServerDestination convert_server_destination(const network_server_destination server) {
+    std::optional<std::vector<std::pair<std::string, std::string>>> headers;
+    if (server.headers_size > 0) {
+        headers = std::vector<std::pair<std::string, std::string>>{};
+
+        for (size_t i = 0; i < server.headers_size; i++)
+            headers->emplace_back(server.headers[i], server.header_values[i]);
+    }
+
+    return ServerDestination{
+            server.protocol,
+            server.host,
+            server.endpoint,
+            x25519_pubkey::from_hex({server.x25519_pubkey, 64}),
+            server.port,
+            headers,
+            server.method};
+}
+
 }  // namespace session::network
 
 // MARK: C API
@@ -3168,27 +3190,12 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
            server.x25519_pubkey && callback);
 
     try {
-        std::optional<std::vector<std::pair<std::string, std::string>>> headers;
-        if (server.headers_size > 0) {
-            headers = std::vector<std::pair<std::string, std::string>>{};
-
-            for (size_t i = 0; i < server.headers_size; i++)
-                headers->emplace_back(server.headers[i], server.header_values[i]);
-        }
-
         std::optional<ustring> body;
         if (body_size > 0)
             body = {body_, body_size};
 
         unbox(network).send_onion_request(
-                ServerDestination{
-                        server.protocol,
-                        server.host,
-                        server.endpoint,
-                        x25519_pubkey::from_hex({server.x25519_pubkey, 64}),
-                        server.port,
-                        headers,
-                        server.method},
+                convert_server_destination(server),
                 body,
                 std::nullopt,
                 std::chrono::milliseconds{timeout_ms},
@@ -3225,28 +3232,13 @@ LIBSESSION_C_API void network_upload_to_server(
            server.x25519_pubkey && callback);
 
     try {
-        std::optional<std::vector<std::pair<std::string, std::string>>> headers;
-        if (server.headers_size > 0) {
-            headers = std::vector<std::pair<std::string, std::string>>{};
-
-            for (size_t i = 0; i < server.headers_size; i++)
-                headers->emplace_back(server.headers[i], server.header_values[i]);
-        }
-
         std::optional<std::string> file_name;
         if (file_name_)
             file_name = file_name_;
 
         unbox(network).upload_file_to_server(
                 {data, data_len},
-                ServerDestination{
-                        server.protocol,
-                        server.host,
-                        server.endpoint,
-                        x25519_pubkey::from_hex({server.x25519_pubkey, 64}),
-                        server.port,
-                        headers,
-                        server.method},
+                convert_server_destination(server),
                 file_name,
                 std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
@@ -3280,14 +3272,7 @@ LIBSESSION_C_API void network_download_from_server(
 
     try {
         unbox(network).download_file(
-                ServerDestination{
-                        server.protocol,
-                        server.host,
-                        server.endpoint,
-                        x25519_pubkey::from_hex({server.x25519_pubkey, 64}),
-                        server.port,
-                        std::nullopt,
-                        server.method},
+                convert_server_destination(server),
                 std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
                         bool success,

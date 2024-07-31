@@ -88,6 +88,7 @@ struct request_info {
 
     std::string request_id;
     service_node target;
+    session::onionreq::network_destination destination;
     std::string endpoint;
     std::optional<ustring> body;
     std::optional<ustring> original_body;
