@@ -1440,6 +1440,11 @@ void Network::with_path(
                                                 updated_path);
                                         return download_paths.size();
                                 }
+                                log::error(
+                                        cat,
+                                        "Internal error: unhandled path type {}",
+                                        static_cast<int>(path_type));
+                                throw std::logic_error{"Internal error: unhandled path type!"};
                             });
 
                     return {updated_path, paths_count};
@@ -1632,11 +1637,8 @@ void Network::find_valid_guard_node_recursive(
                     // If we got a network unreachable error then we want to delay on an exponential
                     // curve so that we don't trash the battery life in the device loses connection
                     if (error) {
-                        std::chrono::duration maxDelay = 3s;
-                        delay = std::chrono::milliseconds(std::min(
-                                std::chrono::duration_cast<std::chrono::milliseconds>(maxDelay)
-                                        .count(),
-                                static_cast<long long>(100 * std::pow(2, test_attempt))));
+                        constexpr std::chrono::milliseconds maxDelay = 3s;
+                        delay = std::min(maxDelay, 100ms * (1 << test_attempt));
                     }
 
                     std::thread retry_thread([this,
