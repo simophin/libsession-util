@@ -275,17 +275,8 @@ Network::Network(
     }
 
     // Kick off a separate thread to build paths (may as well kick this off early)
-    if (pre_build_paths) {
-        std::thread build_paths_thread(
-                &Network::with_paths_and_pool,
-                this,
-                "Constructor",
-                PathType::standard,
-                std::nullopt,
-                [](std::vector<onion_path>, std::vector<service_node>, std::optional<std::string>) {
-                });
-        build_paths_thread.detach();
-    }
+    if (pre_build_paths)
+        build_paths_and_pool_in_background("Constructor", PathType::standard);
 }
 
 Network::~Network() {
@@ -1282,6 +1273,17 @@ void Network::with_paths_and_pool(
     return callback(updated_paths, updated_pool, error);
 }
 
+void Network::build_paths_and_pool_in_background(std::string caller, PathType path_type) {
+    std::thread build_paths_thread(
+            &Network::with_paths_and_pool,
+            this,
+            caller,
+            path_type,
+            std::nullopt,
+            [](std::vector<onion_path>, std::vector<service_node>, std::optional<std::string>) {});
+    build_paths_thread.detach();
+}
+
 std::vector<onion_path> Network::valid_paths(std::vector<onion_path> paths) {
     auto valid_paths = paths;
     auto valid_paths_end =
@@ -1485,16 +1487,7 @@ void Network::with_path(
                 __PRETTY_FUNCTION__,
                 request_id,
                 new_request_id);
-        std::thread build_additional_paths_thread(
-                &Network::with_paths_and_pool,
-                this,
-                new_request_id,
-                path_type,
-                std::nullopt,
-                [](std::optional<std::vector<onion_path>>,
-                   std::vector<service_node>,
-                   std::optional<std::string>) {});
-        build_additional_paths_thread.detach();
+        build_paths_and_pool_in_background(new_request_id, path_type);
     }
 
     // We have a valid path for the standard path type then update the status in case we had

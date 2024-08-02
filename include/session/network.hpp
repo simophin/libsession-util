@@ -399,6 +399,8 @@ class Network {
                          std::vector<service_node> pool,
                          std::optional<std::string> error)> callback);
 
+    void build_paths_and_pool_in_background(std::string caller, PathType path_type);
+
     /// API: network/with_path
     ///
     /// Retrieves a valid onion request path to perform a request on.  If there aren't currently any
