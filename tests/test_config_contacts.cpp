@@ -448,3 +448,37 @@ TEST_CASE("huge contacts compression", "[config][compression][contacts]") {
     // With tons of duplicate info the push should have been nicely compressible:
     CHECK(dump.size() > 1'320'000);
 }
+
+TEST_CASE("needs_dump bug", "[config][needs_dump]") {
+
+    const auto seed = "0123456789abcdef0123456789abcdef00000000000000000000000000000000"_hexbytes;
+
+    session::config::Contacts contacts{ustring_view{seed}, std::nullopt};
+
+    CHECK_FALSE(contacts.needs_dump());
+
+    auto c = contacts.get_or_construct(
+            "050000000000000000000000000000000000000000000000000000000000000000"sv);
+
+    c.approved = true;
+    contacts.set(c);
+
+    CHECK(contacts.needs_dump());
+
+    c.approved_me = true;
+    contacts.set(c);
+
+    CHECK(contacts.needs_dump());
+
+    (void)contacts.dump();
+
+    CHECK_FALSE(contacts.needs_dump());
+
+    c.approved = false;
+    contacts.set(c);
+    CHECK(contacts.needs_dump());
+
+    c.approved_me = false;
+    contacts.set(c);
+    CHECK(contacts.needs_dump());
+}
