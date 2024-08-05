@@ -25,7 +25,7 @@ using namespace std::literals;
 ///     omitted if the setting has not been explicitly set (or has been explicitly cleared for some
 ///     reason).
 
-class UserProfile final : public ConfigBase {
+class UserProfile : public ConfigBase {
 
   public:
     // No default constructor

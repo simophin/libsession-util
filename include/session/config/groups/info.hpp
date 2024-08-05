@@ -26,7 +26,7 @@ using namespace std::literals;
 /// p - group profile url
 /// q - group profile decryption key (binary)
 
-class Info final : public ConfigBase {
+class Info : public ConfigBase {
 
   public:
     /// Limits for the name & description strings, in bytes.  If longer, we truncate to these
