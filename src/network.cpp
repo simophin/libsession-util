@@ -252,7 +252,9 @@ namespace {
     std::chrono::milliseconds retry_delay(
             int num_failures, std::chrono::milliseconds max_delay_ms = 3000ms) {
         return std::chrono::milliseconds(std::min(
-                max_delay_ms.count(), static_cast<long long>(100 * std::pow(2, num_failures))));
+                max_delay_ms.count(),
+                static_cast<typename std::chrono::milliseconds::rep>(
+                        100 * std::pow(2, num_failures))));
     }
 }  // namespace
 

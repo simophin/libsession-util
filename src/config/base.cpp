@@ -383,7 +383,7 @@ ustring ConfigBase::make_dump() const {
     d.append("$", data_sv);
     d.append("(", _curr_hash);
 
-    d.append_list(")").append(_old_hashes.begin(), _old_hashes.end());
+    d.append_list(")").extend(_old_hashes.begin(), _old_hashes.end());
 
     if (auto extra = extra_data(); !extra.empty())
         d.append_bt("+", std::move(extra));
