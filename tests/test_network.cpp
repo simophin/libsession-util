@@ -135,8 +135,8 @@ TEST_CASE("Network error handling", "[network]") {
             std::nullopt,
             PathType::standard,
             0ms,
-            true,
-            std::nullopt};
+            std::nullopt,
+            true};
     Result result;
     auto network = TestNetwork(std::nullopt, true, true, false);
 
@@ -328,8 +328,8 @@ TEST_CASE("Network error handling", "[network]") {
             x25519_pubkey::from_hex(x_pk_hex),
             PathType::standard,
             0ms,
-            true,
-            request_info::RetryReason::redirect};
+            request_info::RetryReason::redirect,
+            true};
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 0);
@@ -437,8 +437,8 @@ TEST_CASE("Network error handling", "[network]") {
             x25519_pubkey::from_hex(x_pk_hex),
             PathType::standard,
             0ms,
-            false,
-            std::nullopt};
+            std::nullopt,
+            false};
     network.handle_errors(
             mock_request3,
             {target, nullptr, nullptr},

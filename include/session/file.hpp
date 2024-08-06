@@ -23,6 +23,6 @@ std::ifstream open_for_reading(const fs::path& filename);
 std::string read_whole_file(const fs::path& filename);
 
 /// Dumps (binary) string contents to disk. The file is overwritten if it already exists.
-void write_whole_file(const fs::path& filename, std::string_view contents);
+void write_whole_file(const fs::path& filename, std::string_view contents = "");
 
 }  // namespace session

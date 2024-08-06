@@ -9,7 +9,8 @@
 
 namespace session::network {
 struct service_node;
-}
+struct request_info;
+}  // namespace session::network
 
 namespace session::onionreq {
 

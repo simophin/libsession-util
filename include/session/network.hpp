@@ -5,6 +5,7 @@
 #include "onionreq/builder.hpp"
 #include "onionreq/key_types.hpp"
 #include "platform.hpp"
+#include "session/random.hpp"
 #include "types.hpp"
 
 namespace session::network {
@@ -82,7 +83,25 @@ struct onion_path {
     }
 };
 
+namespace detail {
+    std::optional<service_node> node_for_destination(onionreq::network_destination destination);
+
+    session::onionreq::x25519_pubkey pubkey_for_destination(
+            onionreq::network_destination destination);
+
+}  //  namespace detail
+
 struct request_info {
+    static request_info make(
+            onionreq::network_destination _dest,
+            std::chrono::milliseconds _timeout,
+            std::optional<ustring> _original_body,
+            std::optional<session::onionreq::x25519_pubkey> _swarm_pk,
+            PathType _type = PathType::standard,
+            std::optional<std::string> endpoint = "onion_req",
+            std::optional<std::string> _req_id = std::nullopt,
+            std::optional<ustring> _body = std::nullopt);
+
     enum class RetryReason {
         decryption_failure,
         redirect,
@@ -96,11 +115,12 @@ struct request_info {
     std::optional<session::onionreq::x25519_pubkey> swarm_pubkey;
     PathType path_type;
     std::chrono::milliseconds timeout;
-    bool node_destination;
 
     /// The reason we are retrying the request (if it's a retry). Generally only used for internal
     /// purposes (like receiving a `421`) in order to prevent subsequent retries.
-    std::optional<RetryReason> retry_reason;
+    std::optional<RetryReason> retry_reason{};
+
+    bool node_destination{detail::node_for_destination(destination).has_value()};
 };
 
 class Network {
@@ -252,19 +272,12 @@ class Network {
     /// - `timeout` -- [in] timeout in milliseconds to use for the request.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void send_onion_request(
-            PathType type,
             onionreq::network_destination destination,
             std::optional<ustring> body,
             std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
             std::chrono::milliseconds timeout,
-            network_response_callback_t handle_response);
-    void send_onion_request(
-            onionreq::network_destination destination,
-            std::optional<ustring> body,
-            std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
-            std::chrono::milliseconds timeout,
-            network_response_callback_t handle_response);
-    void send_onion_request(request_info info, network_response_callback_t handle_response);
+            network_response_callback_t handle_response,
+            PathType type = PathType::standard);
 
     /// API: network/upload_file_to_server
     ///
@@ -329,6 +342,11 @@ class Network {
             network_response_callback_t handle_response);
 
   private:
+    /// API: network/_send_onion_request
+    ///
+    /// Internal function invoked by ::send_onion_request after request_info construction
+    void _send_onion_request(request_info info, network_response_callback_t handle_response);
+
     /// API: network/all_path_ips
     ///
     /// Internal function to retrieve all of the node ips current used in paths
