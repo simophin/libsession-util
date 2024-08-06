@@ -41,7 +41,7 @@ contact_info::contact_info(std::string sid) : session_id{std::move(sid)} {
 
 void contact_info::set_name(std::string n) {
     if (n.size() > MAX_NAME_LENGTH)
-        name = std::move(utf8_truncate(std::move(n), MAX_NAME_LENGTH));
+        name = utf8_truncate(std::move(n), MAX_NAME_LENGTH);
     else
         name = std::move(n);
 }
