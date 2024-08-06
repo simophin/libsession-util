@@ -4,7 +4,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
   add_definitions(-DRELEASE_BUILD)
 endif()
 
-add_executable(testAll
+set(LIB_SESSION_UTESTS_SOURCES
     test_blinding.cpp
     test_bt_merge.cpp
     test_bugs.cpp
@@ -23,14 +23,18 @@ add_executable(testAll
     test_hash.cpp
     test_logging.cpp
     test_multi_encrypt.cpp
-    test_network.cpp
-    test_onionreq.cpp
     test_proto.cpp
     test_random.cpp
     test_session_encrypt.cpp
     test_xed25519.cpp
 )
 
+if (ENABLE_ONIONREQ)
+    list(APPEND LIB_SESSION_UTESTS_SOURCES test_network.cpp)
+    list(APPEND LIB_SESSION_UTESTS_SOURCES test_onionreq.cpp)
+endif()
+
+add_executable(testAll ${LIB_SESSION_UTESTS_SOURCES})
 
 add_library(Catch2Wrapper INTERFACE)
 target_link_libraries(Catch2Wrapper INTERFACE Catch2::Catch2WithMain)

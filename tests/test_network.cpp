@@ -1,6 +1,8 @@
 #include <session/network.h>
+#include <sodium/randombytes.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <session/network.hpp>
 #include <session/onionreq/key_types.hpp>
@@ -32,14 +34,15 @@ class TestNetwork {
             bool pre_build_paths) :
             network(cache_path, use_testnet, single_path_mode, pre_build_paths) {}
 
-    void set_snode_pool(std::vector<service_node> pool) { network.snode_pool = pool; }
+    void set_snode_cache(std::vector<service_node> cache) {
+        // Need to set the `last_snode_cache_update` to `1s` ago because otherwise it'll be
+        // considered invalid when checking the cache validity
+        network.snode_cache = cache;
+        network.last_snode_cache_update = (std::chrono::system_clock::now() - 10s);
+    }
 
     void set_paths(PathType path_type, std::vector<onion_path> paths) {
-        switch (path_type) {
-            case PathType::standard: network.standard_paths = paths; break;
-            case PathType::upload: network.upload_paths = paths; break;
-            case PathType::download: network.download_paths = paths; break;
-        }
+        network.paths[path_type] = paths;
     }
 
     void set_swarm(session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm) {
@@ -61,7 +64,7 @@ class TestNetwork {
     }
 
     uint8_t get_failure_count(PathType path_type, onion_path path) {
-        auto current_paths = network.paths_for_type(path_type);
+        auto current_paths = network.paths[path_type];
         auto target_path = std::find_if(
                 current_paths.begin(), current_paths.end(), [&path](const auto& path_it) {
                     return path_it.nodes[0] == path.nodes[0];
@@ -73,18 +76,16 @@ class TestNetwork {
         return 0;
     }
 
-    std::vector<onion_path> paths_for(PathType path_type) {
-        return network.paths_for_type(path_type);
-    }
+    std::vector<onion_path> paths_for(PathType path_type) { return network.paths[path_type]; }
 
     void handle_errors(
             request_info info,
-            onion_path path,
+            connection_info conn_info,
             bool timeout,
             std::optional<int16_t> status_code,
             std::optional<std::string> response,
             std::optional<network_response_callback_t> handle_response) {
-        network.handle_errors(info, path, timeout, status_code, response, handle_response);
+        network.handle_errors(info, conn_info, timeout, status_code, response, handle_response);
     }
 };
 }  // namespace session::network
@@ -149,7 +150,7 @@ TEST_CASE("Network error handling", "[network]") {
         network.set_failure_count(target3, 0);
         network.handle_errors(
                 mock_request,
-                path,
+                {target, nullptr, nullptr},
                 false,
                 code,
                 std::nullopt,
@@ -178,7 +179,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
-            path,
+            {target, nullptr, nullptr},
             false,
             500,
             std::nullopt,
@@ -206,7 +207,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
-            path,
+            {target, nullptr, nullptr},
             false,
             500,
             std::nullopt,
@@ -239,7 +240,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
-            path,
+            {target, nullptr, nullptr},
             false,
             500,
             response,
@@ -262,14 +263,14 @@ TEST_CASE("Network error handling", "[network]") {
           1);  // Incremented because conn_info is invalid
 
     // Check general error handling with a path and specific node failure (too many failures)
-    network.set_snode_pool({target, target2, target3, target4});
+    network.set_snode_cache({target, target2, target3, target4});
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
     network.set_failure_count(target2, 9);
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
-            path,
+            {target, nullptr, nullptr},
             false,
             500,
             response,
@@ -298,7 +299,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
-            path,
+            {target, nullptr, nullptr},
             false,
             421,
             std::nullopt,
@@ -335,7 +336,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request2,
-            path,
+            {target, nullptr, nullptr},
             false,
             421,
             std::nullopt,
@@ -355,9 +356,10 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(PathType::standard, path) == 1);
 
     // Check the retry request of a 421 with non-swarm response data is handled like any other error
+    network.set_paths(PathType::standard, {path});
     network.handle_errors(
             mock_request2,
-            path,
+            {target, nullptr, nullptr},
             false,
             421,
             "Test",
@@ -399,7 +401,7 @@ TEST_CASE("Network error handling", "[network]") {
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request2,
-            path,
+            {target, nullptr, nullptr},
             false,
             421,
             response,
@@ -439,7 +441,7 @@ TEST_CASE("Network error handling", "[network]") {
             std::nullopt};
     network.handle_errors(
             mock_request3,
-            path,
+            {target, nullptr, nullptr},
             true,
             std::nullopt,
             "Test",
@@ -462,7 +464,7 @@ TEST_CASE("Network error handling", "[network]") {
     // error and doesn't affect the failure count
     network.handle_errors(
             mock_request3,
-            path,
+            {target, nullptr, nullptr},
             false,
             std::nullopt,
             "500 Internal Server Error",
@@ -524,7 +526,7 @@ TEST_CASE("Network onion request", "[send_onion_request][network]") {
 
 TEST_CASE("Network direct request C API", "[network_send_request][network]") {
     network_object* network;
-    network_init(&network, nullptr, true, true, false, nullptr);
+    REQUIRE(network_init(&network, nullptr, true, true, false, nullptr));
     std::array<uint8_t, 4> target_ip = {144, 76, 164, 202};
     auto test_service_node = network_service_node{};
     test_service_node.quic_port = 35400;

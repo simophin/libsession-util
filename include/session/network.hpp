@@ -73,6 +73,8 @@ struct onion_path {
     std::vector<service_node> nodes;
     uint8_t failure_count;
 
+    bool is_valid() const { return !nodes.empty() && conn_info.is_valid(); };
+
     bool operator==(const onion_path& other) const {
         // The `conn_info` and failure/timeout counts can be reset for a path in a number
         // of situations so just use the nodes to determine if the paths match
@@ -87,7 +89,6 @@ struct request_info {
     };
 
     std::string request_id;
-    service_node target;
     session::onionreq::network_destination destination;
     std::string endpoint;
     std::optional<ustring> body;
@@ -96,6 +97,9 @@ struct request_info {
     PathType path_type;
     std::chrono::milliseconds timeout;
     bool node_destination;
+
+    /// The reason we are retrying the request (if it's a retry). Generally only used for internal
+    /// purposes (like receiving a `421`) in order to prevent subsequent retries.
     std::optional<RetryReason> retry_reason;
 };
 
@@ -117,22 +121,38 @@ class Network {
     bool need_clear_cache = false;
 
     // Values persisted to disk
-    std::vector<service_node> snode_pool;
+    std::vector<service_node> snode_cache;
     std::unordered_map<std::string, uint8_t> snode_failure_counts;
-    std::chrono::system_clock::time_point last_snode_pool_update{};
+    std::chrono::system_clock::time_point last_snode_cache_update{};
     std::unordered_map<std::string, std::vector<service_node>> swarm_cache;
 
     std::thread disk_write_thread;
 
+    // General values
     bool suspended = false;
     ConnectionStatus status;
     oxen::quic::Network net;
-    std::vector<onion_path> standard_paths;
-    std::vector<onion_path> upload_paths;
-    std::vector<onion_path> download_paths;
-    std::shared_ptr<oxen::quic::Loop> paths_and_pool_loop;
-
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
+    std::unordered_map<PathType, std::vector<onion_path>> paths;
+
+    // Resume queues throttling
+    bool has_scheduled_resume_queues = false;
+    std::chrono::system_clock::time_point last_resume_queues_timestamp{};
+
+    // Snode refreshing values
+    bool refreshing_snode_cache = false;
+    int snode_cache_refresh_failure_count;
+    std::vector<std::function<void()>> after_snode_cache_refresh;
+
+    // Path building values
+    int general_path_build_failures;
+    std::vector<PathType> path_build_queue;
+    std::vector<service_node> unused_path_build_nodes;
+    std::unordered_map<std::string, std::pair<PathType, int>> in_progress_path_builds;
+
+    // Pending requests
+    std::unordered_map<PathType, std::vector<std::pair<request_info, network_response_callback_t>>>
+            request_queue;
 
   public:
     friend class TestNetwork;
@@ -224,21 +244,27 @@ class Network {
     /// Sends a request via onion routing to the provided service node or server destination.
     ///
     /// Inputs:
+    /// - 'type' - [in] the type of paths to send the request across.
     /// - `destination` -- [in] service node or server destination information.
     /// - `body` -- [in] data to send to the specified destination.
     /// - `swarm_pubkey` -- [in, optional] pubkey for the swarm the request is associated with.
     /// Should be NULL if the request is not associated with a swarm.
     /// - `timeout` -- [in] timeout in milliseconds to use for the request.
-    /// - `is_retry` -- [in] flag indicating whether this request is a retry. Generally only used
-    /// for internal purposes for cases which should retry automatically (like receiving a `421`) in
-    /// order to prevent subsequent retries.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
+    void send_onion_request(
+            PathType type,
+            onionreq::network_destination destination,
+            std::optional<ustring> body,
+            std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
+            std::chrono::milliseconds timeout,
+            network_response_callback_t handle_response);
     void send_onion_request(
             onionreq::network_destination destination,
             std::optional<ustring> body,
             std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
             std::chrono::milliseconds timeout,
             network_response_callback_t handle_response);
+    void send_onion_request(request_info info, network_response_callback_t handle_response);
 
     /// API: network/upload_file_to_server
     ///
@@ -303,46 +329,19 @@ class Network {
             network_response_callback_t handle_response);
 
   private:
-    /// API: network/paths_for_type
+    /// API: network/all_path_ips
     ///
-    /// Internal function to retrieve the onion paths for a given request type
-    ///
-    /// Inputs:
-    /// - 'path_type' - [in] the type of paths to retrieve.
-    std::vector<onion_path> paths_for_type(PathType type) const {
-        if (single_path_mode)
-            return standard_paths;
+    /// Internal function to retrieve all of the node ips current used in paths
+    std::vector<oxen::quic::ipv4> all_path_ips() const {
+        std::vector<oxen::quic::ipv4> result;
 
-        switch (type) {
-            case PathType::standard: return standard_paths;
-            case PathType::upload: return upload_paths;
-            case PathType::download: return download_paths;
-        }
-        return standard_paths;  // Default
-    };
-
-    /// API: network/all_path_nodes
-    ///
-    /// Internal function to retrieve all of the nodes current used in paths
-    std::vector<service_node> all_path_nodes() const {
-        std::vector<service_node> result;
-
-        for (auto& paths : {&standard_paths, &upload_paths, &download_paths})
-            for (auto& path : *paths)
-                for (auto& node : path.nodes)
-                    result.emplace_back(node);
+        for (const auto& [path_type, paths_for_type] : paths)
+            for (const auto& path : paths_for_type)
+                for (const auto& node : path.nodes)
+                    result.emplace_back(node.to_ipv4());
 
         return result;
     };
-
-    /// API: network/update_status
-    ///
-    /// Internal function to update the connection status and trigger the `status_changed` hook if
-    /// provided, this method ignores invalid or unchanged status changes.
-    ///
-    /// Inputs:
-    /// - 'updated_status' - [in] the updated connection status.
-    void update_status(ConnectionStatus updated_status);
 
     /// API: network/disk_write_thread_loop
     ///
@@ -357,125 +356,107 @@ class Network {
     /// data exists.
     void load_cache_from_disk();
 
+    /// API: network/update_status
+    ///
+    /// Internal function to update the connection status and trigger the `status_changed` hook if
+    /// provided, this method ignores invalid or unchanged status changes.
+    ///
+    /// Inputs:
+    /// - 'updated_status' - [in] the updated connection status.
+    void update_status(ConnectionStatus updated_status);
+
     /// API: network/get_endpoint
     ///
     /// Retrieves or creates a new endpoint pointer.
     std::shared_ptr<oxen::quic::Endpoint> get_endpoint();
 
-    /// API: network/get_connection_info
+    /// API: network/establish_connection
     ///
-    /// Creates a connection for the target node and waits for the connection to be established (or
-    /// closed in case it fails to establish) before returning the connection.
+    /// Establishes a connection to the target node and triggers the callback once the connection is
+    /// established (or closed in case it fails).
     ///
     /// Inputs:
     /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - 'path_type' - [in] the type of paths to retrieve.
+    /// - 'path_type' - [in] the type of paths this connection is for.
     /// - `target` -- [in] the target service node to connect to.
-    ///
-    /// Returns:
-    /// - A pair of the connection info for the target service node and an optional error if the
-    /// connnection was unable to be established.
-    std::pair<connection_info, std::optional<std::string>> get_connection_info(
-            std::string request_id, PathType path_type, service_node target);
-
-    /// API: network/with_paths_and_pool
-    ///
-    /// Retrieves the current onion request paths and service node pool from the cache.  If the
-    /// cache is empty it will first be populated from the network.
-    ///
-    /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - `path_type` -- [in] the type of path the request should be sent along.
-    /// - `excluded_node` -- [in, optional] node which should not be included in the path.
-    /// - `callback` -- [in] callback to be triggered once we have built the paths and service node
-    /// pool.  NOTE: If we are unable to build the paths or retrieve the service node pool the
-    /// callback will be triggered with empty lists and an error.
-    void with_paths_and_pool(
+    /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
+    /// `quic::DEFAULT_HANDSHAKE_TIMEOUT` will be used.
+    /// - `callback` -- [in] callback to be called with connection info once the connection is
+    /// established or fails.
+    void establish_connection(
             std::string request_id,
             PathType path_type,
-            std::optional<service_node> excluded_node,
-            std::function<
-                    void(std::vector<onion_path> updated_paths,
-                         std::vector<service_node> pool,
-                         std::optional<std::string> error)> callback);
+            service_node target,
+            std::optional<std::chrono::milliseconds> timeout,
+            std::function<void(connection_info info, std::optional<std::string> error)> callback);
 
-    void build_paths_and_pool_in_background(std::string caller, PathType path_type);
-
-    /// API: network/with_path
+    /// API: network/resume_queues
     ///
-    /// Retrieves a valid onion request path to perform a request on.  If there aren't currently any
-    /// paths then new paths will be constructed by opening and testing connections to random
-    /// service nodes in the snode pool.
+    /// This function is the backbone of the Network class, it will:
+    /// - Build/refresh the snode cache
+    /// - Try to recover connections to paths
+    /// - Build any queued path builds
+    /// - Start any queued requests that are now valid
+    ///
+    /// When most of these processes finish they call this function again to move through the next
+    /// step in the process.  Note: Due to this "looping" behaviour there is a built in throttling
+    /// mechanism to avoid running the logic excessively.
+    void resume_queues();
+
+    /// API: network/refresh_snode_cache
+    ///
+    /// This function refreshes the snode cache.  If the current cache is to small (or not present)
+    /// this will fetch the cache from a random seed node, otherwise it will randomly pick a number
+    /// of nodes and set the cache to the intersection of the results.
+    void refresh_snode_cache();
+
+    /// API: network/build_path
+    ///
+    /// Build a new onion request path for the specified type by opening and testing connections to
+    /// random service nodes in the snode pool.
     ///
     /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - `path_type` -- [in] the type of path the request should be sent along.
-    /// - `excluded_node` -- [in, optional] node which should not be included in the path.
-    /// - `callback` -- [in] callback to be triggered once we have a valid path, NULL if we are
-    /// unable to find a valid path.
-    void with_path(
-            std::string request_id,
-            PathType path_type,
-            std::optional<service_node> excluded_node,
-            std::function<void(std::optional<onion_path> path, std::optional<std::string> error)>
-                    callback);
+    /// - 'existing_request_id' - [in, optional] id for an existing build_path request.  Generally
+    /// this will only be set when retrying a path build.
+    /// - `path_type` -- [in] the type of path to build.
+    void build_path(std::optional<std::string> existing_request_id, PathType path_type);
 
-    /// API: network/valid_paths
+    /// API: network/recover_path
     ///
-    /// Filters the provided paths down to a list of valid paths.
+    /// Attempt to "recover" an existing onion request path.  This will attempt to establish a new
+    /// connection to the guard node of the path, if unable to establish a new connection the path
+    /// will be dropped an a new path build will be enqueued.
     ///
     /// Inputs:
-    /// - `paths` -- [in] paths to validate.
-    ///
-    /// Outputs:
-    /// - A list of valid paths.
-    std::vector<onion_path> valid_paths(std::vector<onion_path> paths);
+    /// - `path_type` -- [in] the type for the provided path.
+    /// - 'path' - [in] the path to try to reconnect to.
+    void recover_path(PathType path_type, onion_path path);
 
-    /// API: network/validate_paths_and_pool_sizes
+    /// API: network/find_valid_path
     ///
-    /// Returns a pair of bools indicating whether the provided paths and pool are valid.
+    /// Find a random path from the provided paths which is valid for the provided request.  Note:
+    /// if the Network is setup in `single_path_mode` then the path returned may include the
+    /// destination for the request.
     ///
     /// Inputs:
-    /// - `path_type` -- [in] the type of path to validate the size for.
-    /// - `paths` -- [in] paths to validate size for.
-    /// - `pool` -- [in] pool to validate size for.
-    /// - `last_pool_update` -- [in] timestamp for when the pool was last updated.
-    ///
-    /// Outputs:
-    /// - A pair of flags indicating whether the provided paths and pool have the correct sizes.
-    std::pair<bool, bool> validate_paths_and_pool_sizes(
-            PathType path_type,
-            std::vector<onion_path> paths,
-            std::vector<service_node> pool,
-            std::chrono::system_clock::time_point last_pool_update);
-
-    /// API: network/validate_response
-    ///
-    /// Processes a quic response to extract the status code and body or throw if it errored or
-    /// received a non-successful status code.
-    ///
-    /// Inputs:
-    /// - `resp` -- [in] the quic response.
-    /// - `is_bencoded` -- [in] flag indicating whether the response will be bencoded or JSON.
-    ///
-    /// Returns:
-    /// - `std::pair<uint16_t, std::string>` -- the status code and response body (for a bencoded
-    /// response this is just the direct response body from quic as it simplifies consuming the
-    /// response elsewhere).
-    std::pair<uint16_t, std::string> validate_response(oxen::quic::message resp, bool is_bencoded);
-
-    /// API: network/find_possible_path
-    ///
-    /// Picks a random path from the provided paths excluding the provided node if one is available.
-    ///
-    /// Inputs:
-    /// - `excluded_node` -- [in, optional] node which should not be included in the paths.
+    /// - `info` -- [in] request to select a path for.
     /// - `paths` -- [in] paths to select from.
     ///
     /// Outputs:
-    /// - The possible path, if found, and the number of paths provided.
-    std::pair<std::optional<onion_path>, uint8_t> find_possible_path(
-            std::optional<service_node> excluded_node, std::vector<onion_path> paths);
+    /// - The possible path, if found.
+    std::optional<onion_path> find_valid_path(request_info info, std::vector<onion_path> paths);
+
+    /// API: network/enqueue_path_build_if_needed
+    ///
+    /// Adds a path build to the path build queue for the specified type if the total current or
+    /// pending paths is below the minimum threshold for the given type.  Note: This may result in
+    /// more paths than the minimum threshold being built but not allowing that behaviour could
+    /// result in a request that never gets sent due to it's destination being present in the
+    /// existing path(s) for the type.
+    ///
+    /// Inputs:
+    /// - `path_type` -- [in] the type of path to be built.
+    void enqueue_path_build_if_needed(PathType path_type, bool existing_paths_unsuitable);
 
     /// API: network/get_service_nodes_recursive
     ///
@@ -497,30 +478,6 @@ class Network {
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                     callback);
 
-    /// API: network/find_valid_guard_node_recursive
-    ///
-    /// A recursive function that sends a request to provided nodes until a successful response is
-    /// received or the list is drained.
-    ///
-    /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - `path_type` -- [in] the type of path to validate the size for.
-    /// - `test_attempt` -- [in] the number of test which have occurred before this one.
-    /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
-    /// drained.
-    /// - `callback` -- [in] callback to be triggered once we make a successful request.  NOTE: If
-    /// we drain the `target_nodes` and haven't gotten a successful response then the callback will
-    /// be invoked with a std::nullopt `valid_guard_node` and `unused_nodes`.
-    void find_valid_guard_node_recursive(
-            std::string request_id,
-            PathType path_type,
-            int64_t test_attempt,
-            std::vector<service_node> target_nodes,
-            std::function<
-                    void(std::optional<connection_info> valid_guard_node,
-                         std::vector<service_node> unused_nodes,
-                         std::optional<std::string>)> callback);
-
     /// API: network/get_service_nodes
     ///
     /// Retrieves all or a random subset of service nodes from the given node.
@@ -538,7 +495,7 @@ class Network {
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                     callback);
 
-    /// API: network/get_version
+    /// API: network/get_snode_version
     ///
     /// Retrieves the version information for a given service node.
     ///
@@ -550,7 +507,7 @@ class Network {
     /// `quic::DEFAULT_TIMEOUT` will be used.
     /// - `callback` -- [in] callback to be triggered with the result of the request.  NOTE: If an
     /// error occurs an empty list and an error will be provided.
-    void get_version(
+    void get_snode_version(
             std::string request_id,
             PathType path_type,
             service_node node,
@@ -559,33 +516,6 @@ class Network {
                     void(std::vector<int> version,
                          connection_info info,
                          std::optional<std::string> error)> callback);
-
-    /// API: network/send_onion_request
-    ///
-    /// Sends a request via onion routing to the provided service node or server destination.
-    ///
-    /// Inputs:
-    /// - 'type' - [in] the type of paths to send the request across.
-    /// - `destination` -- [in] service node or server destination information.
-    /// - `body` -- [in] data to send to the specified destination.
-    /// - `swarm_pubkey` -- [in, optional] pubkey for the swarm the request is associated with.
-    /// Should be NULL if the request is not associated with a swarm.
-    /// - `timeout` -- [in] timeout in milliseconds to use for the request.
-    /// - `existing_request_id` -- [in] the request id for the existing request when this request is
-    /// a retry. Mostly to simplify debugging.
-    /// - `retry_reason` -- [in] the reason we are retrying the request (if it's a retry). Generally
-    /// only used for internal purposes (like
-    // receiving a `421`) in order to prevent subsequent retries.
-    /// - `handle_response` -- [in] callback to be called with the result of the request.
-    void send_onion_request(
-            PathType type,
-            onionreq::network_destination destination,
-            std::optional<ustring> body,
-            std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
-            std::chrono::milliseconds timeout,
-            std::optional<std::string> existing_request_id,
-            std::optional<request_info::RetryReason> retry_reason,
-            network_response_callback_t handle_response);
 
     /// API: network/process_v3_onion_response
     ///
@@ -613,6 +543,21 @@ class Network {
     std::pair<int16_t, std::optional<std::string>> process_v4_onion_response(
             session::onionreq::Builder builder, std::string response);
 
+    /// API: network/validate_response
+    ///
+    /// Processes a quic response to extract the status code and body or throw if it errored or
+    /// received a non-successful status code.
+    ///
+    /// Inputs:
+    /// - `resp` -- [in] the quic response.
+    /// - `is_bencoded` -- [in] flag indicating whether the response will be bencoded or JSON.
+    ///
+    /// Returns:
+    /// - `std::pair<uint16_t, std::string>` -- the status code and response body (for a bencoded
+    /// response this is just the direct response body from quic as it simplifies consuming the
+    /// response elsewhere).
+    std::pair<uint16_t, std::string> validate_response(oxen::quic::message resp, bool is_bencoded);
+
     /// API: network/handle_errors
     ///
     /// Processes a non-success response to automatically perform any standard operations based on
@@ -621,7 +566,7 @@ class Network {
     ///
     /// Inputs:
     /// - `info` -- [in] the information for the request that was made.
-    /// - `path` -- [in] the onion path the request was sent along.
+    /// - `conn_info` -- [in] the connection info for the request that failed.
     /// - `timeout` -- [in, optional] flag indicating whether the request timed out.
     /// - `status_code` -- [in, optional] the status code returned from the network.
     /// - `response` -- [in, optional] response data returned from the network.
@@ -629,7 +574,7 @@ class Network {
     /// information after processing the error.
     void handle_errors(
             request_info info,
-            onion_path path,
+            connection_info conn_info,
             bool timeout,
             std::optional<int16_t> status_code,
             std::optional<std::string> response,
@@ -645,8 +590,14 @@ class Network {
     /// Inputs:
     /// - `node` -- [in] the node to increment the failure count for.
     /// - `path_type` -- [in] type of path the node (or provided path) belong to.
-    /// - `path` -- [in] path to increment the failure count for.
-    void handle_node_error(service_node node, PathType path_type, onion_path path);
+    /// - `conn_info` -- [in] the connection info for the request that failed.
+    /// - `request_id` -- [in] the request id for the original request which resulted in a node
+    /// error.
+    void handle_node_error(
+            service_node node,
+            PathType path_type,
+            connection_info conn_info,
+            std::string request_id);
 };
 
 }  // namespace session::network
