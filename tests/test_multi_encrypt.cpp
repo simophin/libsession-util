@@ -36,7 +36,7 @@ TEST_CASE("Multi-recipient encryption", "[encrypt][multi]") {
             "0123456789abcdef333333333333333300000000000000000000000000000000"_hexbytes};
 
     std::array<x_pair, seeds.size()> x_keys;
-    for (int i = 0; i < seeds.size(); i++)
+    for (size_t i = 0; i < seeds.size(); i++)
         x_keys[i] = to_x_keys(seeds[i]);
 
     CHECK(oxenc::to_hex(to_usv(x_keys[0].second)) ==
@@ -200,7 +200,7 @@ TEST_CASE("Multi-recipient encryption, simpler interface", "[encrypt][multi][sim
             "0123456789abcdef333333333333333300000000000000000000000000000000"_hexbytes};
 
     std::array<x_pair, seeds.size()> x_keys;
-    for (int i = 0; i < seeds.size(); i++)
+    for (size_t i = 0; i < seeds.size(); i++)
         x_keys[i] = to_x_keys(seeds[i]);
 
     CHECK(oxenc::to_hex(to_usv(x_keys[0].second)) ==

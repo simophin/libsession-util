@@ -248,14 +248,6 @@ namespace {
                     "Unable to find entry in dict for key '" + std::string(key) + "'"};
         return dict.next_integer<IntType>().second;
     }
-
-    std::chrono::milliseconds retry_delay(
-            int num_failures, std::chrono::milliseconds max_delay_ms = 3000ms) {
-        return std::chrono::milliseconds(std::min(
-                max_delay_ms.count(),
-                static_cast<typename std::chrono::milliseconds::rep>(
-                        100 * std::pow(2, num_failures))));
-    }
 }  // namespace
 
 namespace detail {
@@ -698,6 +690,13 @@ void Network::update_status(ConnectionStatus updated_status) {
     status_changed(updated_status);
 }
 
+std::chrono::milliseconds Network::retry_delay(
+        int num_failures, std::chrono::milliseconds max_delay) {
+    return std::chrono::milliseconds(std::min(
+            max_delay.count(),
+            static_cast<typename std::chrono::milliseconds::rep>(100 * std::pow(2, num_failures))));
+}
+
 std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
     return net.call_get([this]() mutable {
         if (!endpoint)
@@ -832,19 +831,17 @@ void Network::resume_queues() {
     }
     last_resume_queues_timestamp = std::chrono::system_clock::now();
 
-    // Determine the number of existing paths
-    std::vector<std::string> existing_path_type_names;
-    for (const auto& [path_type, paths_for_type] : paths)
-        existing_path_type_names.insert(
-                existing_path_type_names.end(),
-                paths_for_type.size(),
-                path_type_name(path_type, single_path_mode));
-
     // Only generate the stats if we are actually going to log them
     if (log::get_level(cat) == log::Level::trace) {
         auto request_count = 0;
+        std::vector<std::string> existing_path_type_names;
         std::vector<std::string> pending_path_type_names;
         std::vector<std::string> in_progress_path_type_names;
+        for (const auto& [path_type, paths_for_type] : paths)
+            existing_path_type_names.insert(
+                    existing_path_type_names.end(),
+                    paths_for_type.size(),
+                    path_type_name(path_type, single_path_mode));
         std::transform(
                 path_build_queue.begin(),
                 path_build_queue.end(),
@@ -957,27 +954,28 @@ void Network::resume_queues() {
 
     // Now that we've scheduled any required path builds we should try to resume any pending
     // requests in case they now have a valid paths
-    if (existing_path_type_names.size() > 0) {
+    if (!paths.empty()) {
         std::unordered_set<PathType> already_enqueued_paths;
 
         for (auto& [path_type, requests] : request_queue)
-            std::erase_if(requests, [this, &already_enqueued_paths](const auto& request) {
-                // If there are no valid paths to send the request then enqueue a new path build (if
-                // needed) leave the request in the queue
-                if (!find_valid_path(request.first, paths[request.first.path_type])) {
-                    if (!already_enqueued_paths.contains(request.first.path_type)) {
-                        already_enqueued_paths.insert(request.first.path_type);
-                        enqueue_path_build_if_needed(request.first.path_type, true);
+            if (!paths[path_type].empty())
+                std::erase_if(requests, [this, &already_enqueued_paths](const auto& request) {
+                    // If there are no valid paths to send the request then enqueue a new path build
+                    // (if needed) leave the request in the queue
+                    if (!find_valid_path(request.first, paths[request.first.path_type])) {
+                        if (!already_enqueued_paths.contains(request.first.path_type)) {
+                            already_enqueued_paths.insert(request.first.path_type);
+                            enqueue_path_build_if_needed(request.first.path_type, true);
+                        }
+                        net.call_soon([this]() { resume_queues(); });
+                        return false;
                     }
-                    net.call_soon([this]() { resume_queues(); });
-                    return false;
-                }
 
-                net.call_soon([this, info = request.first, cb = std::move(request.second)]() {
-                    _send_onion_request(std::move(info), std::move(cb));
+                    net.call_soon([this, info = request.first, cb = std::move(request.second)]() {
+                        _send_onion_request(std::move(info), std::move(cb));
+                    });
+                    return true;
                 });
-                return true;
-            });
     }
 }
 
@@ -1251,13 +1249,17 @@ void Network::build_path(std::optional<std::string> existing_request_id, PathTyp
             target_node,
             3s,
             [this, path_name, path_type, target_node, request_id](
-                    std::vector<int>, connection_info info, std::optional<std::string> error) {
+                    std::vector<int> version,
+                    connection_info info,
+                    std::optional<std::string> error) {
                 log::trace(cat, "Got snode version response for {}.", request_id);
 
                 try {
-                    if (error)
+                    if (version.empty())
                         throw std::runtime_error{"Testing {} for {} failed with error: {}"_format(
-                                target_node.to_string(), request_id, *error)};
+                                target_node.to_string(),
+                                request_id,
+                                error.value_or("Unknown Error"))};
 
                     // Build the new paths
                     log::info(
@@ -1870,7 +1872,7 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
 
                 // Currently there are no valid paths so enqueue a new build (if needed) and add the
                 // request to the queue to be run one the path build completes
-                request_queue[info.path_type].emplace_back(info, std::move(cb));
+                request_queue[info.path_type].emplace_back(std::move(info), std::move(cb));
                 enqueue_path_build_if_needed(info.path_type, true);
                 net.call_soon([this]() { resume_queues(); });
                 return {std::nullopt, std::nullopt};

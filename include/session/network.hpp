@@ -189,7 +189,7 @@ class Network {
             bool use_testnet,
             bool single_path_mode,
             bool pre_build_paths);
-    ~Network();
+    virtual ~Network();
 
     /// API: network/suspend
     ///
@@ -383,6 +383,18 @@ class Network {
     /// - 'updated_status' - [in] the updated connection status.
     void update_status(ConnectionStatus updated_status);
 
+    /// API: network/retry_delay
+    ///
+    /// A function which generates an exponential delay to wait before retrying a request/action
+    /// based on the provided failure count.
+    ///
+    /// Inputs:
+    /// - 'num_failures' - [in] the number of times the request has already failed.
+    /// - 'max_delay' - [in] the maximum amount of time to delay for.
+    virtual std::chrono::milliseconds retry_delay(
+            int num_failures,
+            std::chrono::milliseconds max_delay = std::chrono::milliseconds{3000});
+
     /// API: network/get_endpoint
     ///
     /// Retrieves or creates a new endpoint pointer.
@@ -419,14 +431,14 @@ class Network {
     /// When most of these processes finish they call this function again to move through the next
     /// step in the process.  Note: Due to this "looping" behaviour there is a built in throttling
     /// mechanism to avoid running the logic excessively.
-    void resume_queues();
+    virtual void resume_queues();
 
     /// API: network/refresh_snode_cache
     ///
     /// This function refreshes the snode cache.  If the current cache is to small (or not present)
     /// this will fetch the cache from a random seed node, otherwise it will randomly pick a number
     /// of nodes and set the cache to the intersection of the results.
-    void refresh_snode_cache();
+    virtual void refresh_snode_cache();
 
     /// API: network/build_path
     ///
@@ -437,7 +449,7 @@ class Network {
     /// - 'existing_request_id' - [in, optional] id for an existing build_path request.  Generally
     /// this will only be set when retrying a path build.
     /// - `path_type` -- [in] the type of path to build.
-    void build_path(std::optional<std::string> existing_request_id, PathType path_type);
+    virtual void build_path(std::optional<std::string> existing_request_id, PathType path_type);
 
     /// API: network/recover_path
     ///
@@ -448,7 +460,7 @@ class Network {
     /// Inputs:
     /// - `path_type` -- [in] the type for the provided path.
     /// - 'path' - [in] the path to try to reconnect to.
-    void recover_path(PathType path_type, onion_path path);
+    virtual void recover_path(PathType path_type, onion_path path);
 
     /// API: network/find_valid_path
     ///
@@ -474,7 +486,7 @@ class Network {
     ///
     /// Inputs:
     /// - `path_type` -- [in] the type of path to be built.
-    void enqueue_path_build_if_needed(PathType path_type, bool existing_paths_unsuitable);
+    virtual void enqueue_path_build_if_needed(PathType path_type, bool existing_paths_unsuitable);
 
     /// API: network/get_service_nodes_recursive
     ///
@@ -525,7 +537,7 @@ class Network {
     /// `quic::DEFAULT_TIMEOUT` will be used.
     /// - `callback` -- [in] callback to be triggered with the result of the request.  NOTE: If an
     /// error occurs an empty list and an error will be provided.
-    void get_snode_version(
+    virtual void get_snode_version(
             std::string request_id,
             PathType path_type,
             service_node node,
@@ -590,7 +602,7 @@ class Network {
     /// - `response` -- [in, optional] response data returned from the network.
     /// - `handle_response` -- [in, optional] callback to be called with updated response
     /// information after processing the error.
-    void handle_errors(
+    virtual void handle_errors(
             request_info info,
             connection_info conn_info,
             bool timeout,
