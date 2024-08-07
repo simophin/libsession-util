@@ -751,56 +751,55 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     CHECK(network->called("paths_changed"));
 }
 
-// TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
-//     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
-//     auto target = service_node{ed_pk, {2, 8, 0}, "0.0.0.1", uint16_t{1}};
-//     auto test_service_node = service_node{
-//             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
-//             {2, 8, 0},
-//             "144.76.164.202",
-//             uint16_t{35400}};
-//     std::optional<TestNetwork> network;
-//     network.emplace(std::nullopt, true, false, false);
-//     auto info = request_info::make(target, 0ms, std::nullopt, std::nullopt);
-//     auto invalid_path =
-//             onion_path{{test_service_node, nullptr, nullptr}, {test_service_node}, uint8_t{0}};
+TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
+    auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
+    auto target = service_node{ed_pk, {2, 8, 0}, "0.0.0.1", uint16_t{1}};
+    auto test_service_node = service_node{
+            "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
+            {2, 8, 0},
+            "144.76.164.202",
+            uint16_t{35400}};
+    auto network = TestNetwork(std::nullopt, true, false, false);
+    auto info = request_info::make(target, 0ms, std::nullopt, std::nullopt);
+    auto invalid_path =
+            onion_path{{test_service_node, nullptr, nullptr}, {test_service_node}, uint8_t{0}};
 
-//     // It returns nothing when given no path options
-//     CHECK_FALSE(network->find_valid_path(info, {}).has_value());
+    // It returns nothing when given no path options
+    CHECK_FALSE(network.find_valid_path(info, {}).has_value());
 
-//     // It ignores invalid paths
-//     CHECK_FALSE(network->find_valid_path(info, {invalid_path}).has_value());
+    // It ignores invalid paths
+    CHECK_FALSE(network.find_valid_path(info, {invalid_path}).has_value());
 
-//     // Need to get a valid path for subsequent tests
-//     std::promise<std::pair<connection_info, std::optional<std::string>>> prom;
+    // Need to get a valid path for subsequent tests
+    std::promise<std::pair<connection_info, std::optional<std::string>>> prom;
 
-//     network->establish_connection(
-//             "Test",
-//             PathType::standard,
-//             test_service_node,
-//             3s,
-//             [&prom](connection_info info, std::optional<std::string> error) {
-//                 prom.set_value({info, error});
-//             });
+    network.establish_connection(
+            "Test",
+            PathType::standard,
+            test_service_node,
+            3s,
+            [&prom](connection_info conn_info, std::optional<std::string> error) {
+                prom.set_value({std::move(conn_info), error});
+            });
 
-//     // Wait for the result to be set
-//     auto result = prom.get_future().get();
-//     REQUIRE(result.first.is_valid());
-//     auto valid_path = onion_path{
-//             std::move(result.first), std::vector<service_node>{test_service_node}, uint8_t{0}};
+    // Wait for the result to be set
+    auto result = prom.get_future().get();
+    REQUIRE(result.first.is_valid());
+    auto valid_path = onion_path{
+            std::move(result.first), std::vector<service_node>{test_service_node}, uint8_t{0}};
 
-//     // It excludes paths which include the IP of the target
-//     auto shared_ip_info = request_info::make(test_service_node, 0ms, std::nullopt, std::nullopt);
-//     CHECK_FALSE(network->find_valid_path(shared_ip_info, {valid_path}).has_value());
+    // It excludes paths which include the IP of the target
+    auto shared_ip_info = request_info::make(test_service_node, 0ms, std::nullopt, std::nullopt);
+    CHECK_FALSE(network.find_valid_path(shared_ip_info, {valid_path}).has_value());
 
-//     // It returns a path when there is a valid one
-//     CHECK(network->find_valid_path(info, {valid_path}).has_value());
+    // It returns a path when there is a valid one
+    CHECK(network.find_valid_path(info, {valid_path}).has_value());
 
-//     // In 'single_path_mode' it does allow the path to include the IP of the target (so that
-//     // requests can still be made)
-//     network.emplace(std::nullopt, true, true, false);
-//     CHECK(network->find_valid_path(shared_ip_info, {valid_path}).has_value());
-// }
+    // In 'single_path_mode' it does allow the path to include the IP of the target (so that
+    // requests can still be made)
+    auto network_single_path = TestNetwork(std::nullopt, true, true, false);
+    CHECK(network_single_path.find_valid_path(shared_ip_info, {valid_path}).has_value());
+}
 
 TEST_CASE("Network Enqueue Path Build", "[network][enqueue_path_build_if_needed]") {
     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
