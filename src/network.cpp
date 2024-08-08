@@ -531,8 +531,8 @@ void Network::disk_write_thread_loop() {
 
                     // Save the snode pool to disk
                     if (need_pool_write) {
-                        auto pool_path = cache_path / file_snode_pool,
-                             pool_tmp = pool_path / u8"_new";
+                        auto pool_path = cache_path / file_snode_pool, pool_tmp = pool_path;
+                        pool_tmp += u8"_new";
 
                         {
                             std::stringstream ss;
@@ -556,8 +556,8 @@ void Network::disk_write_thread_loop() {
 
                     // Save the snode failure counts to disk
                     if (need_failure_counts_write) {
-                        auto failure_counts_path = cache_path / file_snode_failure_counts;
-                        auto failure_counts_tmp = failure_counts_path;
+                        auto failure_counts_path = cache_path / file_snode_failure_counts,
+                             failure_counts_tmp = failure_counts_path;
                         failure_counts_tmp += u8"_new";
 
                         {
@@ -579,8 +579,7 @@ void Network::disk_write_thread_loop() {
                         auto time_now = std::chrono::system_clock::now();
 
                         for (auto& [key, swarm] : swarm_cache_write) {
-                            auto swarm_path = swarm_base / key;
-                            auto swarm_tmp = swarm_path;
+                            auto swarm_path = swarm_base / key, swarm_tmp = swarm_path;
                             swarm_tmp += u8"_new";
 
                             // Write the timestamp
@@ -921,6 +920,9 @@ void Network::resume_queues() {
     // If there are left over invalid paths in `paths` and we have more than the minimum number of
     // required paths (including the builds/recoveries started above) then we can just drop the
     // extra invalid paths
+    std::vector<onion_path> valid_paths;
+    std::vector<onion_path> invalid_paths;
+
     for (auto& [path_type, existing_paths] : paths) {
         size_t pending_count = num_pending_paths[path_type];
         size_t total_count = (existing_paths.size() + pending_count);
@@ -930,10 +932,8 @@ void Network::resume_queues() {
         if (total_count <= target_count)
             continue;
 
-        std::vector<onion_path> valid_paths;
-        std::vector<onion_path> invalid_paths;
-        valid_paths.reserve(existing_paths.size());
-        invalid_paths.reserve(existing_paths.size());
+        valid_paths.clear();
+        invalid_paths.clear();
 
         for (auto& path : existing_paths) {
             if (path.is_valid())
@@ -955,27 +955,32 @@ void Network::resume_queues() {
     // Now that we've scheduled any required path builds we should try to resume any pending
     // requests in case they now have a valid paths
     if (!paths.empty()) {
+        bool need_resume = false;
         std::unordered_set<PathType> already_enqueued_paths;
 
         for (auto& [path_type, requests] : request_queue)
             if (!paths[path_type].empty())
-                std::erase_if(requests, [this, &already_enqueued_paths](const auto& request) {
-                    // If there are no valid paths to send the request then enqueue a new path build
-                    // (if needed) leave the request in the queue
-                    if (!find_valid_path(request.first, paths[request.first.path_type])) {
-                        if (!already_enqueued_paths.contains(request.first.path_type)) {
-                            already_enqueued_paths.insert(request.first.path_type);
-                            enqueue_path_build_if_needed(request.first.path_type, true);
-                        }
-                        net.call_soon([this]() { resume_queues(); });
-                        return false;
-                    }
+                std::erase_if(
+                        requests,
+                        [this, &need_resume, &already_enqueued_paths](const auto& request) {
+                            // If there are no valid paths to send the request then enqueue a new
+                            // path build (if needed) leave the request in the queue
+                            if (!find_valid_path(request.first, paths[request.first.path_type])) {
+                                if (already_enqueued_paths.emplace(request.first.path_type).second)
+                                    enqueue_path_build_if_needed(request.first.path_type, true);
+                                need_resume = true;
+                                return false;
+                            }
 
-                    net.call_soon([this, info = request.first, cb = std::move(request.second)]() {
-                        _send_onion_request(std::move(info), std::move(cb));
-                    });
-                    return true;
-                });
+                            net.call_soon(
+                                    [this, info = request.first, cb = std::move(request.second)]() {
+                                        _send_onion_request(std::move(info), std::move(cb));
+                                    });
+                            return true;
+                        });
+
+        if (need_resume)
+            net.call_soon([this]() { resume_queues(); });
     }
 }
 
@@ -1347,9 +1352,11 @@ void Network::build_path(std::optional<std::string> existing_request_id, PathTyp
                     log::info(cat, "{}", e.what());
 
                     // Delay the next path build attempt based on the error we received
-                    auto failure_count = in_progress_path_builds[request_id].second;
-                    in_progress_path_builds[request_id] = {path_type, failure_count + 1};
-                    auto delay = retry_delay(failure_count + 1);
+                    auto& [_, failure_count] =
+                            in_progress_path_builds.try_emplace(request_id, path_type, 0)
+                                    .first->second;
+                    failure_count += 1;
+                    auto delay = retry_delay(failure_count);
                     net.call_later(delay, [this, request_id, path_type]() {
                         build_path(request_id, path_type);
                     });
@@ -2517,53 +2524,57 @@ void Network::handle_errors(
             if (snode_it != updated_path.nodes.end()) {
                 found_invalid_node = true;
 
-                auto failure_count = updated_failure_counts[snode_it->to_string()];
-                updated_failure_counts[snode_it->to_string()] = failure_count + 1;
+                // If we get an explicit node failure then we should just immediately drop it and
+                // try to repair the existing path by replacing the bad node with another one
+                updated_failure_counts.erase(snode_it->to_string());
+                nodes_to_drop.emplace_back(*snode_it);
 
-                // If the specific node has failed too many times then we should try to repair
-                // the existing path by replace the bad node with another one
-                if (failure_count + 1 >= snode_failure_threshold) {
-                    nodes_to_drop.emplace_back(*snode_it);
+                try {
+                    // If the node that's gone bad is the guard node then we just have to
+                    // drop the path
+                    if (snode_it == updated_path.nodes.begin())
+                        throw std::runtime_error{"Cannot recover if guard node is bad"};
 
-                    try {
-                        // If the node that's gone bad is the guard node then we just have to
-                        // drop the path
-                        if (snode_it == updated_path.nodes.begin())
-                            throw std::runtime_error{"Cannot recover if guard node is bad"};
+                    // Try to find an unused node to patch the path
+                    std::vector<service_node> unused_snodes;
+                    std::vector<quic::ipv4> existing_path_node_ips = all_path_ips();
 
-                        // Try to find an unused node to patch the path
-                        std::vector<service_node> unused_snodes;
-                        std::vector<quic::ipv4> existing_path_node_ips = all_path_ips();
+                    std::copy_if(
+                            snode_cache.begin(),
+                            snode_cache.end(),
+                            std::back_inserter(unused_snodes),
+                            [&existing_path_node_ips](const auto& node) {
+                                return std::find(
+                                               existing_path_node_ips.begin(),
+                                               existing_path_node_ips.end(),
+                                               node.to_ipv4()) == existing_path_node_ips.end();
+                            });
 
-                        std::copy_if(
-                                snode_cache.begin(),
-                                snode_cache.end(),
-                                std::back_inserter(unused_snodes),
-                                [&existing_path_node_ips](const auto& node) {
-                                    return std::find(
-                                                   existing_path_node_ips.begin(),
-                                                   existing_path_node_ips.end(),
-                                                   node.to_ipv4()) == existing_path_node_ips.end();
-                                });
+                    if (unused_snodes.empty())
+                        throw std::runtime_error{"No remaining nodes"};
 
-                        if (unused_snodes.empty())
-                            throw std::runtime_error{"No remaining nodes"};
+                    CSRNG rng;
+                    std::shuffle(unused_snodes.begin(), unused_snodes.end(), rng);
 
-                        CSRNG rng;
-                        std::shuffle(unused_snodes.begin(), unused_snodes.end(), rng);
-
-                        std::replace(
-                                updated_path.nodes.begin(),
-                                updated_path.nodes.end(),
-                                *snode_it,
-                                unused_snodes.front());
-                        log::info(cat, "Found bad node in {} path, replacing node.", path_name);
-                    } catch (...) {
-                        // There aren't enough unused nodes remaining so we need to drop the
-                        // path
-                        updated_path.failure_count = path_failure_threshold;
-                        log::info(cat, "Unable to replace bad node in {} path.", path_name);
-                    }
+                    std::replace(
+                            updated_path.nodes.begin(),
+                            updated_path.nodes.end(),
+                            *snode_it,
+                            unused_snodes.front());
+                    log::info(
+                            cat,
+                            "Found bad node ({}) in {} path, replacing node.",
+                            *ed25519PublicKey,
+                            path_name);
+                } catch (...) {
+                    // There aren't enough unused nodes remaining so we need to drop the
+                    // path
+                    updated_path.failure_count = path_failure_threshold;
+                    log::info(
+                            cat,
+                            "Unable to replace bad node ({}) in {} path.",
+                            *ed25519PublicKey,
+                            path_name);
                 }
             }
         }
@@ -2578,10 +2589,11 @@ void Network::handle_errors(
         // invalid) and increment the failure count of each node in the path)
         if (updated_path.failure_count >= path_failure_threshold) {
             for (auto& it : updated_path.nodes) {
-                auto failure_count = updated_failure_counts[it.to_string()];
-                updated_failure_counts[it.to_string()] = failure_count + 1;
+                auto& failure_count =
+                        updated_failure_counts.try_emplace(it.to_string(), 0).first->second;
+                failure_count += 1;
 
-                if (failure_count + 1 >= snode_failure_threshold)
+                if (failure_count >= snode_failure_threshold)
                     nodes_to_drop.emplace_back(it);
             }
 
@@ -2592,15 +2604,17 @@ void Network::handle_errors(
             // If the path doesn't have enough nodes then it's likely that this failure was
             // triggered when trying to establish a new path and, as such, we should increase
             // the failure count of the guard node since it is probably invalid
-            auto failure_count = updated_failure_counts[updated_path.nodes[0].to_string()];
-            updated_failure_counts[updated_path.nodes[0].to_string()] = failure_count + 1;
+            auto& failure_count =
+                    updated_failure_counts.try_emplace(updated_path.nodes[0].to_string(), 0)
+                            .first->second;
+            failure_count += 1;
 
-            if (failure_count + 1 >= snode_failure_threshold)
+            if (failure_count >= snode_failure_threshold)
                 nodes_to_drop.emplace_back(updated_path.nodes[0]);
         }
     }
 
-    // Remove any nodes from 'nodes_to_drop' which don't actually need to be dropped
+    // Make sure to remove any nodes we want to drop from the swarm cache as well
     auto updated_swarm_cache = swarm_cache;
     bool requires_swarm_cache_update = false;
 

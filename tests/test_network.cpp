@@ -353,42 +353,13 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(target3) == 1);                   // Other nodes incremented
     CHECK(network.get_failure_count(PathType::standard, path) == 0);  // Path dropped and reset
 
-    // Check general error handling with a path and specific node failure (first failure)
+    // Check general error handling with a path and specific node failure
     path = onion_path{{{target}, nullptr, nullptr}, {target, target2, target3}, 0};
     auto response = std::string{"Next node not found: "} + ed25519_pubkey::from_bytes(ed_pk2).hex();
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
-            mock_request,
-            {target, nullptr, nullptr},
-            false,
-            500,
-            response,
-            [&result](
-                    bool success,
-                    bool timeout,
-                    int16_t status_code,
-                    std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
-            });
-
-    CHECK_FALSE(result.success);
-    CHECK_FALSE(result.timeout);
-    CHECK(result.status_code == 500);
-    CHECK(result.response == response);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 1);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) ==
-          1);  // Incremented because conn_info is invalid
-
-    // Check general error handling with a path and specific node failure (too many failures)
     network.set_snode_cache({target, target2, target3, target4});
     network.set_paths(PathType::standard, {path});
     network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 9);
+    network.set_failure_count(target2, 1);
     network.set_failure_count(target3, 0);
     network.handle_errors(
             mock_request,
@@ -411,6 +382,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network.get_failure_count(target) == 0);
     CHECK(network.get_failure_count(target2) == 0);  // Node will have been dropped
     CHECK(network.get_failure_count(target3) == 0);
+    CHECK(network.get_paths(PathType::standard).front().nodes[1] != target2);
     CHECK(network.get_failure_count(PathType::standard, path) ==
           1);  // Incremented because conn_info is invalid
 
