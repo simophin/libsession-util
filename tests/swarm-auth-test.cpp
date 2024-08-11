@@ -46,15 +46,6 @@ static std::string session_id_from_ed(ustring_view ed_pk) {
     return sid;
 }
 
-// Hacky little class that implements `[n]` on a std::list.  This is inefficient (since it access
-// has to iterate n times through the list) but we only use it on small lists in this test code so
-// convenience wins over efficiency.  (Why not just use a vector?  Because vectors requires `T` to
-// be moveable, so we'd either have to use std::unique_ptr for members, which is also annoying).
-template <typename T>
-struct hacky_list : std::list<T> {
-    T& operator[](size_t n) { return *std::next(std::begin(*this), n); }
-};
-
 struct pseudo_client {
     std::array<unsigned char, 64> secret_key;
     const ustring_view public_key{secret_key.data() + 32, 32};

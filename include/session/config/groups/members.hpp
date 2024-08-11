@@ -325,7 +325,7 @@ struct member {
     void load(const dict& info_dict);
 };
 
-class Members final : public ConfigBase {
+class Members : public ConfigBase {
 
   public:
     // No default constructor
