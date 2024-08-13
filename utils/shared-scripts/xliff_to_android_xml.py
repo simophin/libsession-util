@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser(description='Convert an XLIFF file to Android X
 parser.add_argument('input_file', help='File that should be converted')
 parser.add_argument('output_directory', help='Directory to save the output files')
 parser.add_argument('locale', help='Locale for the input file')
+parser.add_argument('locale_two_letter_code', help='Two letter code for the locale')
 parser.add_argument('--default_locale', help='Default locale (will use "values" folder)', default='en-US')
 args = parser.parse_args()
 
@@ -70,6 +71,10 @@ def escape_android_string(text):
     text = text.replace("'", r"\'")
     text = text.replace("&quot;", "\"")
     text = text.replace("\"", "\\\"")
+    text = text.replace("&lt;b&gt;", "<b>")
+    text = text.replace("&lt;/b&gt;", "</b>")
+    text = text.replace("&lt;/br&gt;", "\n")
+    text = text.replace("<br/>", "\n")
     return text
 
 def write_android_xml(translations, output_file):
