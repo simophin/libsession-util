@@ -88,10 +88,11 @@ def convert_xliff_to_json():
     os.makedirs(locale_output_dir, exist_ok=True)
 
     translations = parse_xliff(INPUT_FILE)
+    sorted_translations = sorted(translations.items())
     output_file = os.path.join(locale_output_dir, 'messages.json')
     converted_translations = {}
 
-    for resname, target in translations.items():
+    for resname, target in sorted_translations:
         converted_translations[resname] = generate_icu_pattern(target)
 
     with open(output_file, 'w', encoding='utf-8') as f:

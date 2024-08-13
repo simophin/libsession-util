@@ -78,10 +78,12 @@ def escape_android_string(text):
     return text
 
 def write_android_xml(translations, output_file):
+    sorted_translations = sorted(translations.items())
+
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n')
         f.write('<resources>\n')
-        for resname, target in translations.items():
+        for resname, target in sorted_translations:
             if isinstance(target, dict):  # It's a plural group
                 f.write(f'    <plurals name="{resname}">\n')
                 for form, value in target.items():

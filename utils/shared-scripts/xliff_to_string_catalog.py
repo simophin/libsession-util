@@ -67,18 +67,6 @@ def parse_xliff(file_path):
 
     return translations, target_language
 
-def get_source_text(file_path, resname):
-    tree = ET.parse(file_path)
-    root = tree.getroot()
-    namespace = {'ns': 'urn:oasis:names:tc:xliff:document:1.2'}
-    
-    for trans_unit in root.findall('.//ns:trans-unit', namespaces=namespace):
-        if (trans_unit.get('resname') or trans_unit.get('id')) == resname:
-            source = trans_unit.find('ns:source', namespaces=namespace)
-            if source is not None and source.text:
-                return source.text
-    return ""  # Return empty string if source not found
-
 def convert_placeholders_for_plurals(resname, translations):
     # Find the translation with the most placeholders
     max_placeholders = max(translations.values(), key=lambda x: len(re.findall(r'\{([^}]+)\}', x)))
@@ -121,15 +109,14 @@ def convert_xliff_to_string_catalog():
                 continue
 
             print(f"\033[2K{Fore.WHITE}⏳ Converting translations for {target_language} to target format...{Style.RESET_ALL}", end='\r')
+            sorted_translations = sorted(translations.items())
 
-            for resname, translation in translations.items():
+            for resname, translation in sorted_translations:
                 if resname not in string_catalog["strings"]:
                     string_catalog["strings"][resname] = {
                         "extractionState": "manual",
                         "localizations": {}
                     }
-
-                source_text = get_source_text(file_path, resname)
 
                 if isinstance(translation, dict):  # It's a plural group
                     converted_translations = convert_placeholders_for_plurals(resname, translation)
