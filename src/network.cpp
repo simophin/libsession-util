@@ -53,9 +53,6 @@ namespace {
     constexpr int16_t error_network_suspended = -10001;
     constexpr int16_t error_building_onion_request = -10002;
 
-    // The minimum time which should pass between `resume_queues` executions
-    constexpr auto resume_queues_throttle_duration = 100ms;
-
     // The amount of time the snode cache can be used before it needs to be refreshed
     constexpr auto snode_cache_expiration_duration = 2h;
 
@@ -66,10 +63,7 @@ namespace {
     constexpr size_t min_snode_cache_count = 12;
 
     // The number of snodes to use to refresh the cache.
-    constexpr size_t num_snodes_to_refresh_cache_from = 3;
-
-    // The number of times to retry refreshing the cache from each snode.
-    constexpr size_t snode_cache_refresh_retries = 3;
+    constexpr int num_snodes_to_refresh_cache_from = 3;
 
     // The smallest size a swarm can get to before we need to fetch it again.
     constexpr uint16_t min_swarm_snode_count = 3;
@@ -267,6 +261,94 @@ namespace detail {
 
         throw std::runtime_error{"Invalid destination."};
     }
+
+    nlohmann::json get_service_nodes_params(std::optional<int> limit) {
+        nlohmann::json params{
+                {"active_only", true},
+                {"fields",
+                 {{"public_ip", true},
+                  {"pubkey_ed25519", true},
+                  {"storage_lmq_port", true},
+                  {"storage_server_version", true}}}};
+
+        if (limit)
+            params["limit"] = *limit;
+
+        return params;
+    }
+
+    std::vector<service_node> process_get_service_nodes_response(
+            oxenc::bt_list_consumer result_bencode) {
+        std::vector<service_node> result;
+        result_bencode.skip_value();  // Skip the status code (already validated)
+        auto response_dict = result_bencode.consume_dict_consumer();
+        response_dict.skip_until("result");
+
+        auto result_dict = response_dict.consume_dict_consumer();
+        result_dict.skip_until("service_node_states");
+
+        // Process the node list
+        auto node = result_dict.consume_list_consumer();
+
+        while (!node.is_finished()) {
+            auto node_consumer = node.consume_dict_consumer();
+            auto pubkey_ed25519 = oxenc::from_hex(consume_string(node_consumer, "pubkey_ed25519"));
+            auto public_ip = consume_string(node_consumer, "public_ip");
+            auto storage_lmq_port = consume_integer<uint16_t>(node_consumer, "storage_lmq_port");
+
+            std::vector<int> storage_server_version;
+            node_consumer.skip_until("storage_server_version");
+            auto version_consumer = node_consumer.consume_list_consumer();
+
+            while (!version_consumer.is_finished()) {
+                storage_server_version.emplace_back(version_consumer.consume_integer<int>());
+            }
+
+            result.emplace_back(
+                    pubkey_ed25519, storage_server_version, public_ip, storage_lmq_port);
+        }
+
+        return result;
+    }
+
+    std::vector<service_node> process_get_service_nodes_response(nlohmann::json response_json) {
+        if (!response_json.contains("result") || !response_json["result"].is_object())
+            throw std::runtime_error{"JSON missing result field."};
+
+        nlohmann::json result_json = response_json["result"];
+        if (!result_json.contains("service_node_states") ||
+            !result_json["service_node_states"].is_array())
+            throw std::runtime_error{"JSON missing service_node_states field."};
+
+        std::vector<service_node> result;
+        for (auto& snode : result_json["service_node_states"])
+            result.emplace_back(node_from_json(snode));
+
+        return result;
+    }
+
+    void log_retry_result_if_needed(request_info info, bool single_path_mode) {
+        if (!info.retry_reason)
+            return;
+
+        // For debugging purposes if the error was a redirect retry then
+        // we want to log that the retry was successful as this will
+        // help identify how often we are receiving incorrect errors
+        auto reason = "unknown retry";
+
+        switch (*info.retry_reason) {
+            case request_info::RetryReason::redirect: reason = "421 retry"; break;
+
+            case request_info::RetryReason::decryption_failure: reason = "decryption error"; break;
+        }
+
+        log::info(
+                cat,
+                "Received valid response after {} in request {} for {}.",
+                reason,
+                info.request_id,
+                path_type_name(info.path_type, single_path_mode));
+    }
 }  // namespace detail
 
 request_info request_info::make(
@@ -307,20 +389,23 @@ Network::Network(
     }
 
     // Kick off a separate thread to build paths (may as well kick this off early)
-    if (pre_build_paths) {
+    if (pre_build_paths)
         for (int i = 0; i < min_path_count(PathType::standard, single_path_mode); ++i)
-            path_build_queue.emplace_back(PathType::standard);
-
-        net.call_soon([this] { resume_queues(); });
-    }
+            net.call_soon([this] { build_path(PathType::standard); });
 }
 
 Network::~Network() {
+    // We need to set a flag to prevent the logic in the `connection_closed_callback` from running
+    // because if we can get bad memory errors due to trying to use `net.call` while the
+    // `quic::Network` is in the process of being destroyed
+    suspended = true;
+    being_destroyed = true;
+
     {
         std::lock_guard lock{snode_cache_mutex};
         shut_down_disk_thread = true;
     }
-    snode_cache_cv.notify_one();
+    update_disk_cache_throttled(true);
     if (disk_write_thread.joinable())
         disk_write_thread.join();
 }
@@ -509,6 +594,25 @@ void Network::load_cache_from_disk() {
     }
 }
 
+void Network::update_disk_cache_throttled(bool force_immediate_write) {
+    // If we are forcing an immediate write then just notify the disk write thread and reset the
+    // pending write flag
+    if (force_immediate_write) {
+        snode_cache_cv.notify_one();
+        has_pending_disk_write = false;
+        return;
+    }
+
+    if (has_pending_disk_write)
+        return;
+
+    has_pending_disk_write = true;
+    net.call_later(1s, [this]() {
+        snode_cache_cv.notify_one();
+        has_pending_disk_write = false;
+    });
+}
+
 void Network::disk_write_thread_loop() {
     std::unique_lock lock{snode_cache_mutex};
     while (true) {
@@ -631,7 +735,7 @@ void Network::clear_cache() {
             std::lock_guard lock{snode_cache_mutex};
             need_clear_cache = true;
         }
-        snode_cache_cv.notify_one();
+        update_disk_cache_throttled(true);
     });
 }
 
@@ -657,6 +761,12 @@ void Network::close_connections() {
         // Explicitly reset the endpoint to close all connections
         endpoint.reset();
 
+        // Cancel any pending requests (they can't succeed once the connection is closed)
+        for (const auto& [path_type, path_type_requests] : request_queue)
+            for (const auto& [info, callback] : path_type_requests)
+                callback(false, false, error_network_suspended, "Network is suspended.");
+        request_queue.clear();
+
         // Explicitly reset the connection and stream (just in case)
         for (auto& [type, paths_for_type] : paths) {
             for (auto& path : paths_for_type) {
@@ -664,6 +774,14 @@ void Network::close_connections() {
                 path.conn_info.stream.reset();
             }
         }
+        paths.clear();
+
+        // Reset any spare first hops
+        for (auto& conn_info : unused_connections) {
+            conn_info.conn.reset();
+            conn_info.stream.reset();
+        }
+        unused_connections.clear();
 
         update_status(ConnectionStatus::disconnected);
         log::info(cat, "Closed all connections.");
@@ -705,9 +823,55 @@ std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
     });
 }
 
+// MARK: Request Queues and Path Building
+
+std::vector<service_node> Network::get_unused_nodes() {
+    if (snode_cache.size() < min_snode_cache_count)
+        return {};
+
+    // Exclude any IPs that are already in use from existing paths
+    std::vector<quic::ipv4> node_ips_to_exlude = all_path_ips();
+
+    // Exclude unused connections
+    for (const auto& conn_info : unused_connections)
+        node_ips_to_exlude.emplace_back(conn_info.node.to_ipv4());
+
+    // Exclude in progress connections
+    for (const auto& conn_info : unused_connections)
+        node_ips_to_exlude.emplace_back(conn_info.node.to_ipv4());
+
+    // Exclude pending requests
+    for (const auto& [path_type, path_type_requests] : request_queue)
+        for (const auto& [info, callback] : path_type_requests)
+            if (auto* dest = std::get_if<service_node>(&info.destination))
+                node_ips_to_exlude.emplace_back(dest->to_ipv4());
+
+    // Populate the unused nodes with any nodes in the cache which shouldn't be excluded
+    std::vector<service_node> result;
+
+    if (node_ips_to_exlude.empty())
+        result = snode_cache;
+    else
+        std::copy_if(
+                snode_cache.begin(),
+                snode_cache.end(),
+                std::back_inserter(result),
+                [&node_ips_to_exlude](const auto& node) {
+                    return std::find(
+                                   node_ips_to_exlude.begin(),
+                                   node_ips_to_exlude.end(),
+                                   node.to_ipv4()) == node_ips_to_exlude.end();
+                });
+
+    // Shuffle the `result` so anything that uses it would get random nodes
+    CSRNG rng;
+    std::shuffle(result.begin(), result.end(), rng);
+
+    return result;
+}
+
 void Network::establish_connection(
         std::string request_id,
-        PathType path_type,
         service_node target,
         std::optional<std::chrono::milliseconds> timeout,
         std::function<void(connection_info info, std::optional<std::string> error)> callback) {
@@ -751,8 +915,14 @@ void Network::establish_connection(
                     });
                 });
             },
-            [this, path_type, target, request_id, cb, cb_called, conn_future](
+            [this, target, request_id, cb, cb_called, conn_future](
                     quic::connection_interface& conn, uint64_t error_code) mutable {
+                // If the instance is in the process of being destroyed then we don't want to
+                // interact with `net` as it's also likely in the process of being destroyed and
+                // trigging any of the below logic can result in bad memory access
+                if (being_destroyed)
+                    return;
+
                 log::trace(cat, "Connection closed for {}.", request_id);
 
                 // Just in case, call it within a `net.call`
@@ -766,669 +936,559 @@ void Network::establish_connection(
                         }
                     });
 
-                    // When the connection is closed we update the path and reset it's connection
-                    // info so we can recover the path later if desired
-                    auto conn_info = conn_future.get();
-                    auto current_paths = paths[path_type];
-                    auto target_path = std::find_if(
-                            current_paths.begin(),
-                            current_paths.end(),
-                            [&target](const auto& path) {
-                                return !path.nodes.empty() && target == path.nodes.front();
-                            });
+                    // Remove the connection from `unused_connection` if present
+                    std::erase_if(unused_connections, [&conn, &target](auto& unused_conn) {
+                        if (unused_conn.node != target &&
+                            (!unused_conn.conn ||
+                             unused_conn.conn->reference_id() != conn.reference_id()))
+                            return false;
 
-                    if (target_path != current_paths.end() && target_path->conn_info.conn &&
-                        conn.reference_id() == target_path->conn_info.conn->reference_id()) {
-                        target_path->conn_info.conn.reset();
-                        target_path->conn_info.stream.reset();
+                        // Just in case reset the connection and pointers
+                        if (unused_conn.conn)
+                            unused_conn.conn->close_connection();
 
-                        handle_node_error(target, path_type, target_path->conn_info, request_id);
-                    } else if (error_code == static_cast<uint64_t>(NGTCP2_ERR_HANDSHAKE_TIMEOUT))
-                        // Depending on the state of the snode pool cache it's possible for certain
-                        // errors to result in being permanently unable to establish a connection,
-                        // to avoid this we handle those error codes and drop
-                        handle_node_error(
-                                target, path_type, {target, nullptr, nullptr}, request_id);
+                        unused_conn.conn.reset();
+                        unused_conn.stream.reset();
+                        return true;
+                    });
+
+                    // If this connection is being used in an existing path then we should drop it
+                    // (as the path is no longer valid)
+                    for (const auto& [path_type, paths_for_type] : paths) {
+                        for (const auto& path : paths_for_type) {
+                            if (!path.nodes.empty() && path.nodes.front() == target &&
+                                path.conn_info.conn &&
+                                conn.reference_id() == path.conn_info.conn->reference_id()) {
+                                drop_path(request_id, path_type, path);
+                                break;
+                            }
+                        }
+                    }
+
+                    // If the connection failed with a handshake timeout then the node is
+                    // unreachable, either due to a device network issue or because the node is down
+                    // - since we frequently refresh the snode cache it's better to assume the
+                    // latter to avoid using a potentially bad node being used in the path so we
+                    // want to drop the snode from the cache and any swarms
+                    if (error_code == static_cast<uint64_t>(NGTCP2_ERR_HANDSHAKE_TIMEOUT)) {
+                        {
+                            std::lock_guard lock{snode_cache_mutex};
+
+                            // Update the snode failure counts
+                            if (snode_failure_counts.erase(target.to_string()) > 0)
+                                need_failure_counts_write = true;
+
+                            // Remove the node from any swarms
+                            for (auto& [key, nodes] : swarm_cache) {
+                                auto it = std::remove(nodes.begin(), nodes.end(), target);
+                                if (it != nodes.end()) {
+                                    nodes.erase(it, nodes.end());
+                                    need_swarm_write = true;
+                                }
+                            }
+
+                            // Remove the node from the cache
+                            auto it = std::remove(snode_cache.begin(), snode_cache.end(), target);
+                            if (it != snode_cache.end()) {
+                                snode_cache.erase(it, snode_cache.end());
+                                need_pool_write = true;
+                            }
+
+                            if (need_failure_counts_write || need_swarm_write || need_pool_write)
+                                need_write = true;
+                        }
+                        update_disk_cache_throttled();
+                    }
                 });
             });
 
     conn_promise.set_value(c);
 }
 
-// MARK: Request Queues and Path Building
-
-void Network::resume_queues() {
-    if (suspended) {
-        log::info(cat, "Ignoring resume queues as network is suspended.");
-
-        // If we have any requests in the queue then we should trigger their callbacks
-        for (auto& [path_type, requests] : request_queue)
-            for (auto& [info, callback] : requests)
-                callback(false, false, error_network_suspended, "Network is suspended.");
-
-        // Clear the map after processing all callbacks
-        request_queue.clear();
+void Network::establish_and_store_connection(std::string request_id) {
+    // If we are suspended then done try to establish a new connection
+    if (suspended)
         return;
-    }
-
-    // Throttle this function as it can get called very frequently and running the logic excessively
-    // could cause battery drain
-    auto time_since_last_run = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now() - last_resume_queues_timestamp);
-    if (time_since_last_run < resume_queues_throttle_duration) {
-        if (!has_scheduled_resume_queues) {
-            has_scheduled_resume_queues = true;
-
-            auto delay = (resume_queues_throttle_duration - time_since_last_run);
-            net.call_later(delay, [this]() {
-                has_scheduled_resume_queues = false;
-                resume_queues();
-            });
-        }
-
-        return;
-    }
-    last_resume_queues_timestamp = std::chrono::system_clock::now();
-
-    // Only generate the stats if we are actually going to log them
-    if (log::get_level(cat) == log::Level::trace) {
-        auto request_count = 0;
-        std::vector<std::string> existing_path_type_names;
-        std::vector<std::string> pending_path_type_names;
-        std::vector<std::string> in_progress_path_type_names;
-        for (const auto& [path_type, paths_for_type] : paths)
-            existing_path_type_names.insert(
-                    existing_path_type_names.end(),
-                    paths_for_type.size(),
-                    path_type_name(path_type, single_path_mode));
-        std::transform(
-                path_build_queue.begin(),
-                path_build_queue.end(),
-                std::back_inserter(pending_path_type_names),
-                [this](const PathType& type) { return path_type_name(type, single_path_mode); });
-        std::transform(
-                in_progress_path_builds.begin(),
-                in_progress_path_builds.end(),
-                std::back_inserter(in_progress_path_type_names),
-                [this](const auto& pending_build) {
-                    return path_type_name(pending_build.second.first, single_path_mode);
-                });
-        auto format_names = [](std::vector<std::string> names) {
-            return (names.empty() ? "0" : "{} ({})"_format(names.size(), fmt::join(names, ", ")));
-        };
-        for (const auto& [type, requests] : request_queue)
-            request_count += requests.size();
-
-        log::trace(
-                cat,
-                "Resuming queues snodes: {}, paths: {}, path_builds: "
-                "{}, in_progress_path_builds: {}, requests: {}.",
-                snode_cache.size(),
-                format_names(existing_path_type_names),
-                format_names(pending_path_type_names),
-                format_names(in_progress_path_type_names),
-                request_count);
-    }
 
     // If we haven't set a connection status yet then do so now
     if (status == ConnectionStatus::unknown)
         update_status(ConnectionStatus::connecting);
 
-    // If the snode cache is too small then we need to update it before we try to build any paths
-    if (snode_cache.size() < min_snode_cache_count) {
-        net.call_soon([this]() { refresh_snode_cache(); });
+    // Re-populate the unused nodes if it ends up being empty
+    if (!unused_connection_and_path_build_nodes || unused_connection_and_path_build_nodes->empty())
+        unused_connection_and_path_build_nodes = get_unused_nodes();
+
+    // If there aren't enough unused nodes then trigger a cache refresh
+    if (unused_connection_and_path_build_nodes->size() < min_snode_cache_count) {
+        log::trace(
+                cat,
+                "Unable to establish new connection due to lack of unused nodes, refreshing snode "
+                "cache ({}).",
+                request_id);
+        net.call_soon([this, request_id]() { refresh_snode_cache(request_id); });
         return;
     }
 
-    // Otherwise check if it's been too long since the last update and, if so, trigger a refresh
+    // Otherwise check if it's been too long since the last cache update and, if so, trigger a
+    // refresh
     auto cache_lifetime = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now() - last_snode_cache_update);
 
     if (cache_lifetime < 0s || cache_lifetime > snode_cache_expiration_duration)
         net.call_soon([this]() { refresh_snode_cache(); });
 
-    // Schedule any path builds (or recoveries)
-    std::unordered_map<PathType, size_t> num_pending_paths;
+    // If there are no in progress connections then reset the failure count
+    if (in_progress_connections.empty())
+        connection_failures = 0;
 
-    for (const auto& path_type : path_build_queue) {
-        num_pending_paths[path_type]++;
+    // Grab a node from the `unused_nodes` list to establish a connection to
+    auto target_node = unused_connection_and_path_build_nodes->back();
+    unused_connection_and_path_build_nodes->pop_back();
 
-        // If we have an existing path that is not valid then we should try to recover that instead
-        // of trying to build a new path (after triggering the recovery we remove it from
-        // `existing_paths` to ensure we don't try to recover it multiple times)
-        auto& existing_paths = paths[path_type];
-        if (!existing_paths.empty()) {
-            auto it = std::find_if(
-                    existing_paths.begin(), existing_paths.end(), [](const onion_path& path) {
-                        return !path.is_valid();
+    // Try to establish a new connection to the target (this has a 3s handshake timeout as we
+    // wouldn't want to use any nodes which take longer than that anyway)
+    log::info(cat, "Establishing connection to {} for {}.", target_node.to_string(), request_id);
+    in_progress_connections.emplace(request_id);
+
+    establish_connection(
+            request_id,
+            target_node,
+            3s,
+            [this, target_node, request_id](connection_info info, std::optional<std::string>) {
+                // If we failed to get a connection then try again after a delay (may as well try
+                // indefinitely because there is no way to recover from this issue)
+                if (!info.is_valid()) {
+                    connection_failures++;
+                    auto connection_retry_delay = retry_delay(connection_failures);
+                    log::error(
+                            cat,
+                            "Failed to connect to {}, will try another after {}ms.",
+                            target_node.to_string(),
+                            connection_retry_delay.count());
+                    return net.call_later(connection_retry_delay, [this, request_id]() {
+                        establish_and_store_connection(request_id);
                     });
+                }
 
-            if (it != existing_paths.end()) {
-                recover_path(path_type, *it);
-                existing_paths.erase(it);
-                continue;
-            }
-        }
+                // We were able to connect to the node so add it to the unused_connections queue
+                log::info(
+                        cat, "Connection to {} valid for {}.", target_node.to_string(), request_id);
+                unused_connections.emplace_back(info);
 
-        // Otherwise we need to build a new path
-        build_path(std::nullopt, path_type);
-    }
+                // Kick off the next pending path build since we now have a valid connection
+                if (!path_build_queue.empty()) {
+                    net.call_soon([this, path_type = path_build_queue.front(), request_id]() {
+                        build_path(path_type, request_id);
+                    });
+                    path_build_queue.pop_front();
+                }
 
-    // Now that we've triggered all request path builds/recoveries we can clear the path_build_queue
-    path_build_queue.clear();
-
-    // If there are left over invalid paths in `paths` and we have more than the minimum number of
-    // required paths (including the builds/recoveries started above) then we can just drop the
-    // extra invalid paths
-    std::vector<onion_path> valid_paths;
-    std::vector<onion_path> invalid_paths;
-
-    for (auto& [path_type, existing_paths] : paths) {
-        size_t pending_count = num_pending_paths[path_type];
-        size_t total_count = (existing_paths.size() + pending_count);
-        size_t target_count = min_path_count(path_type, single_path_mode);
-
-        // If we don't have enough paths then do nothing
-        if (total_count <= target_count)
-            continue;
-
-        valid_paths.clear();
-        invalid_paths.clear();
-
-        for (auto& path : existing_paths) {
-            if (path.is_valid())
-                valid_paths.emplace_back(path);
-            else
-                invalid_paths.emplace_back(path);
-        }
-
-        // Keep all valid paths and only enough invalid paths to meet the minimum requirements
-        size_t remaining_slots =
-                std::max(target_count - valid_paths.size(), static_cast<size_t>(0));
-        existing_paths = std::move(valid_paths);
-        existing_paths.insert(
-                existing_paths.end(),
-                invalid_paths.begin(),
-                invalid_paths.begin() + std::min(remaining_slots, invalid_paths.size()));
-    }
-
-    // Now that we've scheduled any required path builds we should try to resume any pending
-    // requests in case they now have a valid paths
-    if (!paths.empty()) {
-        bool need_resume = false;
-        std::unordered_set<PathType> already_enqueued_paths;
-
-        for (auto& [path_type, requests] : request_queue)
-            if (!paths[path_type].empty())
-                std::erase_if(
-                        requests,
-                        [this, &need_resume, &already_enqueued_paths](const auto& request) {
-                            // If there are no valid paths to send the request then enqueue a new
-                            // path build (if needed) leave the request in the queue
-                            if (!find_valid_path(request.first, paths[request.first.path_type])) {
-                                if (already_enqueued_paths.emplace(request.first.path_type).second)
-                                    enqueue_path_build_if_needed(request.first.path_type, true);
-                                need_resume = true;
-                                return false;
-                            }
-
-                            net.call_soon(
-                                    [this, info = request.first, cb = std::move(request.second)]() {
-                                        _send_onion_request(std::move(info), std::move(cb));
-                                    });
-                            return true;
+                // If there are still pending path builds but no in progress connections then kick
+                // off enough additional connections for remaining builds (this shouldn't happen but
+                // better to be safe and avoid a situation where a path build gets orphaned)
+                if (!path_build_queue.empty() && in_progress_connections.empty())
+                    for ([[maybe_unused]] const auto& _ : path_build_queue)
+                        net.call_soon([this]() {
+                            establish_and_store_connection(random::random_base32(4));
                         });
 
-        if (need_resume)
-            net.call_soon([this]() { resume_queues(); });
-    }
+                // If there are no more pending requests, path builds or connections then we should
+                // reset the `unused_connection_and_path_build_nodes` since it shouldn't be needed
+                // anymore
+                if (request_queue.empty() && path_build_queue.empty() &&
+                    in_progress_connections.empty())
+                    unused_connection_and_path_build_nodes = std::nullopt;
+            });
 }
 
-void Network::refresh_snode_cache() {
+void Network::refresh_snode_cache_complete(std::vector<service_node> nodes) {
+    // Shuffle the nodes so we don't have a specific order
+    CSRNG rng;
+    std::shuffle(nodes.begin(), nodes.end(), rng);
+
+    // Update the disk cache if the snode pool was updated
+    {
+        std::lock_guard lock{snode_cache_mutex};
+        snode_cache = nodes;
+        last_snode_cache_update = std::chrono::system_clock::now();
+        need_pool_write = true;
+        need_write = true;
+    }
+    update_disk_cache_throttled();
+
+    // Reset the cache refresh state
+    current_snode_cache_refresh_request_id = std::nullopt;
+    snode_cache_refresh_failure_count = 0;
+    in_progress_snode_cache_refresh_count = 0;
+    unused_snode_refresh_nodes = std::nullopt;
+    snode_refresh_results.reset();
+
+    // Run any post-refresh processes
+    for (const auto& callback : after_snode_cache_refresh)
+        net.call_soon([cb = std::move(callback)]() { cb(); });
+    after_snode_cache_refresh.clear();
+
+    // Resume any queued path builds
+    for (const auto& path_type : path_build_queue)
+        net.call_soon([this, path_type]() { build_path(path_type); });
+    path_build_queue.clear();
+}
+
+void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool reset_unused_nodes) {
     if (suspended) {
-        log::info(cat, "Ignoring snode cache refresh as network is suspended.");
+        log::info(cat, "Ignoring snode cache refresh as network is suspended ({}).", request_id);
+        return;
+    }
+
+    // If the unused nodes is empty then reset it (if we are refreshing from seed nodes it means the
+    // local cache is not usable so we are just going to have to call this endlessly until it works)
+    if (reset_unused_nodes || !unused_snode_refresh_nodes || unused_snode_refresh_nodes->empty()) {
+        log::info(
+                cat,
+                "Existing cache is insufficient, refreshing from seed nodes ({}).",
+                request_id);
+
+        // Shuffle to ensure we pick random nodes to fetch from
+        CSRNG rng;
+        unused_snode_refresh_nodes = (use_testnet ? seed_nodes_testnet : seed_nodes_mainnet);
+        std::shuffle(unused_snode_refresh_nodes->begin(), unused_snode_refresh_nodes->end(), rng);
+    }
+
+    auto target_node = unused_snode_refresh_nodes->back();
+    unused_snode_refresh_nodes->pop_back();
+
+    establish_connection(
+            request_id,
+            target_node,
+            3s,
+            [this, request_id](connection_info info, std::optional<std::string>) {
+                // If we failed to get a connection then try again after a delay (may as well try
+                // indefinitely because there is no way to recover from this issue)
+                if (!info.is_valid()) {
+                    snode_cache_refresh_failure_count++;
+                    auto cache_refresh_retry_delay = retry_delay(snode_cache_refresh_failure_count);
+                    log::error(
+                            cat,
+                            "Failed to connect to seed node to refresh snode cache, will retry "
+                            "after {}ms ({}).",
+                            cache_refresh_retry_delay.count(),
+                            request_id);
+                    return net.call_later(cache_refresh_retry_delay, [this, request_id]() {
+                        refresh_snode_cache_from_seed_nodes(request_id, false);
+                    });
+                }
+
+                get_service_nodes(
+                        request_id,
+                        info,
+                        std::nullopt,
+                        [this, request_id](
+                                std::vector<service_node> nodes, std::optional<std::string>) {
+                            // If we got no nodes then we will need to try again
+                            if (nodes.empty()) {
+                                snode_cache_refresh_failure_count++;
+                                auto cache_refresh_retry_delay =
+                                        retry_delay(snode_cache_refresh_failure_count);
+                                log::error(
+                                        cat,
+                                        "Failed to retrieve nodes from seen node to refresh snode "
+                                        "cache, will retry after {}ms ({}).",
+                                        cache_refresh_retry_delay.count(),
+                                        request_id);
+                                return net.call_later(
+                                        cache_refresh_retry_delay, [this, request_id]() {
+                                            refresh_snode_cache_from_seed_nodes(request_id, false);
+                                        });
+                            }
+
+                            log::info(
+                                    cat,
+                                    "Refreshing snode cache from seed nodes completed with {} "
+                                    "nodes ({}).",
+                                    nodes.size(),
+                                    request_id);
+                            refresh_snode_cache_complete(nodes);
+                        });
+            });
+}
+
+void Network::refresh_snode_cache(std::optional<std::string> existing_request_id) {
+    auto request_id = existing_request_id.value_or(random::random_base32(4));
+
+    if (suspended) {
+        log::info(cat, "Ignoring snode cache refresh as network is suspended ({}).", request_id);
         return;
     }
 
     // Only allow a single cache refresh at a time
-    if (refreshing_snode_cache) {
-        log::info(cat, "Snode cache refresh ignored due to in progress refresh.");
+    if (current_snode_cache_refresh_request_id &&
+        current_snode_cache_refresh_request_id != request_id) {
+        log::info(cat, "Snode cache refresh ignored due to in progress refresh ({}).", request_id);
         return;
     }
 
-    refreshing_snode_cache = true;
+    // Reset the snode refresh states when starting a new snode cache refresh
+    if (!current_snode_cache_refresh_request_id) {
+        log::info(cat, "Refreshing snode cache ({}).", request_id);
+        current_snode_cache_refresh_request_id = request_id;
 
-    // If we don't have enough nodes in the current cached then we need to fetch
-    // from the seed nodes which is a trusted source so we can update the cache
-    // from a single response
-    //
-    // If the current cache is large enough then we want to getch from a number
-    // of random nodes and use the intersection of their responses as the update
-    auto use_seed_node = (snode_cache.size() < min_snode_cache_count);
-    size_t num_requests = (use_seed_node ? 1 : num_snodes_to_refresh_cache_from);
-    log::info(cat, "Refreshing snode cache{}.", (use_seed_node ? " from seed nodes" : ""));
+        // Shuffle to ensure we pick random nodes to fetch from
+        CSRNG rng;
+        unused_snode_refresh_nodes = get_unused_nodes();
+        std::shuffle(unused_snode_refresh_nodes->begin(), unused_snode_refresh_nodes->end(), rng);
+        snode_refresh_results = std::make_shared<std::vector<std::vector<service_node>>>();
+    }
 
-    // Define a handler function
-    auto processing_responses =
-            [this, use_seed_node, num_requests](
-                    std::shared_ptr<std::vector<std::vector<service_node>>> all_nodes) {
-                // There are still pending requests so just wait
-                if (all_nodes->size() != num_requests)
-                    return;
+    // If we don't have enough nodes in the unused nodes it likely means we didn't have
+    // enough nodes in the cache so instead just fetch from the seed nodes (which is a
+    // trusted source so we can update the cache from a single response)
+    if (!unused_snode_refresh_nodes || unused_snode_refresh_nodes->size() < min_snode_cache_count)
+        return refresh_snode_cache_from_seed_nodes(request_id, true);
 
-                auto any_nodes_request_failed =
-                        std::any_of(all_nodes->begin(), all_nodes->end(), [](const auto& n) {
-                            return n.empty();
-                        });
+    // Target an unused node and increment the in progress refresh counter
+    auto target_node = unused_snode_refresh_nodes->back();
+    unused_snode_refresh_nodes->pop_back();
+    in_progress_snode_cache_refresh_count++;
 
-                if (any_nodes_request_failed) {
-                    // If the current cache is still usable just send a warning and don't bother
-                    // retrying
-                    if (!use_seed_node) {
-                        log::warning(
-                                cat,
-                                "Failed to refresh snode cache due to request failing to retrieve "
-                                "nodes");
-                        refreshing_snode_cache = false;
-                        return;
-                    }
+    // If there are still more concurrent refresh_snode_cache requests we want to trigger then
+    // trigger the next one to run in the next run loop
+    if (in_progress_snode_cache_refresh_count < num_snodes_to_refresh_cache_from)
+        net.call_soon([this, request_id]() { refresh_snode_cache(request_id); });
 
-                    // Otherwise schedule a retry after a short delay
+    // Prepare and send the request to retrieve service nodes
+    nlohmann::json payload{
+            {"method", "get_service_nodes"},
+            {"params", detail::get_service_nodes_params(std::nullopt)},
+    };
+    auto info = request_info::make(
+            target_node,
+            quic::DEFAULT_TIMEOUT,
+            ustring{quic::to_usv(payload.dump())},
+            std::nullopt,
+            PathType::standard,
+            request_id);
+    _send_onion_request(
+            info,
+            [this, request_id](
+                    bool success, bool timeout, int16_t, std::optional<std::string> response) {
+                // Update the in progress request count
+                in_progress_snode_cache_refresh_count--;
+
+                try {
+                    if (!success || timeout || !response)
+                        throw std::runtime_error{response.value_or("Unknown error.")};
+                    if (!snode_refresh_results)
+                        throw std::runtime_error{"Invalid result pointer."};
+
+                    nlohmann::json response_json = nlohmann::json::parse(*response);
+                    std::vector<service_node> result =
+                            detail::process_get_service_nodes_response(*response);
+                    snode_refresh_results->emplace_back(result);
+                } catch (...) {
+                    // The request failed so increment the failure counter and retry after a short
+                    // delay
                     snode_cache_refresh_failure_count++;
-                    refreshing_snode_cache = false;
 
                     auto cache_refresh_retry_delay = retry_delay(snode_cache_refresh_failure_count);
                     log::error(
                             cat,
-                            "Failed to refresh snode cache{} due to request failing to retrieve "
-                            "nodes, will retry after: {}ms",
-                            (use_seed_node ? " from seed nodes" : ""),
-                            cache_refresh_retry_delay.count());
-                    net.call_later(cache_refresh_retry_delay, [this]() { refresh_snode_cache(); });
+                            "Failed to retrieve nodes from one target when refresh snode cache "
+                            "due, will try another target after {}ms ({}).",
+                            cache_refresh_retry_delay.count(),
+                            request_id);
+                    net.call_later(cache_refresh_retry_delay, [this, request_id]() {
+                        refresh_snode_cache(request_id);
+                    });
+                    return;
+                }
+
+                // If we haven't received all results then do nothing
+                if (snode_refresh_results->size() != num_snodes_to_refresh_cache_from)
+                    return;
+
+                auto any_nodes_request_failed = std::any_of(
+                        snode_refresh_results->begin(),
+                        snode_refresh_results->end(),
+                        [](const auto& n) { return n.empty(); });
+
+                // If the current cache is still usable just send a warning and don't bother
+                // retrying
+                if (any_nodes_request_failed) {
+                    log::warning(cat, "Failed to refresh snode cache ({}).", request_id);
+                    current_snode_cache_refresh_request_id = std::nullopt;
+                    snode_cache_refresh_failure_count = 0;
+                    in_progress_snode_cache_refresh_count = 0;
+                    unused_snode_refresh_nodes = std::nullopt;
+                    snode_refresh_results.reset();
                     return;
                 }
 
                 // Sort the vectors (so make it easier to find the intersection)
-                for (auto& nodes : *all_nodes)
+                for (auto& nodes : *snode_refresh_results)
                     std::stable_sort(nodes.begin(), nodes.end());
 
-                auto nodes = (*all_nodes)[0];
+                auto nodes = (*snode_refresh_results)[0];
 
                 // If we triggered multiple requests then get the intersection of all vectors
-                if (all_nodes->size() > 1) {
-                    for (size_t i = 1; i < all_nodes->size(); ++i) {
+                if (snode_refresh_results->size() > 1) {
+                    for (size_t i = 1; i < snode_refresh_results->size(); ++i) {
                         std::vector<service_node> temp;
                         std::set_intersection(
                                 nodes.begin(),
                                 nodes.end(),
-                                (*all_nodes)[i].begin(),
-                                (*all_nodes)[i].end(),
+                                (*snode_refresh_results)[i].begin(),
+                                (*snode_refresh_results)[i].end(),
                                 std::back_inserter(temp),
                                 [](const auto& a, const auto& b) { return a == b; });
                         nodes = std::move(temp);
                     }
                 }
 
-                // Shuffle the nodes so we don't have a specific order
-                CSRNG rng;
-                std::shuffle(nodes.begin(), nodes.end(), rng);
-
-                // Update the disk cache if the snode pool was updated
-                {
-                    std::lock_guard lock{snode_cache_mutex};
-                    snode_cache = nodes;
-                    last_snode_cache_update = std::chrono::system_clock::now();
-                    need_pool_write = true;
-                    need_write = true;
-                }
-                snode_cache_cv.notify_one();
-
-                // Resume any queued processes
-                log::info(cat, "Refreshing snode cache completed with {} nodes.", nodes.size());
-                refreshing_snode_cache = false;
-
-                for (const auto& callback : after_snode_cache_refresh)
-                    net.call_soon([cb = std::move(callback)]() { cb(); });
-                after_snode_cache_refresh.clear();
-                net.call_soon([this]() { resume_queues(); });
-            };
-    auto handle_response =
-            [processing_responses](
-                    std::shared_ptr<std::vector<std::vector<service_node>>> all_nodes) {
-                return [all_nodes, processing_responses](
-                               std::vector<service_node> nodes, std::optional<std::string>) {
-                    all_nodes->emplace_back(nodes);
-                    processing_responses(all_nodes);
-                };
-            };
-
-    std::vector<service_node> nodes;
-
-    if (use_seed_node)
-        nodes = (use_testnet ? seed_nodes_testnet : seed_nodes_mainnet);
-    else
-        nodes = snode_cache;
-
-    // Just in case, make sure we actually have nodes to send requests to
-    if (nodes.empty()) {
-        log::error(cat, "Failed to refresh snode cache from seed nodes: Insufficient seed nodes.");
-        refreshing_snode_cache = false;
-        return;
-    }
-
-    // Shuffle to ensure we pick random nodes to fetch from
-    CSRNG rng;
-    std::shuffle(nodes.begin(), nodes.end(), rng);
-
-    // Kick off the requests concurrently
-    //
-    // It's possible, even likely, that some of the nodes could be unavailable so
-    // we want to try to cycle through a few nodes if any of the requests fail
-    // so calculate how many we can cycle through
-    size_t num_attempts = std::min(nodes.size() / num_requests, snode_cache_refresh_retries);
-    auto all_nodes = std::make_shared<std::vector<std::vector<service_node>>>();
-    all_nodes->reserve(num_requests);
-
-    for (size_t i = 0; i < num_requests; ++i) {
-        std::vector<service_node> chunk(
-                nodes.begin() + (i * num_attempts), nodes.begin() + ((i + 1) * num_attempts));
-
-        get_service_nodes_recursive(
-                "Refresh Snode Cache (Node {})"_format(i + 1),
-                chunk,
-                std::nullopt,
-                handle_response(all_nodes));
-    }
+                log::info(
+                        cat,
+                        "Refreshing snode cache completed with {} nodes ({}).",
+                        nodes.size(),
+                        request_id);
+                refresh_snode_cache_complete(nodes);
+            });
 }
 
-void Network::build_path(std::optional<std::string> existing_request_id, PathType path_type) {
+void Network::build_path(PathType path_type, std::optional<std::string> existing_request_id) {
     if (suspended) {
-        log::info(cat, "Ignoring path build request as network is suspended.");
+        log::info(cat, "Ignoring build_path call as network is suspended.");
         return;
     }
 
     auto request_id = existing_request_id.value_or(random::random_base32(4));
     auto path_name = path_type_name(path_type, single_path_mode);
 
-    // Check that we have enough snodes before continuing (shouldn't be an issue but if something
-    // calls `build_path` in the future then this drive it back into the standard loop)
-    if (snode_cache.size() < min_snode_cache_count) {
-        log::warning(
+    // If we don't have an unused connection for the first hop then enqueue the path build and
+    // establish a new connection
+    if (unused_connections.empty()) {
+        log::info(
+                cat,
+                "No unused connections available to build {} path, creating new connection ({}).",
+                path_name,
+                request_id);
+        path_build_queue.emplace_back(path_type);
+        return net.call_soon([this, request_id]() { establish_and_store_connection(request_id); });
+    }
+
+    // Reset the unused nodes list if it's too small
+    if ((!unused_connection_and_path_build_nodes ||
+         unused_connection_and_path_build_nodes->size() < path_size))
+        unused_connection_and_path_build_nodes = get_unused_nodes();
+
+    // If we still don't have enough unused nodes then we need to refresh the cache
+    if (unused_connection_and_path_build_nodes->size() < path_size) {
+        std::cout << "RAWR build_path need a snode cache: " + request_id << std::endl;
+        log::info(
                 cat,
                 "Re-queing {} path build due to insufficient nodes ({}).",
                 path_name,
                 request_id);
-        in_progress_path_builds.erase(request_id);
+        path_build_failures = 0;
         path_build_queue.emplace_back(path_type);
-        net.call_soon([this]() { resume_queues(); });
+        net.call_soon([this]() { refresh_snode_cache(); });
         return;
     }
 
-    CSRNG rng;
+    // Build the path
     log::info(cat, "Building {} path ({}).", path_name, request_id);
 
-    // If we don't have any in-progress path builds then reset the 'unused_path_build_nodes'
-    // to be the `snode_cache` minus nodes in any current paths
-    if (in_progress_path_builds.empty()) {
-        std::vector<quic::ipv4> existing_path_node_ips = all_path_ips();
-        std::copy_if(
-                snode_cache.begin(),
-                snode_cache.end(),
-                std::back_inserter(unused_path_build_nodes),
-                [&existing_path_node_ips](const auto& node) {
-                    return std::find(
-                                   existing_path_node_ips.begin(),
-                                   existing_path_node_ips.end(),
-                                   node.to_ipv4()) == existing_path_node_ips.end();
-                });
+    auto conn_info = std::move(unused_connections.front());
+    unused_connections.pop_front();
+    std::vector<service_node> path_nodes = {conn_info.node};
 
-        // Shuffle the `unused_path_build_nodes` value so we build paths from random nodes
-        std::shuffle(unused_path_build_nodes.begin(), unused_path_build_nodes.end(), rng);
-        general_path_build_failures = 0;
-    }
-
-    // Make sure we have possible guard nodes before continuing
-    if (unused_path_build_nodes.empty()) {
-        log::warning(
-                cat,
-                "Unable to build {} path due to lack of possible guard nodes ({}).",
-                path_name,
-                request_id);
-        general_path_build_failures++;
-        path_build_queue.emplace_back(path_type);
-
-        auto delay = retry_delay(general_path_build_failures);
-        net.call_later(delay, [this]() { resume_queues(); });
-        return;
-    }
-
-    // Add this build to the `in_progress_path_builds` map if it doesn't already exist
-    in_progress_path_builds.try_emplace(request_id, path_type, 0);
-
-    // Exclude nodes targeted in the request_queue from the path (so any queued requests will be
-    // able to be sent once the path is built)
-    std::vector<service_node> nodes_to_exclude;
-
-    for (const auto& [info, callback] : request_queue[path_type])
-        if (auto* dest = std::get_if<service_node>(&info.destination))
-            nodes_to_exclude.emplace_back(*dest);
-
-    // Get the possible guard nodes
-    service_node target_node = unused_path_build_nodes.back();
-
-    if (nodes_to_exclude.empty())
-        unused_path_build_nodes.pop_back();
-    else {
-        auto it = std::find_if(
-                unused_path_build_nodes.begin(),
-                unused_path_build_nodes.end(),
-                [&nodes_to_exclude](const service_node& node) {
-                    return std::find(nodes_to_exclude.begin(), nodes_to_exclude.end(), node) ==
-                           nodes_to_exclude.end();
-                });
-
-        if (it == unused_path_build_nodes.end()) {
-            log::warning(
+    while (path_nodes.size() < path_size) {
+        if (unused_connection_and_path_build_nodes->empty()) {
+            // Log the error and try build again after a slight delay
+            log::info(
                     cat,
-                    "Unable to build paths due to lack of possible guard nodes ({}).",
+                    "Unable to build {} path due to lack of suitable unused path build nodes ({}).",
+                    path_name,
                     request_id);
-            general_path_build_failures++;
-            path_build_queue.emplace_back(path_type);
-            in_progress_path_builds.erase(request_id);
 
-            auto delay = retry_delay(general_path_build_failures);
-            net.call_later(delay, [this]() { resume_queues(); });
+            // Delay the next path build attempt based on the error we received
+            path_build_failures++;
+            unused_connections.push_front(std::move(conn_info));
+            auto delay = retry_delay(path_build_failures);
+            net.call_later(
+                    delay, [this, request_id, path_type]() { build_path(path_type, request_id); });
             return;
         }
 
-        target_node = *it;
-        unused_path_build_nodes.erase(it);
+        // Grab the next unused node to continue building the path
+        auto node = unused_connection_and_path_build_nodes->back();
+        unused_connection_and_path_build_nodes->pop_back();
+
+        // Ensure we don't put two nodes with the same IP into the same path
+        auto snode_with_ip_it = std::find_if(
+                path_nodes.begin(), path_nodes.end(), [&node](const auto& existing_node) {
+                    return existing_node.to_ipv4() == node.to_ipv4();
+                });
+
+        if (snode_with_ip_it == path_nodes.end())
+            path_nodes.push_back(node);
     }
 
-    // Make a request to the guard node to ensure it's reachable
-    log::info(cat, "Testing guard snode: {} for {}", target_node.to_string(), request_id);
+    // Store the new path
+    auto path = onion_path{std::move(conn_info), path_nodes, 0};
+    paths[path_type].emplace_back(path);
 
-    get_snode_version(
-            request_id,
-            path_type,
-            target_node,
-            3s,
-            [this, path_name, path_type, target_node, request_id](
-                    std::vector<int> version,
-                    connection_info info,
-                    std::optional<std::string> error) {
-                log::trace(cat, "Got snode version response for {}.", request_id);
-
-                try {
-                    if (version.empty())
-                        throw std::runtime_error{"Testing {} for {} failed with error: {}"_format(
-                                target_node.to_string(),
-                                request_id,
-                                error.value_or("Unknown Error"))};
-
-                    // Build the new paths
-                    log::info(
-                            cat,
-                            "Guard snode {} valid for {}.",
-                            target_node.to_string(),
-                            request_id);
-                    std::vector<service_node> path_nodes{info.node};
-
-                    while (path_nodes.size() < path_size) {
-                        if (unused_path_build_nodes.empty())
-                            throw std::runtime_error{
-                                    "Unable to build {} path due to lack of unused path build nodes ({})."_format(
-                                            path_name, request_id)};
-
-                        // Grab the next unused node to continue building the path
-                        auto node = unused_path_build_nodes.back();
-                        unused_path_build_nodes.pop_back();
-
-                        // Ensure we don't put two nodes with the same IP into the same path
-                        auto snode_with_ip_it = std::find_if(
-                                path_nodes.begin(),
-                                path_nodes.end(),
-                                [&node](const auto& existing_node) {
-                                    return existing_node.to_ipv4() == node.to_ipv4();
-                                });
-
-                        if (snode_with_ip_it == path_nodes.end())
-                            path_nodes.push_back(node);
-                    }
-
-                    // Store the new path
-                    auto path = onion_path{std::move(info), path_nodes, 0};
-                    paths[path_type].emplace_back(path);
-
-                    // Log that a path was built
-                    std::vector<std::string> node_descriptions;
-                    std::transform(
-                            path_nodes.begin(),
-                            path_nodes.end(),
-                            std::back_inserter(node_descriptions),
-                            [](const service_node& node) { return node.to_string(); });
-                    auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
-                    log::info(
-                            cat,
-                            "Built new {} onion request path ({}): [{}]",
-                            path_name,
-                            request_id,
-                            path_description);
-
-                    // If the connection info is valid and it's a standard path then update the
-                    // connection status to connected
-                    if (path_type == PathType::standard) {
-                        update_status(ConnectionStatus::connected);
-
-                        // If a paths_changed callback was provided then call it
-                        if (paths_changed) {
-                            std::vector<std::vector<service_node>> raw_paths;
-                            for (auto& path : paths[path_type])
-                                raw_paths.emplace_back(path.nodes);
-
-                            paths_changed(raw_paths);
-                        }
-                    }
-
-                    // If the network happened to get suspended just before the guard node was
-                    // connected then we may need to reset the connection info so the new path is
-                    // also in a suspended state
-                    if (suspended) {
-                        log::info(
-                                cat,
-                                "Network is suspended, suspending new {} path ({})",
-                                path_name,
-                                request_id);
-                        info.conn.reset();
-                        info.stream.reset();
-                    }
-
-                    // Resume any queued requests
-                    in_progress_path_builds.erase(request_id);
-                    net.call_soon([this]() { resume_queues(); });
-                } catch (const std::exception& e) {
-                    // Log the error and loop after a slight delay (don't want to drain the pool
-                    // too quickly if the network goes down)
-                    log::info(cat, "{}", e.what());
-
-                    // Delay the next path build attempt based on the error we received
-                    auto& [_, failure_count] =
-                            in_progress_path_builds.try_emplace(request_id, path_type, 0)
-                                    .first->second;
-                    failure_count += 1;
-                    auto delay = retry_delay(failure_count);
-                    net.call_later(delay, [this, request_id, path_type]() {
-                        build_path(request_id, path_type);
-                    });
-                }
-            });
-}
-
-void Network::recover_path(PathType path_type, onion_path path) {
-    // Try to re-establish a connection to the guard node
-    auto request_id = random::random_base32(4);
-    log::trace(
+    // Log that a path was built
+    std::vector<std::string> node_descriptions;
+    std::transform(
+            path_nodes.begin(),
+            path_nodes.end(),
+            std::back_inserter(node_descriptions),
+            [](const service_node& node) { return node.to_string(); });
+    auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
+    log::info(
             cat,
-            "Connection to {} for {} path no longer valid, attempting reconnection ({}).",
-            path.nodes.front(),
-            path_type_name(path_type, single_path_mode),
-            request_id);
-
-    establish_connection(
+            "Built new onion request path, now have {} {} path(s) ({}): [{}]",
+            paths[path_type].size(),
+            path_name,
             request_id,
-            path_type,
-            path.nodes.front(),
-            3s,
-            [this, request_id, path_type, old_path = path](
-                    connection_info info, std::optional<std::string> error) {
-                auto guard_node = old_path.nodes.front();
+            path_description);
 
-                if (!info.is_valid()) {
-                    log::info(
-                            cat,
-                            "Reconnection to {} for {} path failed ({}) with error: {}.",
-                            guard_node,
-                            path_type_name(path_type, single_path_mode),
-                            request_id,
-                            error.value_or("Unknown error"));
+    // If the connection info is valid and it's a standard path then update the
+    // connection status to connected
+    if (path_type == PathType::standard) {
+        update_status(ConnectionStatus::connected);
 
-                    // If we failed to reconnect to the path, and it was a standard path, then we
-                    // should call 'paths_changed' as it is has now been "officially" dropped
-                    if (path_type == PathType::standard && paths_changed) {
-                        std::vector<std::vector<service_node>> raw_paths;
-                        for (auto& path : paths[path_type])
-                            raw_paths.emplace_back(path.nodes);
+        // If a paths_changed callback was provided then call it
+        if (paths_changed) {
+            std::vector<std::vector<service_node>> raw_paths;
+            for (auto& path : paths[path_type])
+                raw_paths.emplace_back(path.nodes);
 
-                        paths_changed(raw_paths);
-                    }
+            paths_changed(raw_paths);
+        }
+    }
 
-                    // Now enqueue a new path build (if needed) for the type of path we dropped and
-                    // resume the queues to trigger the path build (if needed)
-                    enqueue_path_build_if_needed(path_type, false);
-                    net.call_soon([this]() { resume_queues(); });
-                    return;
-                }
+    // If there are pending requests which this path is valid for then resume them
+    std::erase_if(request_queue[path_type], [this, &path](const auto& request) {
+        if (!find_valid_path(request.first, {path}))
+            return false;
 
-                // Knowing that the reconnection succeeded is helpful for debugging
-                log::info(
-                        cat,
-                        "Reconnection to {} for {} path successful ({}).",
-                        guard_node,
-                        path_type_name(path_type, single_path_mode),
-                        request_id);
+        net.call_soon([this, info = request.first, cb = std::move(request.second)]() {
+            _send_onion_request(std::move(info), std::move(cb));
+        });
+        return true;
+    });
 
-                // If the connection info is valid and it's a standard path then update the
-                // connection status back to connected
-                if (path_type == PathType::standard)
-                    update_status(ConnectionStatus::connected);
+    // If there are still pending requests and there are no pending path builds for them then kick
+    // off a subsequent path build in an effort to resume the remaining requests
+    if (!request_queue[path_type].empty())
+        net.call_soon([this, path_type]() { build_path(path_type); });
+    else
+        request_queue.erase(path_type);
 
-                // No need to call the 'paths_changed' callback as the paths haven't
-                // actually changed, just their connection info
-                paths[path_type].emplace_back(onion_path{std::move(info), old_path.nodes, 0});
-
-                // Resume any queued requests
-                net.call_soon([this]() { resume_queues(); });
-            });
+    // If there are no more pending requests, path builds or connections then we should reset the
+    // `unused_connection_and_path_build_nodes` since it shouldn't be needed anymore
+    if (request_queue.empty() && path_build_queue.empty() && in_progress_connections.empty())
+        unused_connection_and_path_build_nodes = std::nullopt;
 }
 
 std::optional<onion_path> Network::find_valid_path(
@@ -1477,217 +1537,83 @@ std::optional<onion_path> Network::find_valid_path(
     return possible_paths.front();
 };
 
-void Network::enqueue_path_build_if_needed(PathType path_type, bool existing_paths_unsuitable) {
-    auto current_paths = paths[path_type].size();
+void Network::enqueue_path_build_if_needed(
+        PathType path_type, std::optional<onion_path> found_path) {
+    net.call([this, path_type, found_path]() {
+        auto current_paths = paths[path_type];
 
-    // In `single_path_mode` we never build additional paths
-    if (current_paths > 0 && single_path_mode)
-        return;
+        // In `single_path_mode` we never build additional paths
+        if (current_paths.size() > 0 && single_path_mode)
+            return;
 
-    // Get the number pending paths
-    auto pending_build_count =
-            std::count(path_build_queue.begin(), path_build_queue.end(), path_type);
-    auto in_progress_build_count = std::count_if(
-            in_progress_path_builds.begin(),
-            in_progress_path_builds.end(),
-            [&path_type](const auto& pair) { return pair.second.first == path_type; });
-    auto pending_paths = (pending_build_count + in_progress_build_count);
+        // We only want to enqueue a new path build if:
+        // - We don't have the minimum number of paths for the specified type
+        // - We don't have any pending builds
+        // - The current paths are unsuitable for the request
+        auto min_paths = min_path_count(path_type, single_path_mode);
 
-    // We only want to enqueue a new path build if:
-    // - We don't have the minimum number of paths for the specified type
-    // - We don't have any pending builds
-    // - The current paths are unsuitable for the request
-    auto min_paths = min_path_count(path_type, single_path_mode);
+        // If we have enough existing paths and found a valid path then no need to build more paths
+        if (found_path && current_paths.size() >= min_paths)
+            return;
 
-    if ((current_paths + pending_paths) < min_paths ||
-        (existing_paths_unsuitable && pending_paths == 0))
-        path_build_queue.emplace_back(path_type);
+        // Get the number pending paths
+        auto pending_paths =
+                std::count(path_build_queue.begin(), path_build_queue.end(), path_type);
+
+        // If we don't have enough current + pending paths, or the request couldn't be sent then
+        // kick off a new path build
+        if ((current_paths.size() + pending_paths) < min_paths ||
+            (!found_path && pending_paths == 0))
+            net.call_soon([this, path_type]() { build_path(path_type); });
+    });
 }
 
-// MARK: Multi-request logic
-
-void Network::get_service_nodes_recursive(
-        std::string request_id,
-        std::vector<service_node> target_nodes,
-        std::optional<int> limit,
-        std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
-                callback) {
-    if (target_nodes.empty())
-        return callback({}, "No nodes to fetch from provided.");
-
-    auto target_node = target_nodes.front();
-    get_service_nodes(
-            request_id,
-            target_node,
-            limit,
-            [this, limit, target_nodes, request_id, cb = std::move(callback)](
-                    std::vector<service_node> nodes, std::optional<std::string> error) {
-                // If we got nodes then stop looping and return them
-                if (!nodes.empty()) {
-                    cb(nodes, error);
-                    return;
-                }
-
-                // Loop if we didn't get any nodes
-                std::vector<service_node> remaining_nodes(
-                        target_nodes.begin() + 1, target_nodes.end());
-                net.call_soon([this, request_id, remaining_nodes, limit, cb = std::move(cb)]() {
-                    get_service_nodes_recursive(request_id, remaining_nodes, limit, cb);
-                });
-            });
-}
-
-// MARK: Pre-Defined Requests
+// MARK: Direct Requests
 
 void Network::get_service_nodes(
         std::string request_id,
-        service_node node,
+        connection_info conn_info,
         std::optional<int> limit,
         std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                 callback) {
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
 
-    establish_connection(
-            request_id,
-            PathType::standard,
-            node,
-            3s,
-            [this, request_id, limit, cb = std::move(callback)](
-                    connection_info info, std::optional<std::string> error) {
-                if (!info.is_valid())
-                    return cb({}, error.value_or("Unknown error."));
+    if (!conn_info.is_valid())
+        return callback({}, "Connection is not valid.");
 
-                nlohmann::json params{
-                        {"active_only", true},
-                        {"fields",
-                         {{"public_ip", true},
-                          {"pubkey_ed25519", true},
-                          {"storage_lmq_port", true},
-                          {"storage_server_version", true}}}};
+    oxenc::bt_dict_producer payload;
+    payload.append("endpoint", "get_service_nodes");
+    payload.append("params", detail::get_service_nodes_params(limit).dump());
 
-                if (limit)
-                    params["limit"] = *limit;
+    conn_info.stream->command(
+            "oxend_request",
+            payload.view(),
+            [this, request_id, cb = std::move(callback)](quic::message resp) {
+                log::trace(cat, "{} got response for {}.", __PRETTY_FUNCTION__, request_id);
+                std::vector<service_node> result;
 
-                oxenc::bt_dict_producer payload;
-                payload.append("endpoint", "get_service_nodes");
-                payload.append("params", params.dump());
+                try {
+                    auto [status_code, body] = validate_response(resp, true);
+                    oxenc::bt_list_consumer result_bencode{body};
+                    result = detail::process_get_service_nodes_response(result_bencode);
+                } catch (const std::exception& e) {
+                    return cb({}, e.what());
+                }
 
-                info.stream->command(
-                        "oxend_request",
-                        payload.view(),
-                        [this, request_id, cb = std::move(cb)](quic::message resp) {
-                            log::trace(
-                                    cat,
-                                    "{} got response for {}.",
-                                    __PRETTY_FUNCTION__,
-                                    request_id);
-                            std::vector<service_node> result;
-
-                            try {
-                                auto [status_code, body] = validate_response(resp, true);
-
-                                oxenc::bt_list_consumer result_bencode{body};
-                                result_bencode
-                                        .skip_value();  // Skip the status code (already validated)
-                                auto response_dict = result_bencode.consume_dict_consumer();
-                                response_dict.skip_until("result");
-
-                                auto result_dict = response_dict.consume_dict_consumer();
-                                result_dict.skip_until("service_node_states");
-
-                                // Process the node list
-                                auto node = result_dict.consume_list_consumer();
-
-                                while (!node.is_finished()) {
-                                    auto node_consumer = node.consume_dict_consumer();
-                                    auto pubkey_ed25519 = oxenc::from_hex(
-                                            consume_string(node_consumer, "pubkey_ed25519"));
-                                    auto public_ip = consume_string(node_consumer, "public_ip");
-                                    auto storage_lmq_port = consume_integer<uint16_t>(
-                                            node_consumer, "storage_lmq_port");
-
-                                    std::vector<int> storage_server_version;
-                                    node_consumer.skip_until("storage_server_version");
-                                    auto version_consumer = node_consumer.consume_list_consumer();
-
-                                    while (!version_consumer.is_finished()) {
-                                        storage_server_version.emplace_back(
-                                                version_consumer.consume_integer<int>());
-                                    }
-
-                                    result.emplace_back(
-                                            pubkey_ed25519,
-                                            storage_server_version,
-                                            public_ip,
-                                            storage_lmq_port);
-                                }
-                            } catch (const std::exception& e) {
-                                return cb({}, e.what());
-                            }
-
-                            // Output the result
-                            cb(result, std::nullopt);
-                        });
+                // Output the result
+                cb(result, std::nullopt);
             });
 }
 
-void Network::get_snode_version(
-        std::string request_id,
-        PathType path_type,
-        service_node node,
-        std::optional<std::chrono::milliseconds> timeout,
-        std::function<void(
-                std::vector<int> version, connection_info info, std::optional<std::string> error)>
-                callback) {
-    log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
-    establish_connection(
-            request_id,
-            path_type,
-            node,
-            timeout,
-            [this, request_id, timeout, cb = std::move(callback)](
-                    connection_info info, std::optional<std::string> error) {
-                if (!info.is_valid())
-                    return cb({}, info, error.value_or("Unknown error."));
-
-                oxenc::bt_dict_producer payload;
-                info.stream->command(
-                        "info",
-                        payload.view(),
-                        timeout,
-                        [this, info, request_id, cb = std::move(cb)](quic::message resp) {
-                            log::trace(
-                                    cat,
-                                    "{} got response for {}.",
-                                    __PRETTY_FUNCTION__,
-                                    request_id);
-                            std::vector<int> version;
-
-                            try {
-                                auto [status_code, body] = validate_response(resp, true);
-
-                                oxenc::bt_list_consumer result_bencode{body};
-                                result_bencode
-                                        .skip_value();  // Skip the status code (already validated)
-                                auto response_dict = result_bencode.consume_dict_consumer();
-                                response_dict.skip_until("version");
-                                auto version_list = response_dict.consume_list_consumer();
-
-                                while (!version_list.is_finished())
-                                    version.emplace_back(version_list.consume_integer<int>());
-                            } catch (const std::exception& e) {
-                                return cb({}, info, e.what());
-                            }
-
-                            // Output the result
-                            cb(version, info, std::nullopt);
-                        });
-            });
-}
+// MARK: Node Retrieval
 
 void Network::get_swarm(
         session::onionreq::x25519_pubkey swarm_pubkey,
         std::function<void(std::vector<service_node> swarm)> callback) {
+    // If the network is in the process of being shut down just ignore the call
+    if (being_destroyed)
+        return;
+
     auto request_id = random::random_base32(4);
     log::trace(cat, "{} called for {} as {}.", __PRETTY_FUNCTION__, swarm_pubkey.hex(), request_id);
 
@@ -1706,8 +1632,9 @@ void Network::get_swarm(
         // If we have no snode cache then we need to rebuild the cache and run this request again
         // once it's rebuild
         if (snode_cache.empty()) {
-            after_snode_cache_refresh.emplace_back(
-                    [this, swarm_pubkey, cb = std::move(cb)]() { get_swarm(swarm_pubkey, cb); });
+            after_snode_cache_refresh.emplace_back([this, swarm_pubkey, cb = std::move(cb)]() {
+                get_swarm(swarm_pubkey, std::move(cb));
+            });
             net.call_soon([this]() { refresh_snode_cache(); });
             return;
         }
@@ -1727,18 +1654,17 @@ void Network::get_swarm(
                 ustring{quic::to_usv(payload.dump())},
                 swarm_pubkey,
                 PathType::standard,
-                std::nullopt,
                 request_id);
 
         _send_onion_request(
                 info,
-                [this, swarm_pubkey, request_id, cb = std::move(cb)](
+                [this, hex_key = swarm_pubkey.hex(), request_id, cb = std::move(cb)](
                         bool success, bool timeout, int16_t, std::optional<std::string> response) {
                     log::trace(
                             cat,
                             "{} got response for {} as {}.",
                             __PRETTY_FUNCTION__,
-                            swarm_pubkey.hex(),
+                            hex_key,
                             request_id);
                     if (!success || timeout || !response)
                         return cb({});
@@ -1759,16 +1685,14 @@ void Network::get_swarm(
                     }
 
                     // Update the cache
-                    log::info(cat, "Retrieved swarm for {} ({}).", swarm_pubkey.hex(), request_id);
-                    net.call([this, hex_key = swarm_pubkey.hex(), swarm]() mutable {
-                        {
-                            std::lock_guard lock{snode_cache_mutex};
-                            swarm_cache[hex_key] = swarm;
-                            need_swarm_write = true;
-                            need_write = true;
-                        }
-                        snode_cache_cv.notify_one();
-                    });
+                    log::info(cat, "Retrieved swarm for {} ({}).", hex_key, request_id);
+                    {
+                        std::lock_guard lock{snode_cache_mutex};
+                        swarm_cache[hex_key] = swarm;
+                        need_swarm_write = true;
+                        need_write = true;
+                    }
+                    update_disk_cache_throttled();
 
                     cb(swarm);
                 });
@@ -1777,6 +1701,10 @@ void Network::get_swarm(
 
 void Network::set_swarm(
         session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm) {
+    // If the network is in the process of being shut down just ignore the call
+    if (being_destroyed)
+        return;
+
     net.call([this, hex_key = swarm_pubkey.hex(), swarm]() mutable {
         {
             std::lock_guard lock{snode_cache_mutex};
@@ -1784,12 +1712,16 @@ void Network::set_swarm(
             need_swarm_write = true;
             need_write = true;
         }
-        snode_cache_cv.notify_one();
+        update_disk_cache_throttled();
     });
 }
 
 void Network::get_random_nodes(
         uint16_t count, std::function<void(std::vector<service_node> nodes)> callback) {
+    // If the network is in the process of being shut down just ignore the call
+    if (being_destroyed)
+        return;
+
     auto request_id = random::random_base32(4);
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
 
@@ -1831,14 +1763,18 @@ void Network::send_request(
             [this, info, conn_info, cb = std::move(handle_response)](quic::message resp) {
                 log::trace(cat, "{} got response for {}.", __PRETTY_FUNCTION__, info.request_id);
 
+                std::pair<uint16_t, std::string> result;
+                auto& [status_code, body] = result;
+
                 try {
-                    auto [status_code, body] = validate_response(resp, false);
-                    cb(true, false, status_code, body);
+                    result = validate_response(resp, false);
                 } catch (const status_code_exception& e) {
-                    handle_errors(info, conn_info, false, e.status_code, e.what(), cb);
+                    return handle_errors(info, conn_info, false, e.status_code, e.what(), cb);
                 } catch (const std::exception& e) {
-                    handle_errors(info, conn_info, resp.timed_out, -1, e.what(), cb);
+                    return handle_errors(info, conn_info, resp.timed_out, -1, e.what(), cb);
                 }
+
+                cb(true, false, status_code, body);
             });
 }
 
@@ -1860,35 +1796,30 @@ void Network::send_onion_request(
 }
 
 void Network::_send_onion_request(request_info info, network_response_callback_t handle_response) {
+    // If the network is in the process of being shut down just ignore the call
+    if (being_destroyed)
+        return;
+
     auto path_name = path_type_name(info.path_type, single_path_mode);
     log::trace(cat, "{} called for {} path ({}).", __PRETTY_FUNCTION__, path_name, info.request_id);
 
-    // Try to retrieve a valid path for this request
-    auto [path, callback] = net.call_get(
-            [this, info, cb = std::move(handle_response)]() mutable
-            -> std::pair<std::optional<onion_path>, std::optional<network_response_callback_t>> {
-                // If the network is suspended then fail immediately
-                if (suspended) {
-                    cb(false, false, error_network_suspended, "Network is suspended.");
-                    return {std::nullopt, std::nullopt};
-                }
+    // Try to retrieve a valid path for this request, if we can't get one then add the request to
+    // the queue to be run once a path for it has successfully been built
+    auto path = net.call_get([this, info]() {
+        auto result = find_valid_path(info, paths[info.path_type]);
+        enqueue_path_build_if_needed(info.path_type, result);
+        return result;
+    });
 
-                // Otherwise try to retrieve a valid path
-                if (auto path = find_valid_path(info, paths[info.path_type]))
-                    return {path, std::move(cb)};
+    if (!path) {
+        return net.call([this, info = std::move(info), cb = std::move(handle_response)]() {
+            // If the network is suspended then fail immediately
+            if (suspended)
+                return cb(false, false, error_network_suspended, "Network is suspended.");
 
-                // Currently there are no valid paths so enqueue a new build (if needed) and add the
-                // request to the queue to be run one the path build completes
-                request_queue[info.path_type].emplace_back(std::move(info), std::move(cb));
-                enqueue_path_build_if_needed(info.path_type, true);
-                net.call_soon([this]() { resume_queues(); });
-                return {std::nullopt, std::nullopt};
-            });
-
-    // If either of these don't exist then we will have added this request to the queue to be run
-    // one we have a valid path
-    if (!path || !callback)
-        return;
+            request_queue[info.path_type].emplace_back(std::move(info), std::move(cb));
+        });
+    }
 
     log::trace(cat, "{} got {} path for {}.", __PRETTY_FUNCTION__, path_name, info.request_id);
 
@@ -1907,14 +1838,18 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
         auto payload = builder.generate_payload(info.original_body);
         info.body = builder.build(payload);
     } catch (const std::exception& e) {
-        return (*callback)(false, false, error_building_onion_request, e.what());
+        return handle_response(false, false, error_building_onion_request, e.what());
     }
 
     // Actually send the request
     send_request(
             info,
             path->conn_info,
-            [this, builder = std::move(builder), info, path = *path, cb = std::move(*callback)](
+            [this,
+             builder = std::move(builder),
+             info,
+             path = *path,
+             cb = std::move(handle_response)](
                     bool success,
                     bool timeout,
                     int16_t status_code,
@@ -1954,16 +1889,9 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                                                         "non-success status "
                                                         "code.")};
 
-                    // For debugging purposes if the error was a redirect retry then
-                    // we want to log that the retry was successful as this will
-                    // help identify how often we are receiving incorrect 421 errors
-                    if (info.retry_reason == request_info::RetryReason::redirect)
-                        log::info(
-                                cat,
-                                "Received valid response after 421 retry in "
-                                "request {} for {}.",
-                                info.request_id,
-                                path_type_name(info.path_type, single_path_mode));
+                    // For debugging purposes we want to add a log if this was a successful request
+                    // after we did an automatic retry
+                    detail::log_retry_result_if_needed(info, single_path_mode);
 
                     // Try process the body in case it was a batch request which
                     // failed
@@ -2262,6 +2190,38 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
     return {status_code, response_string};
 }
 
+void Network::drop_path(std::string request_id, PathType path_type, onion_path path) {
+    // Close the connection immediately (just in case there are other requests happening)
+    if (path.conn_info.conn)
+        path.conn_info.conn->close_connection();
+
+    auto path_nodes = path.nodes;
+    path.conn_info.conn.reset();
+    path.conn_info.stream.reset();
+    paths[path_type].erase(
+            std::remove(paths[path_type].begin(), paths[path_type].end(), path),
+            paths[path_type].end());
+
+    std::vector<std::string> node_descriptions;
+    std::transform(
+            path_nodes.begin(),
+            path_nodes.end(),
+            std::back_inserter(node_descriptions),
+            [](service_node& node) { return node.to_string(); });
+    auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
+    log::info(
+            cat,
+            "Dropping path, now have {} {} paths(s) ({}): [{}]",
+            paths[path_type].size(),
+            path_type_name(path_type, single_path_mode),
+            request_id,
+            path_description);
+
+    // Update the network status if we've removed all standard paths
+    if (paths[PathType::standard].empty())
+        update_status(ConnectionStatus::disconnected);
+}
+
 void Network::handle_node_error(
         service_node node, PathType path_type, connection_info conn_info, std::string request_id) {
     handle_errors(
@@ -2300,10 +2260,10 @@ void Network::handle_errors(
                 path_name);
         auto updated_info = info;
         updated_info.retry_reason = request_info::RetryReason::decryption_failure;
-        request_queue[updated_info.path_type].emplace_back(
-                updated_info, std::move(*handle_response));
-        net.call_soon([this]() { resume_queues(); });
-        return;
+        return net.call_soon([this, updated_info, cb = std::move(*handle_response)]() {
+            _send_onion_request(updated_info, std::move(cb));
+        });
+    }
     }
 
     // A number of server errors can return HTML data but no status code, we want to extract those
@@ -2413,10 +2373,9 @@ void Network::handle_errors(
                     auto updated_info = info;
                     updated_info.destination = *random_node;
                     updated_info.retry_reason = request_info::RetryReason::redirect;
-                    request_queue[updated_info.path_type].emplace_back(
-                            updated_info, std::move(*handle_response));
-                    net.call_soon([this]() { resume_queues(); });
-                    return;
+                    return net.call_soon([this, updated_info, cb = std::move(*handle_response)]() {
+                        _send_onion_request(updated_info, std::move(cb));
+                    });
                 }
 
                 if (!response)
@@ -2449,7 +2408,7 @@ void Network::handle_errors(
                     need_swarm_write = true;
                     need_write = true;
                 }
-                snode_cache_cv.notify_one();
+                update_disk_cache_throttled();
                 return (*handle_response)(false, false, status_code, response);
             } catch (...) {
             }
@@ -2636,31 +2595,11 @@ void Network::handle_errors(
     });
 
     // Drop the path if invalid
-    if (updated_path.failure_count >= path_failure_threshold) {
-        // Close the connection immediately (just in case there are other requests happening)
-        if (path_it->conn_info.conn)
-            path_it->conn_info.conn->close_connection();
-
-        auto path_nodes = path_it->nodes;
-        path_it->conn_info.conn.reset();
-        path_it->conn_info.stream.reset();
-        paths[info.path_type].erase(path_it);
-
-        std::vector<std::string> node_descriptions;
-        std::transform(
-                path_nodes.begin(),
-                path_nodes.end(),
-                std::back_inserter(node_descriptions),
-                [](service_node& node) { return node.to_string(); });
-        auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
-        log::info(cat, "Dropping {} path ({}): [{}]", path_name, info.request_id, path_description);
-    } else
+    if (updated_path.failure_count >= path_failure_threshold)
+        drop_path(info.request_id, info.path_type, *path_it);
+    else
         std::replace(
                 paths[info.path_type].begin(), paths[info.path_type].end(), *path_it, updated_path);
-
-    // Update the network status if we've removed all standard paths
-    if (paths[PathType::standard].empty())
-        update_status(ConnectionStatus::disconnected);
 
     // Update the snode cache
     {
@@ -2682,7 +2621,7 @@ void Network::handle_errors(
 
         need_write = true;
     }
-    snode_cache_cv.notify_one();
+    update_disk_cache_throttled();
 
     if (handle_response)
         (*handle_response)(false, false, status_code, response);

@@ -98,8 +98,8 @@ struct request_info {
             std::optional<ustring> _original_body,
             std::optional<session::onionreq::x25519_pubkey> _swarm_pk,
             PathType _type = PathType::standard,
-            std::optional<std::string> endpoint = "onion_req",
             std::optional<std::string> _req_id = std::nullopt,
+            std::optional<std::string> endpoint = "onion_req",
             std::optional<ustring> _body = std::nullopt);
 
     enum class RetryReason {
@@ -133,6 +133,7 @@ class Network {
     // Disk thread state
     std::mutex snode_cache_mutex;  // This guards all the below:
     std::condition_variable snode_cache_cv;
+    bool has_pending_disk_write = false;
     bool shut_down_disk_thread = false;
     bool need_write = false;
     bool need_pool_write = false;
@@ -150,27 +151,33 @@ class Network {
 
     // General values
     bool suspended = false;
+    bool being_destroyed = false;
     ConnectionStatus status;
     oxen::quic::Network net;
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
     std::unordered_map<PathType, std::vector<onion_path>> paths;
 
-    // Resume queues throttling
+    // Snode refresh state
+    int snode_cache_refresh_failure_count;
+    int in_progress_snode_cache_refresh_count;
+    std::optional<std::string> current_snode_cache_refresh_request_id;
+    std::vector<std::function<void()>> after_snode_cache_refresh;
+    std::optional<std::vector<service_node>> unused_snode_refresh_nodes;
+    std::shared_ptr<std::vector<std::vector<service_node>>> snode_refresh_results;
+
+    // First hop state
+    std::optional<std::vector<service_node>> unused_connection_and_path_build_nodes;
+    int connection_failures = 0;
+    std::deque<connection_info> unused_connections;
+    std::unordered_set<std::string> in_progress_connections;
+
+    // Path build state
+    int path_build_failures = 0;
+    std::deque<PathType> path_build_queue;
+
+    // Request state
     bool has_scheduled_resume_queues = false;
     std::chrono::system_clock::time_point last_resume_queues_timestamp{};
-
-    // Snode refreshing values
-    bool refreshing_snode_cache = false;
-    int snode_cache_refresh_failure_count;
-    std::vector<std::function<void()>> after_snode_cache_refresh;
-
-    // Path building values
-    int general_path_build_failures;
-    std::vector<PathType> path_build_queue;
-    std::vector<service_node> unused_path_build_nodes;
-    std::unordered_map<std::string, std::pair<PathType, int>> in_progress_path_builds;
-
-    // Pending requests
     std::unordered_map<PathType, std::vector<std::pair<request_info, network_response_callback_t>>>
             request_queue;
 
@@ -342,11 +349,6 @@ class Network {
             network_response_callback_t handle_response);
 
   private:
-    /// API: network/_send_onion_request
-    ///
-    /// Internal function invoked by ::send_onion_request after request_info construction
-    void _send_onion_request(request_info info, network_response_callback_t handle_response);
-
     /// API: network/all_path_ips
     ///
     /// Internal function to retrieve all of the node ips current used in paths
@@ -360,6 +362,15 @@ class Network {
 
         return result;
     };
+
+    /// API: network/update_disk_cache_throttled
+    ///
+    /// Function which can be used to notify the disk write thread that a write can be performed.
+    /// This function has a very basic throttling mechanism where it triggers the write a small
+    /// delay after it is called, any subsequent calls to the function within the same period will
+    /// be ignored.  This is done to avoid excessive disk writes which probably aren't needed for
+    /// the cached network data.
+    virtual void update_disk_cache_throttled(bool force_immediate_write = false);
 
     /// API: network/disk_write_thread_loop
     ///
@@ -393,12 +404,21 @@ class Network {
     /// - 'max_delay' - [in] the maximum amount of time to delay for.
     virtual std::chrono::milliseconds retry_delay(
             int num_failures,
-            std::chrono::milliseconds max_delay = std::chrono::milliseconds{3000});
+            std::chrono::milliseconds max_delay = std::chrono::milliseconds{5000});
 
     /// API: network/get_endpoint
     ///
     /// Retrieves or creates a new endpoint pointer.
     std::shared_ptr<oxen::quic::Endpoint> get_endpoint();
+
+    /// API: network/get_unused_nodes
+    ///
+    /// Retrieves a list of all nodes in the cache which are currently unused (ie. not present in an
+    /// exising or pending path, connection or request).
+    ///
+    /// Outputs:
+    /// - The list of unused nodes.
+    std::vector<service_node> get_unused_nodes();
 
     /// API: network/establish_connection
     ///
@@ -407,7 +427,6 @@ class Network {
     ///
     /// Inputs:
     /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - 'path_type' - [in] the type of paths this connection is for.
     /// - `target` -- [in] the target service node to connect to.
     /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
     /// `quic::DEFAULT_HANDSHAKE_TIMEOUT` will be used.
@@ -415,30 +434,52 @@ class Network {
     /// established or fails.
     void establish_connection(
             std::string request_id,
-            PathType path_type,
             service_node target,
             std::optional<std::chrono::milliseconds> timeout,
             std::function<void(connection_info info, std::optional<std::string> error)> callback);
 
-    /// API: network/resume_queues
+    /// API: network/establish_and_store_connection
     ///
-    /// This function is the backbone of the Network class, it will:
-    /// - Build/refresh the snode cache
-    /// - Try to recover connections to paths
-    /// - Build any queued path builds
-    /// - Start any queued requests that are now valid
+    /// Establishes a connection to a random unused node and stores it in the `unused_connections`
+    /// list.
     ///
-    /// When most of these processes finish they call this function again to move through the next
-    /// step in the process.  Note: Due to this "looping" behaviour there is a built in throttling
-    /// mechanism to avoid running the logic excessively.
-    virtual void resume_queues();
+    /// Inputs:
+    /// - 'request_id' - [in] id for the request which triggered the call.
+    virtual void establish_and_store_connection(std::string request_id);
+
+    /// API: network/refresh_snode_cache_complete
+    ///
+    /// This function will be called from either `refresh_snode_cache` or
+    /// `refresh_snode_cache_from_seed_nodes` and will actually update the state and persist the
+    /// updated cache to disk.
+    ///
+    /// Inputs:
+    /// - 'nodes' - [in] the nodes to use as the updated cache.
+    void refresh_snode_cache_complete(std::vector<service_node> nodes);
+
+    /// API: network/refresh_snode_cache_from_seed_nodes
+    ///
+    /// This function refreshes the snode cache for a random seed node. Unlike the
+    /// `refresh_snode_cache` function this will update the cache with the response from a single
+    /// seed node since it's a trusted source.
+    ///
+    /// Inputs:
+    /// - 'request_id' - [in] id for an existing refresh_snode_cache request.
+    /// - 'reset_unused_nodes' - [in] flag to indicate whether this should reset the unused nodes
+    /// before kicking off the request.
+    virtual void refresh_snode_cache_from_seed_nodes(
+            std::string request_id, bool reset_unused_nodes);
 
     /// API: network/refresh_snode_cache
     ///
     /// This function refreshes the snode cache.  If the current cache is to small (or not present)
-    /// this will fetch the cache from a random seed node, otherwise it will randomly pick a number
-    /// of nodes and set the cache to the intersection of the results.
-    virtual void refresh_snode_cache();
+    /// this will trigger the above `refresh_snode_cache_from_seed_nodes` function, otherwise it
+    /// will randomly pick a number of nodes from the existing cache and refresh the cache from the
+    /// intersection of the results.
+    ///
+    /// Inputs:
+    /// - 'existing_request_id' - [in, optional] id for an existing refresh_snode_cache request.
+    virtual void refresh_snode_cache(std::optional<std::string> existing_request_id = std::nullopt);
 
     /// API: network/build_path
     ///
@@ -446,21 +487,11 @@ class Network {
     /// random service nodes in the snode pool.
     ///
     /// Inputs:
+    /// - `path_type` -- [in] the type of path to build.
     /// - 'existing_request_id' - [in, optional] id for an existing build_path request.  Generally
     /// this will only be set when retrying a path build.
-    /// - `path_type` -- [in] the type of path to build.
-    virtual void build_path(std::optional<std::string> existing_request_id, PathType path_type);
-
-    /// API: network/recover_path
-    ///
-    /// Attempt to "recover" an existing onion request path.  This will attempt to establish a new
-    /// connection to the guard node of the path, if unable to establish a new connection the path
-    /// will be dropped an a new path build will be enqueued.
-    ///
-    /// Inputs:
-    /// - `path_type` -- [in] the type for the provided path.
-    /// - 'path' - [in] the path to try to reconnect to.
-    virtual void recover_path(PathType path_type, onion_path path);
+    virtual void build_path(
+            PathType path_type, std::optional<std::string> existing_request_id = std::nullopt);
 
     /// API: network/find_valid_path
     ///
@@ -474,39 +505,23 @@ class Network {
     ///
     /// Outputs:
     /// - The possible path, if found.
-    std::optional<onion_path> find_valid_path(request_info info, std::vector<onion_path> paths);
+    virtual std::optional<onion_path> find_valid_path(
+            request_info info, std::vector<onion_path> paths);
 
     /// API: network/enqueue_path_build_if_needed
     ///
     /// Adds a path build to the path build queue for the specified type if the total current or
     /// pending paths is below the minimum threshold for the given type.  Note: This may result in
-    /// more paths than the minimum threshold being built but not allowing that behaviour could
-    /// result in a request that never gets sent due to it's destination being present in the
-    /// existing path(s) for the type.
+    /// more paths than the minimum threshold being built in order to avoid a situation where a
+    /// request may never get sent due to it's destination being present in the existing path(s) for
+    /// the type.
     ///
     /// Inputs:
     /// - `path_type` -- [in] the type of path to be built.
-    virtual void enqueue_path_build_if_needed(PathType path_type, bool existing_paths_unsuitable);
-
-    /// API: network/get_service_nodes_recursive
-    ///
-    /// A recursive function that will attempt to retrieve service nodes from a given node until it
-    /// successfully retrieves nodes or the list is drained.
-    ///
-    /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - `target_nodes` -- [in] list of nodes to send requests to until we get a result or it's
-    /// drained.
-    /// - `limit` -- [in, optional] the number of service nodes to retrieve.
-    /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If we drain the
-    /// `target_nodes` and haven't gotten a successful response then the callback will be invoked
-    /// with an empty vector and an error string.
-    void get_service_nodes_recursive(
-            std::string request_id,
-            std::vector<service_node> target_nodes,
-            std::optional<int> limit,
-            std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
-                    callback);
+    /// - `found_path` -- [in, optional] the path which was found for the request by calling
+    /// `find_valid_path` above.
+    virtual void enqueue_path_build_if_needed(
+            PathType path_type, std::optional<onion_path> found_path);
 
     /// API: network/get_service_nodes
     ///
@@ -514,38 +529,22 @@ class Network {
     ///
     /// Inputs:
     /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - `node` -- [in] node to retrieve the service nodes from.
+    /// - `conn_info` -- [in] the connection info to retrieve service nodes from.
     /// - `limit` -- [in, optional] the number of service nodes to retrieve.
     /// - `callback` -- [in] callback to be triggered once we receive nodes.  NOTE: If an error
     /// occurs an empty list and an error will be provided.
     void get_service_nodes(
             std::string request_id,
-            service_node node,
+            connection_info conn_info,
             std::optional<int> limit,
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                     callback);
 
-    /// API: network/get_snode_version
+    /// API: network/_send_onion_request
     ///
-    /// Retrieves the version information for a given service node.
-    ///
-    /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
-    /// - 'type' - [in] the type of paths to send the request across.
-    /// - `node` -- [in] node to retrieve the version from.
-    /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
-    /// `quic::DEFAULT_TIMEOUT` will be used.
-    /// - `callback` -- [in] callback to be triggered with the result of the request.  NOTE: If an
-    /// error occurs an empty list and an error will be provided.
-    virtual void get_snode_version(
-            std::string request_id,
-            PathType path_type,
-            service_node node,
-            std::optional<std::chrono::milliseconds> timeout,
-            std::function<
-                    void(std::vector<int> version,
-                         connection_info info,
-                         std::optional<std::string> error)> callback);
+    /// Internal function invoked by ::send_onion_request after request_info construction
+    virtual void _send_onion_request(
+            request_info info, network_response_callback_t handle_response);
 
     /// API: network/process_v3_onion_response
     ///
@@ -587,6 +586,8 @@ class Network {
     /// response this is just the direct response body from quic as it simplifies consuming the
     /// response elsewhere).
     std::pair<uint16_t, std::string> validate_response(oxen::quic::message resp, bool is_bencoded);
+
+    void drop_path(std::string request_id, PathType path_type, onion_path path);
 
     /// API: network/handle_errors
     ///
