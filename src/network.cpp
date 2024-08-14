@@ -395,11 +395,9 @@ Network::Network(
 }
 
 Network::~Network() {
-    // We need to set a flag to prevent the logic in the `connection_closed_callback` from running
-    // because if we can get bad memory errors due to trying to use `net.call` while the
-    // `quic::Network` is in the process of being destroyed
-    suspended = true;
-    being_destroyed = true;
+    // We need to explicitly close the connections at the start of the destructor to prevent ban
+    // memory errors due to complex logic with the quic::Network instance
+    _close_connections();
 
     {
         std::lock_guard lock{snode_cache_mutex};
@@ -757,35 +755,25 @@ void Network::resume() {
 }
 
 void Network::close_connections() {
-    net.call([this]() mutable {
-        // Explicitly reset the endpoint to close all connections
-        endpoint.reset();
+    net.call([this]() mutable { _close_connections(); });
+}
 
-        // Cancel any pending requests (they can't succeed once the connection is closed)
-        for (const auto& [path_type, path_type_requests] : request_queue)
-            for (const auto& [info, callback] : path_type_requests)
-                callback(false, false, error_network_suspended, "Network is suspended.");
-        request_queue.clear();
+void Network::_close_connections() {
+    // Explicitly reset the endpoint to close all connections
+    endpoint.reset();
 
-        // Explicitly reset the connection and stream (just in case)
-        for (auto& [type, paths_for_type] : paths) {
-            for (auto& path : paths_for_type) {
-                path.conn_info.conn.reset();
-                path.conn_info.stream.reset();
-            }
-        }
-        paths.clear();
+    // Cancel any pending requests (they can't succeed once the connection is closed)
+    for (const auto& [path_type, path_type_requests] : request_queue)
+        for (const auto& [info, callback] : path_type_requests)
+            callback(false, false, error_network_suspended, "Network is suspended.");
 
-        // Reset any spare first hops
-        for (auto& conn_info : unused_connections) {
-            conn_info.conn.reset();
-            conn_info.stream.reset();
-        }
-        unused_connections.clear();
+    // Clear all storage of requests, paths and connections
+    request_queue.clear();
+    paths.clear();
+    unused_connections.clear();
 
-        update_status(ConnectionStatus::disconnected);
-        log::info(cat, "Closed all connections.");
-    });
+    update_status(ConnectionStatus::disconnected);
+    log::info(cat, "Closed all connections.");
 }
 
 void Network::update_status(ConnectionStatus updated_status) {
@@ -917,12 +905,6 @@ void Network::establish_connection(
             },
             [this, target, request_id, cb, cb_called, conn_future](
                     quic::connection_interface& conn, uint64_t error_code) mutable {
-                // If the instance is in the process of being destroyed then we don't want to
-                // interact with `net` as it's also likely in the process of being destroyed and
-                // trigging any of the below logic can result in bad memory access
-                if (being_destroyed)
-                    return;
-
                 log::trace(cat, "Connection closed for {}.", request_id);
 
                 // Just in case, call it within a `net.call`
@@ -938,18 +920,8 @@ void Network::establish_connection(
 
                     // Remove the connection from `unused_connection` if present
                     std::erase_if(unused_connections, [&conn, &target](auto& unused_conn) {
-                        if (unused_conn.node != target &&
-                            (!unused_conn.conn ||
-                             unused_conn.conn->reference_id() != conn.reference_id()))
-                            return false;
-
-                        // Just in case reset the connection and pointers
-                        if (unused_conn.conn)
-                            unused_conn.conn->close_connection();
-
-                        unused_conn.conn.reset();
-                        unused_conn.stream.reset();
-                        return true;
+                        return (unused_conn.node == target && unused_conn.conn &&
+                                unused_conn.conn->reference_id() == conn.reference_id());
                     });
 
                     // If this connection is being used in an existing path then we should drop it
@@ -1381,7 +1353,6 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
 
     // If we still don't have enough unused nodes then we need to refresh the cache
     if (unused_connection_and_path_build_nodes->size() < path_size) {
-        std::cout << "RAWR build_path need a snode cache: " + request_id << std::endl;
         log::info(
                 cat,
                 "Re-queing {} path build due to insufficient nodes ({}).",
@@ -1460,7 +1431,7 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
         // If a paths_changed callback was provided then call it
         if (paths_changed) {
             std::vector<std::vector<service_node>> raw_paths;
-            for (auto& path : paths[path_type])
+            for (const auto& path : paths[path_type])
                 raw_paths.emplace_back(path.nodes);
 
             paths_changed(raw_paths);
@@ -1492,7 +1463,7 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
 }
 
 std::optional<onion_path> Network::find_valid_path(
-        request_info info, std::vector<onion_path> paths) {
+        const request_info info, const std::vector<onion_path> paths) {
     if (paths.empty())
         return std::nullopt;
 
@@ -1540,7 +1511,7 @@ std::optional<onion_path> Network::find_valid_path(
 void Network::enqueue_path_build_if_needed(
         PathType path_type, std::optional<onion_path> found_path) {
     net.call([this, path_type, found_path]() {
-        auto current_paths = paths[path_type];
+        const auto current_paths = paths[path_type];
 
         // In `single_path_mode` we never build additional paths
         if (current_paths.size() > 0 && single_path_mode)
@@ -1610,10 +1581,6 @@ void Network::get_service_nodes(
 void Network::get_swarm(
         session::onionreq::x25519_pubkey swarm_pubkey,
         std::function<void(std::vector<service_node> swarm)> callback) {
-    // If the network is in the process of being shut down just ignore the call
-    if (being_destroyed)
-        return;
-
     auto request_id = random::random_base32(4);
     log::trace(cat, "{} called for {} as {}.", __PRETTY_FUNCTION__, swarm_pubkey.hex(), request_id);
 
@@ -1701,10 +1668,6 @@ void Network::get_swarm(
 
 void Network::set_swarm(
         session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm) {
-    // If the network is in the process of being shut down just ignore the call
-    if (being_destroyed)
-        return;
-
     net.call([this, hex_key = swarm_pubkey.hex(), swarm]() mutable {
         {
             std::lock_guard lock{snode_cache_mutex};
@@ -1718,10 +1681,6 @@ void Network::set_swarm(
 
 void Network::get_random_nodes(
         uint16_t count, std::function<void(std::vector<service_node> nodes)> callback) {
-    // If the network is in the process of being shut down just ignore the call
-    if (being_destroyed)
-        return;
-
     auto request_id = random::random_base32(4);
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
 
@@ -1769,7 +1728,8 @@ void Network::send_request(
                 try {
                     result = validate_response(resp, false);
                 } catch (const status_code_exception& e) {
-                    return handle_errors(info, conn_info, false, e.status_code, e.what(), cb);
+                    return handle_errors(
+                            info, conn_info, resp.timed_out, e.status_code, e.what(), cb);
                 } catch (const std::exception& e) {
                     return handle_errors(info, conn_info, resp.timed_out, -1, e.what(), cb);
                 }
@@ -1796,10 +1756,6 @@ void Network::send_onion_request(
 }
 
 void Network::_send_onion_request(request_info info, network_response_callback_t handle_response) {
-    // If the network is in the process of being shut down just ignore the call
-    if (being_destroyed)
-        return;
-
     auto path_name = path_type_name(info.path_type, single_path_mode);
     log::trace(cat, "{} called for {} path ({}).", __PRETTY_FUNCTION__, path_name, info.request_id);
 
@@ -2196,8 +2152,6 @@ void Network::drop_path(std::string request_id, PathType path_type, onion_path p
         path.conn_info.conn->close_connection();
 
     auto path_nodes = path.nodes;
-    path.conn_info.conn.reset();
-    path.conn_info.stream.reset();
     paths[path_type].erase(
             std::remove(paths[path_type].begin(), paths[path_type].end(), path),
             paths[path_type].end());
@@ -2448,7 +2402,7 @@ void Network::handle_errors(
                 cat, "Request {} failed but {} path already dropped.", info.request_id, path_name);
 
         if (handle_response)
-            (*handle_response)(false, false, status_code, response);
+            (*handle_response)(false, timeout, status_code, response);
         return;
     }
 
@@ -2624,7 +2578,7 @@ void Network::handle_errors(
     update_disk_cache_throttled();
 
     if (handle_response)
-        (*handle_response)(false, false, status_code, response);
+        (*handle_response)(false, timeout, status_code, response);
 }
 
 std::vector<network_service_node> convert_service_nodes(

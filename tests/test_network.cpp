@@ -50,7 +50,7 @@ class TestNetwork : public Network {
     ConnectionStatus get_status() { return status; }
 
     void set_snode_cache(std::vector<service_node> cache) {
-        // Need to set the `last_snode_cache_update` to `1s` ago because otherwise it'll be
+        // Need to set the `last_snode_cache_update` to `10s` ago because otherwise it'll be
         // considered invalid when checking the cache validity
         snode_cache = cache;
         last_snode_cache_update = (std::chrono::system_clock::now() - 10s);

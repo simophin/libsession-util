@@ -151,7 +151,6 @@ class Network {
 
     // General values
     bool suspended = false;
-    bool being_destroyed = false;
     ConnectionStatus status;
     oxen::quic::Network net;
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
@@ -183,6 +182,7 @@ class Network {
 
   public:
     friend class TestNetwork;
+    friend class TestNetworkWrapper;
 
     // Hook to be notified whenever the network connection status changes.
     std::function<void(ConnectionStatus status)> status_changed;
@@ -385,6 +385,13 @@ class Network {
     /// data exists.
     void load_cache_from_disk();
 
+    /// API: network/_close_connections
+    ///
+    /// Triggered via the close_connections function but actually contains the logic to clear out
+    /// paths, requests and connections.  This function is not thread safe so should should be
+    /// called with that in mind.
+    void _close_connections();
+
     /// API: network/update_status
     ///
     /// Internal function to update the connection status and trigger the `status_changed` hook if
@@ -506,7 +513,7 @@ class Network {
     /// Outputs:
     /// - The possible path, if found.
     virtual std::optional<onion_path> find_valid_path(
-            request_info info, std::vector<onion_path> paths);
+            const request_info info, const std::vector<onion_path> paths);
 
     /// API: network/enqueue_path_build_if_needed
     ///
