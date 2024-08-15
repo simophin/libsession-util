@@ -173,6 +173,7 @@ class Network {
     // Path build state
     int path_build_failures = 0;
     std::deque<PathType> path_build_queue;
+    std::unordered_map<std::string, PathType> in_progress_path_builds;
 
     // Request state
     bool has_scheduled_resume_queues = false;
@@ -490,15 +491,13 @@ class Network {
 
     /// API: network/build_path
     ///
-    /// Build a new onion request path for the specified type by opening and testing connections to
-    /// random service nodes in the snode pool.
+    /// Build a new onion request path for the specified type.  If there are no existing connections
+    /// this will open a new connection to a random service nodes in the snode cache.
     ///
     /// Inputs:
     /// - `path_type` -- [in] the type of path to build.
-    /// - 'existing_request_id' - [in, optional] id for an existing build_path request.  Generally
-    /// this will only be set when retrying a path build.
-    virtual void build_path(
-            PathType path_type, std::optional<std::string> existing_request_id = std::nullopt);
+    /// - 'request_id' - [in] id for the build_path request.
+    virtual void build_path(PathType path_type, std::string request_id);
 
     /// API: network/find_valid_path
     ///
@@ -515,20 +514,18 @@ class Network {
     virtual std::optional<onion_path> find_valid_path(
             const request_info info, const std::vector<onion_path> paths);
 
-    /// API: network/enqueue_path_build_if_needed
+    /// API: network/build_path_if_needed
     ///
-    /// Adds a path build to the path build queue for the specified type if the total current or
-    /// pending paths is below the minimum threshold for the given type.  Note: This may result in
-    /// more paths than the minimum threshold being built in order to avoid a situation where a
-    /// request may never get sent due to it's destination being present in the existing path(s) for
-    /// the type.
+    /// Triggers a path build for the specified type if the total current or pending paths is below
+    /// the minimum threshold for the given type.  Note: This may result in more paths than the
+    /// minimum threshold being built in order to avoid a situation where a request may never get
+    /// sent due to it's destination being present in the existing path(s) for the type.
     ///
     /// Inputs:
     /// - `path_type` -- [in] the type of path to be built.
-    /// - `found_path` -- [in, optional] the path which was found for the request by calling
+    /// - `found_path` -- [in] flag indicating whether a valid path was found by calling
     /// `find_valid_path` above.
-    virtual void enqueue_path_build_if_needed(
-            PathType path_type, std::optional<onion_path> found_path);
+    virtual void build_path_if_needed(PathType path_type, bool found_valid_path);
 
     /// API: network/get_service_nodes
     ///

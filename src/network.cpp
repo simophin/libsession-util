@@ -139,14 +139,33 @@ namespace {
         // error neither of which contain the `storage_server_version` - luckily we don't need the
         // version for these two cases so can just default it to `0`
         std::vector<int> storage_server_version = {0};
-        if (json.contains("storage_server_version"))
-            storage_server_version =
-                    parse_version(json["storage_server_version"].get<std::string>());
+        if (json.contains("storage_server_version")) {
+            if (json["storage_server_version"].is_array()) {
+                if (json["storage_server_version"].size() > 0) {
+                    // Convert the version to a string and parse it back into a version code to
+                    // ensure the version formats remain consistent throughout
+                    storage_server_version = json["storage_server_version"].get<std::vector<int>>();
+                    storage_server_version =
+                            parse_version("{}"_format(fmt::join(storage_server_version, ".")));
+                }
+            } else
+                storage_server_version =
+                        parse_version(json["storage_server_version"].get<std::string>());
+        }
 
-        return {oxenc::from_hex(pk_ed),
-                storage_server_version,
-                json["ip"].get<std::string>(),
-                json["port_omq"].get<uint16_t>()};
+        std::string ip;
+        if (json.contains("public_ip"))
+            ip = json["public_ip"].get<std::string>();
+        else
+            ip = json["ip"].get<std::string>();
+
+        uint16_t port;
+        if (json.contains("storage_lmq_port"))
+            port = json["storage_lmq_port"].get<uint16_t>();
+        else
+            port = json["port_omq"].get<uint16_t>();
+
+        return {oxenc::from_hex(pk_ed), storage_server_version, ip, port};
     }
 
     service_node node_from_disk(std::string_view str, bool can_ignore_version = false) {
@@ -390,8 +409,11 @@ Network::Network(
 
     // Kick off a separate thread to build paths (may as well kick this off early)
     if (pre_build_paths)
-        for (int i = 0; i < min_path_count(PathType::standard, single_path_mode); ++i)
-            net.call_soon([this] { build_path(PathType::standard); });
+        for (int i = 0; i < min_path_count(PathType::standard, single_path_mode); ++i) {
+            auto request_id = random::random_base32(4);
+            in_progress_path_builds[request_id] = PathType::standard;
+            net.call_soon([this, request_id] { build_path(PathType::standard, request_id); });
+        }
 }
 
 Network::~Network() {
@@ -541,18 +563,18 @@ void Network::load_cache_from_disk() {
 
                         if (swarm_lifetime < swarm_cache_expiration_duration)
                             throw load_cache_exception{"Expired swarm cache."};
+
+                        continue;
                     }
 
                     // Otherwise try to parse as a node (for the swarm cache we can ignore invalid
                     // versions as the `get_swarm` API doesn't return version info)
                     nodes.push_back(node_from_disk(line, true));
-
                 } catch (const std::exception& e) {
                     // Don't bother logging for expired entries (we include the count separately at
                     // the end)
-                    if (dynamic_cast<const load_cache_exception*>(&e) == nullptr) {
+                    if (dynamic_cast<const load_cache_exception*>(&e) == nullptr)
                         ++invalid_swarm_entries;
-                    }
 
                     // The cache is invalid, we should remove it
                     if (!checked_swarm_expiration) {
@@ -774,6 +796,7 @@ void Network::_close_connections() {
     path_build_queue.clear();
     unused_connections.clear();
     in_progress_connections.clear();
+    snode_refresh_results.reset();
     current_snode_cache_refresh_request_id = std::nullopt;
     unused_connection_and_path_build_nodes = std::nullopt;
 
@@ -1053,6 +1076,7 @@ void Network::establish_and_store_connection(std::string request_id) {
 
                 // Kick off the next pending path build since we now have a valid connection
                 if (!path_build_queue.empty()) {
+                    in_progress_path_builds[request_id] = path_build_queue.front();
                     net.call_soon([this, path_type = path_build_queue.front(), request_id]() {
                         build_path(path_type, request_id);
                     });
@@ -1105,8 +1129,11 @@ void Network::refresh_snode_cache_complete(std::vector<service_node> nodes) {
     after_snode_cache_refresh.clear();
 
     // Resume any queued path builds
-    for (const auto& path_type : path_build_queue)
-        net.call_soon([this, path_type]() { build_path(path_type); });
+    for (const auto& path_type : path_build_queue) {
+        auto request_id = random::random_base32(4);
+        in_progress_path_builds[request_id] = path_type;
+        net.call_soon([this, path_type, request_id]() { build_path(path_type, request_id); });
+    }
     path_build_queue.clear();
 }
 
@@ -1123,9 +1150,10 @@ void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool r
         current_snode_cache_refresh_request_id != request_id) {
         log::info(
                 cat,
-                "Snode cache refresh from seed node ignored as it doesn't match the current "
+                "Snode cache refresh from seed node {} ignored as it doesn't match the current "
                 "refresh id ({}).",
-                request_id);
+                request_id,
+                current_snode_cache_refresh_request_id.value_or("NULL"));
         return;
     }
 
@@ -1215,7 +1243,11 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
     // won't be blocked)
     if (current_snode_cache_refresh_request_id &&
         current_snode_cache_refresh_request_id != request_id) {
-        log::info(cat, "Snode cache refresh ignored due to in progress refresh ({}).", request_id);
+        log::info(
+                cat,
+                "Snode cache refresh {} ignored due to in progress refresh ({}).",
+                request_id,
+                current_snode_cache_refresh_request_id.value_or("NULL"));
         return;
     }
 
@@ -1265,19 +1297,29 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
             info,
             [this, request_id](
                     bool success, bool timeout, int16_t, std::optional<std::string> response) {
-                // Update the in progress request count
-                in_progress_snode_cache_refresh_count--;
+                // If the 'snode_refresh_results' value doesn't exist it means we have already
+                // completed/cancelled this snode cache refresh and have somehow gotten into an
+                // invalid state, so just ignore this request
+                if (!snode_refresh_results) {
+                    log::warning(
+                            cat,
+                            "Ignoring snode cache response after cache update already completed "
+                            "({}).",
+                            request_id);
+                    return;
+                }
 
                 try {
                     if (!success || timeout || !response)
                         throw std::runtime_error{response.value_or("Unknown error.")};
-                    if (!snode_refresh_results)
-                        throw std::runtime_error{"Invalid result pointer."};
 
                     nlohmann::json response_json = nlohmann::json::parse(*response);
                     std::vector<service_node> result =
                             detail::process_get_service_nodes_response(response_json);
                     snode_refresh_results->emplace_back(result);
+
+                    // Update the in progress request count
+                    in_progress_snode_cache_refresh_count--;
                 } catch (const std::exception& e) {
                     // The request failed so increment the failure counter and retry after a short
                     // delay
@@ -1287,7 +1329,7 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
                     log::error(
                             cat,
                             "Failed to retrieve nodes from one target when refreshing cache due to "
-                            "error: {}, will try another target after {}ms ({}).",
+                            "error: {} Will try another target after {}ms ({}).",
                             e.what(),
                             cache_refresh_retry_delay.count(),
                             request_id);
@@ -1347,13 +1389,12 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
             });
 }
 
-void Network::build_path(PathType path_type, std::optional<std::string> existing_request_id) {
+void Network::build_path(PathType path_type, std::string request_id) {
     if (suspended) {
         log::info(cat, "Ignoring build_path call as network is suspended.");
         return;
     }
 
-    auto request_id = existing_request_id.value_or(random::random_base32(4));
     auto path_name = path_type_name(path_type, single_path_mode);
 
     // If we don't have an unused connection for the first hop then enqueue the path build and
@@ -1365,6 +1406,7 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
                 path_name,
                 request_id);
         path_build_queue.emplace_back(path_type);
+        in_progress_path_builds.erase(request_id);
         return net.call_soon([this, request_id]() { establish_and_store_connection(request_id); });
     }
 
@@ -1382,11 +1424,13 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
                 request_id);
         path_build_failures = 0;
         path_build_queue.emplace_back(path_type);
+        in_progress_path_builds.erase(request_id);
         return net.call_soon([this]() { refresh_snode_cache(); });
     }
 
     // Build the path
     log::info(cat, "Building {} path ({}).", path_name, request_id);
+    in_progress_path_builds[request_id] = path_type;
 
     auto conn_info = std::move(unused_connections.front());
     unused_connections.pop_front();
@@ -1427,6 +1471,7 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
     // Store the new path
     auto path = onion_path{std::move(conn_info), path_nodes, 0};
     paths[path_type].emplace_back(path);
+    in_progress_path_builds.erase(request_id);
 
     // Log that a path was built
     std::vector<std::string> node_descriptions;
@@ -1472,9 +1517,13 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
 
     // If there are still pending requests and there are no pending path builds for them then kick
     // off a subsequent path build in an effort to resume the remaining requests
-    if (!request_queue[path_type].empty())
-        net.call_soon([this, path_type]() { build_path(path_type); });
-    else
+    if (!request_queue[path_type].empty()) {
+        auto additional_request_id = random::random_base32(4);
+        in_progress_path_builds[additional_request_id] = path_type;
+        net.call_soon([this, path_type, additional_request_id] {
+            build_path(path_type, additional_request_id);
+        });
+    } else
         request_queue.erase(path_type);
 
     // If there are no more pending requests, path builds or connections then we should reset the
@@ -1529,35 +1578,35 @@ std::optional<onion_path> Network::find_valid_path(
     return possible_paths.front();
 };
 
-void Network::enqueue_path_build_if_needed(
-        PathType path_type, std::optional<onion_path> found_path) {
-    net.call([this, path_type, found_path]() {
-        const auto current_paths = paths[path_type];
+void Network::build_path_if_needed(PathType path_type, bool found_path) {
+    const auto current_paths = paths[path_type];
 
-        // In `single_path_mode` we never build additional paths
-        if (current_paths.size() > 0 && single_path_mode)
-            return;
+    // In `single_path_mode` we never build additional paths
+    if (current_paths.size() > 0 && single_path_mode)
+        return;
 
-        // We only want to enqueue a new path build if:
-        // - We don't have the minimum number of paths for the specified type
-        // - We don't have any pending builds
-        // - The current paths are unsuitable for the request
-        auto min_paths = min_path_count(path_type, single_path_mode);
+    // We only want to enqueue a new path build if:
+    // - We don't have the minimum number of paths for the specified type
+    // - We don't have any pending builds
+    // - The current paths are unsuitable for the request
+    auto min_paths = min_path_count(path_type, single_path_mode);
 
-        // If we have enough existing paths and found a valid path then no need to build more paths
-        if (found_path && current_paths.size() >= min_paths)
-            return;
+    // If we have enough existing paths and found a valid path then no need to build more paths
+    if (found_path && current_paths.size() >= min_paths)
+        return;
 
-        // Get the number pending paths
-        auto pending_paths =
-                std::count(path_build_queue.begin(), path_build_queue.end(), path_type);
+    // Get the number pending paths
+    auto queued = std::count(path_build_queue.begin(), path_build_queue.end(), path_type);
+    auto in_progress = std::count_if(
+            in_progress_path_builds.begin(),
+            in_progress_path_builds.end(),
+            [&path_type](const auto& build) { return build.second == path_type; });
+    auto pending_paths = (queued + in_progress);
 
-        // If we don't have enough current + pending paths, or the request couldn't be sent then
-        // kick off a new path build
-        if ((current_paths.size() + pending_paths) < min_paths ||
-            (!found_path && pending_paths == 0))
-            net.call_soon([this, path_type]() { build_path(path_type); });
-    });
+    // If we don't have enough current + pending paths, or the request couldn't be sent then
+    // kick off a new path build
+    if ((current_paths.size() + pending_paths) < min_paths || (!found_path && pending_paths == 0))
+        build_path(path_type, random::random_base32(4));
 }
 
 // MARK: Direct Requests
@@ -1782,7 +1831,9 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
     // the queue to be run once a path for it has successfully been built
     auto path = net.call_get([this, info]() {
         auto result = find_valid_path(info, paths[info.path_type]);
-        enqueue_path_build_if_needed(info.path_type, result);
+        net.call_soon([this, path_type = info.path_type, found_path = result.has_value()]() {
+            build_path_if_needed(path_type, found_path);
+        });
         return result;
     });
 
