@@ -767,10 +767,15 @@ void Network::_close_connections() {
         for (const auto& [info, callback] : path_type_requests)
             callback(false, false, error_network_suspended, "Network is suspended.");
 
-    // Clear all storage of requests, paths and connections
+    // Clear all storage of requests, paths and connections so that we are in a fresh state on
+    // relaunch
     request_queue.clear();
     paths.clear();
+    path_build_queue.clear();
     unused_connections.clear();
+    in_progress_connections.clear();
+    current_snode_cache_refresh_request_id = std::nullopt;
+    unused_connection_and_path_build_nodes = std::nullopt;
 
     update_status(ConnectionStatus::disconnected);
     log::info(cat, "Closed all connections.");
@@ -978,7 +983,7 @@ void Network::establish_connection(
 }
 
 void Network::establish_and_store_connection(std::string request_id) {
-    // If we are suspended then done try to establish a new connection
+    // If we are suspended then don't try to establish a new connection
     if (suspended)
         return;
 
@@ -997,8 +1002,7 @@ void Network::establish_and_store_connection(std::string request_id) {
                 "Unable to establish new connection due to lack of unused nodes, refreshing snode "
                 "cache ({}).",
                 request_id);
-        net.call_soon([this, request_id]() { refresh_snode_cache(request_id); });
-        return;
+        return net.call_soon([this, request_id]() { refresh_snode_cache(request_id); });
     }
 
     // Otherwise check if it's been too long since the last cache update and, if so, trigger a
@@ -1112,6 +1116,19 @@ void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool r
         return;
     }
 
+    // Only allow a single cache refresh at a time (this gets cleared in `_close_connections` so if
+    // it happens to loop after going to, and returning from, the background a subsequent refresh
+    // won't be blocked)
+    if (current_snode_cache_refresh_request_id &&
+        current_snode_cache_refresh_request_id != request_id) {
+        log::info(
+                cat,
+                "Snode cache refresh from seed node ignored as it doesn't match the current "
+                "refresh id ({}).",
+                request_id);
+        return;
+    }
+
     // If the unused nodes is empty then reset it (if we are refreshing from seed nodes it means the
     // local cache is not usable so we are just going to have to call this endlessly until it works)
     if (reset_unused_nodes || !unused_snode_refresh_nodes || unused_snode_refresh_nodes->empty()) {
@@ -1155,7 +1172,7 @@ void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool r
                         info,
                         std::nullopt,
                         [this, request_id](
-                                std::vector<service_node> nodes, std::optional<std::string>) {
+                                std::vector<service_node> nodes, std::optional<std::string> error) {
                             // If we got no nodes then we will need to try again
                             if (nodes.empty()) {
                                 snode_cache_refresh_failure_count++;
@@ -1163,8 +1180,9 @@ void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool r
                                         retry_delay(snode_cache_refresh_failure_count);
                                 log::error(
                                         cat,
-                                        "Failed to retrieve nodes from seen node to refresh snode "
-                                        "cache, will retry after {}ms ({}).",
+                                        "Failed to retrieve nodes from seed node to refresh cache "
+                                        "due to error: {}, will retry after {}ms ({}).",
+                                        error.value_or("Unknown Error"),
                                         cache_refresh_retry_delay.count(),
                                         request_id);
                                 return net.call_later(
@@ -1192,7 +1210,9 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
         return;
     }
 
-    // Only allow a single cache refresh at a time
+    // Only allow a single cache refresh at a time (this gets cleared in `_close_connections` so if
+    // it happens to loop after going to, and returning from, the background a subsequent refresh
+    // won't be blocked)
     if (current_snode_cache_refresh_request_id &&
         current_snode_cache_refresh_request_id != request_id) {
         log::info(cat, "Snode cache refresh ignored due to in progress refresh ({}).", request_id);
@@ -1229,8 +1249,10 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
 
     // Prepare and send the request to retrieve service nodes
     nlohmann::json payload{
-            {"method", "get_service_nodes"},
-            {"params", detail::get_service_nodes_params(std::nullopt)},
+            {"method", "oxend_request"},
+            {"params",
+             {{"endpoint", "get_service_nodes"},
+              {"params", detail::get_service_nodes_params(std::nullopt)}}},
     };
     auto info = request_info::make(
             target_node,
@@ -1254,9 +1276,9 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
 
                     nlohmann::json response_json = nlohmann::json::parse(*response);
                     std::vector<service_node> result =
-                            detail::process_get_service_nodes_response(*response);
+                            detail::process_get_service_nodes_response(response_json);
                     snode_refresh_results->emplace_back(result);
-                } catch (...) {
+                } catch (const std::exception& e) {
                     // The request failed so increment the failure counter and retry after a short
                     // delay
                     snode_cache_refresh_failure_count++;
@@ -1264,14 +1286,14 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
                     auto cache_refresh_retry_delay = retry_delay(snode_cache_refresh_failure_count);
                     log::error(
                             cat,
-                            "Failed to retrieve nodes from one target when refresh snode cache "
-                            "due, will try another target after {}ms ({}).",
+                            "Failed to retrieve nodes from one target when refreshing cache due to "
+                            "error: {}, will try another target after {}ms ({}).",
+                            e.what(),
                             cache_refresh_retry_delay.count(),
                             request_id);
-                    net.call_later(cache_refresh_retry_delay, [this, request_id]() {
+                    return net.call_later(cache_refresh_retry_delay, [this, request_id]() {
                         refresh_snode_cache(request_id);
                     });
-                    return;
                 }
 
                 // If we haven't received all results then do nothing
@@ -1360,8 +1382,7 @@ void Network::build_path(PathType path_type, std::optional<std::string> existing
                 request_id);
         path_build_failures = 0;
         path_build_queue.emplace_back(path_type);
-        net.call_soon([this]() { refresh_snode_cache(); });
-        return;
+        return net.call_soon([this]() { refresh_snode_cache(); });
     }
 
     // Build the path
@@ -1602,8 +1623,7 @@ void Network::get_swarm(
             after_snode_cache_refresh.emplace_back([this, swarm_pubkey, cb = std::move(cb)]() {
                 get_swarm(swarm_pubkey, std::move(cb));
             });
-            net.call_soon([this]() { refresh_snode_cache(); });
-            return;
+            return net.call_soon([this]() { refresh_snode_cache(); });
         }
 
         CSRNG rng;
@@ -1689,8 +1709,7 @@ void Network::get_random_nodes(
         if (snode_cache.size() < count) {
             after_snode_cache_refresh.emplace_back(
                     [this, count, cb = std::move(cb)]() { get_random_nodes(count, cb); });
-            net.call_soon([this]() { refresh_snode_cache(); });
-            return;
+            return net.call_soon([this]() { refresh_snode_cache(); });
         }
 
         // Otherwise callback with the requested random number of nodes
