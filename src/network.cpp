@@ -2237,7 +2237,6 @@ void Network::handle_errors(
             _send_onion_request(updated_info, std::move(cb));
         });
     }
-    }
 
     // A number of server errors can return HTML data but no status code, we want to extract those
     // cases so they can be handled properly below
