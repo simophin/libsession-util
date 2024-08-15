@@ -5,7 +5,6 @@ import time
 import sys
 import argparse
 from colorama import Fore, Style, init
-from tqdm import tqdm
 
 # Initialize colorama
 init(autoreset=True)
