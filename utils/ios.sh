@@ -22,6 +22,7 @@ VALID_DEVICE_ARCH_PLATFORMS=(OS64)
 OUTPUT_DIR="${TARGET_BUILD_DIR:-build-ios}"
 IPHONEOS_DEPLOYMENT_TARGET=${IPHONEOS_DEPLOYMENT_TARGET:-13}
 ENABLE_BITCODE=${ENABLE_BITCODE:-OFF}
+CONFIGURATION=${CONFIGURATION:-App_Store_Release}
 SHOULD_ACHIVE=${2:-true}                 # Parameter 2 is a flag indicating whether we want to archive the result
 
 # We want to customise the env variable so can't just default the value
@@ -97,6 +98,16 @@ if [ -z $PLATFORM_NAME ] || [ $PLATFORM_NAME = "iphoneos" ]; then
 fi
 
 # Build the individual architectures
+submodule_check=ON
+enable_visibility=OFF
+build_type="Release"
+
+if [ "$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Debug_libSession_Dev" ]; then
+    submodule_check=OFF
+    enable_visibility=ON
+    build_type="Debug"
+fi
+
 for i in "${!TARGET_ARCHS[@]}"; do
     build="${BUILD_DIR}/${TARGET_ARCHS[$i]}"
     platform="${TARGET_PLATFORMS[$i]}"
@@ -108,7 +119,7 @@ for i in "${!TARGET_ARCHS[@]}"; do
         -DDEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET \
         -DENABLE_BITCODE=$ENABLE_BITCODE \
         -DBUILD_STATIC_DEPS=ON \
-        -DENABLE_VISIBILITY=ON \
+        -DENABLE_VISIBILITY=$enable_visibility \
         -DSUBMODULE_CHECK=$submodule_check \
         -DCMAKE_BUILD_TYPE=$build_type \
         -DLOCAL_MIRROR=https://oxen.rocks/deps
@@ -146,22 +157,22 @@ if [ "${#TARGET_SIM_ARCHS}" -gt "0" ] && [ "${#TARGET_DEVICE_ARCHS}" -gt "0" ]; 
     xcodebuild -create-xcframework \
         -library "${BUILD_DIR}/ios/libsession-util.a" \
         -library "${BUILD_DIR}/sim/libsession-util.a" \
+        -headers "include" \
         -output "${OUTPUT_DIR}/libsession-util.xcframework"
 elif [ "${#TARGET_DEVICE_ARCHS}" -gt "0" ]; then
     xcodebuild -create-xcframework \
         -library "${BUILD_DIR}/ios/libsession-util.a" \
+        -headers "include" \
         -output "${OUTPUT_DIR}/libsession-util.xcframework"
 else
     xcodebuild -create-xcframework \
         -library "${BUILD_DIR}/sim/libsession-util.a" \
+        -headers "include" \
         -output "${OUTPUT_DIR}/libsession-util.xcframework"
 fi
 
-# Copy the headers over
-cp -rv include/session "${OUTPUT_DIR}/libsession-util.xcframework"
-
 # The 'module.modulemap' is needed for XCode to be able to find the headers
-modmap="${OUTPUT_DIR}/libsession-util.xcframework/module.modulemap"
+modmap="${OUTPUT_DIR}/module.modulemap"
 echo "module SessionUtil {" >"$modmap"
 echo "  module capi {" >>"$modmap"
 for x in $(cd include && find session -name '*.h'); do
@@ -169,6 +180,13 @@ for x in $(cd include && find session -name '*.h'); do
 done
 echo -e "    export *\n  }" >>"$modmap"
 echo "}" >>"$modmap"
+
+# Need to add the module.modulemap into each architecture directory in the xcframework
+for dir in "${xcframework_dir}"/*/; do
+    cp "${modmap}" "${dir}/module.modulemap"
+done
+
+rm -rf "${modmap}"
 
 if [ $SHOULD_ACHIVE = true ]; then
     (cd "${OUTPUT_DIR}/.." && tar cvJf "${UNIQUE_NAME}.tar.xz" "${UNIQUE_NAME}")
