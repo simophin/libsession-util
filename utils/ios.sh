@@ -156,6 +156,7 @@ rm -rf "${OUTPUT_DIR}/libsession-util.xcframework"
 if [ "${#TARGET_SIM_ARCHS}" -gt "0" ] && [ "${#TARGET_DEVICE_ARCHS}" -gt "0" ]; then
     xcodebuild -create-xcframework \
         -library "${BUILD_DIR}/ios/libsession-util.a" \
+        -headers "include" \
         -library "${BUILD_DIR}/sim/libsession-util.a" \
         -headers "include" \
         -output "${OUTPUT_DIR}/libsession-util.xcframework"
