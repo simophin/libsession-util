@@ -9,13 +9,14 @@ let package = Package(
         .iOS(.v12)
     ],
     products: [
-        .library(name: "libSession-util", targets: ["libSession-util"]),
+        .library(name: "SessionUtil", targets: ["libSession-util"]),
     ],
     targets: [
         .binaryTarget(
-            name: "libSession-util",
+            name: "libSession-util-packaged",
             url: "https://github.com/mpretty-cyro/libsession-util/releases/download/0.0.1/libsession-util.xcframework.zip",
             checksum: "3c50abe18b6bd5edfe42b9cef531ea6778c8854c0e67bbe3d3d630f8bb1441e5"
-        )
+        ),
+        .target(name: "libSession-util-source")
     ]
 )
