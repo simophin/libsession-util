@@ -17,7 +17,7 @@ let package = Package(
         .binaryTarget(
             name: "libSession-util-packaged",
             url: "https://github.com/mpretty-cyro/libsession-util/releases/download/0.0.1/libsession-util.xcframework.zip",
-            checksum: "839d6a6a46ad7646ffb75914f74a911dfd7c9dedc391db5f15c18126f203b01a"
+            checksum: "549facedf450a9b1737fa4af0594e7aad9e99fd432d3b3b9dc90f9925b3a8f47"
         ),
         .target(
             name: "libSession-util-source",
