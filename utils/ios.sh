@@ -182,7 +182,7 @@ echo -e "    export *\n  }" >>"$modmap"
 echo "}" >>"$modmap"
 
 # Need to add the module.modulemap into each architecture directory in the xcframework
-for dir in "${xcframework_dir}"/*/; do
+for dir in "${OUTPUT_DIR}/libsession-util.xcframework"/*/; do
     cp "${modmap}" "${dir}/module.modulemap"
 done
 
