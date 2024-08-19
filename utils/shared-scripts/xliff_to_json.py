@@ -72,7 +72,7 @@ def generate_icu_pattern(target):
             if form in ['zero', 'one', 'two', 'few', 'many', 'other', 'exact', 'fractional']:
                 # Replace {count} with #
                 value = html.unescape(value.replace('{count}', '#'))
-                pattern_parts.append(f"{form} {{[value]}}")
+                pattern_parts.append(f"{form} [{value}]")
         
         return "{{count, plural, {0}}}".format(" ".join(pattern_parts))
     else:  # It's a regular string
