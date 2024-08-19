@@ -70,7 +70,7 @@ using namespace std::literals;
 /// - A new key and nonce is created from a 56-byte H(M0 || M1 || ... || Mn || g || S,
 ///   key="SessionGroupKeyGen"), where S = H(group_seed, key="SessionGroupKeySeed").
 
-class Keys final : public ConfigSig {
+class Keys : public ConfigSig {
 
     Ed25519Secret user_ed25519_sk;
 

@@ -418,11 +418,15 @@ TEST_CASE("Session ONS response decryption", "[session-ons][decrypt]") {
     auto ciphertext =
             "3575802dd9bfea72672a208840f37ca289ceade5d3ffacabe2d231f109d204329fc33e28c33"
             "1580d9a8c9b8a64cacfec97"_hexbytes;
+    auto ciphertext_legacy =
+            "dbd4bc89bd2c9e5322fd9f4cadcaa66a0c38f15d0c927a86cc36e895fe1f3c532a3958d972563f52ca858e94eec22dc360"_hexbytes;
     auto nonce = "00112233445566778899aabbccddeeff00ffeeddccbbaa99"_hexbytes;
     ustring sid_data =
             "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72"_hexbytes;
 
     CHECK(decrypt_ons_response(name, ciphertext, nonce) ==
+          "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72");
+    CHECK(decrypt_ons_response(name, ciphertext_legacy, std::nullopt) ==
           "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72");
     CHECK_THROWS(decrypt_ons_response(name, to_unsigned_sv("invalid"), nonce));
     CHECK_THROWS(decrypt_ons_response(name, ciphertext, to_unsigned_sv("invalid")));
