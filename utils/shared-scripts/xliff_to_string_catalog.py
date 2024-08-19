@@ -7,9 +7,6 @@ import re
 from colorama import Fore, Style, init
 import html
 
-# Variables that should be treated as numeric (using %lld)
-NUMERIC_VARIABLES = ['count', 'total_count']
-
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Convert XLIFF files to Apple String Catalog.')
 parser.add_argument('input_directory', help='Directory containing XLIFF files')
@@ -68,27 +65,10 @@ def parse_xliff(file_path):
     return translations, target_language
 
 def convert_placeholders_for_plurals(resname, translations):
-    # Find the translation with the most placeholders
-    max_placeholders = max(translations.values(), key=lambda x: len(re.findall(r'\{([^}]+)\}', x)))
-    
-    # Get the placeholders in order of appearance from the translation with most placeholders
-    all_placeholders = re.findall(r'\{([^}]+)\}', max_placeholders)
-
-    # Create a mapping for all placeholders
-    placeholder_mapping = {}
-    for idx, placeholder in enumerate(all_placeholders):
-        if placeholder in NUMERIC_VARIABLES:
-            placeholder_mapping[placeholder] = f"%{idx + 1}$lld"
-        else:
-            placeholder_mapping[placeholder] = f"%{idx + 1}$@"
-
-    # Apply the mapping to each plural form
+    # Replace {count} with %lld for iOS
     converted_translations = {}
     for form, value in translations.items():
-        converted_value = value
-        for placeholder, replacement in placeholder_mapping.items():
-            converted_value = converted_value.replace(f"{{{placeholder}}}", replacement)
-        converted_translations[form] = html.unescape(converted_value)
+        converted_translations[form] = html.unescape(value.replace('{count}', '%lld'))
 
     return converted_translations
 
