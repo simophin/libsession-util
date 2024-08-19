@@ -4,6 +4,7 @@ import json
 import time
 import sys
 import argparse
+import subprocess
 from colorama import Fore, Style, init
 
 # Initialize colorama
@@ -13,9 +14,13 @@ init(autoreset=True)
 parser = argparse.ArgumentParser(description='Download and convert Crowdin translations.')
 parser.add_argument('api_token', help='Crowdin API token')
 parser.add_argument('project_id', help='Crowdin project ID')
+parser.add_argument('glossary_id', help='Crowdin glossary ID')
+parser.add_argument('concept_id', help='Crowdin non-translatable terms concept ID')
 parser.add_argument('download_directory', help='Directory to save the initial downloaded files')
 parser.add_argument('output_directory', help='Directory to save the output files')
-parser.add_argument('conversion_script', help='Script to convert XLIFF to JSON')
+parser.add_argument('conversion_script', help='Script to convert XLIFF to another format')
+parser.add_argument('static_string_output_path', help='Path to save the static string file')
+parser.add_argument('static_string_generation_script', help='Script to generate the static string file')
 parser.add_argument('--single-output', action='store_true', help='Conversion script generates a single output file')
 parser.add_argument('--skip-untranslated-strings', action='store_true', help='Exclude strings which have not been translated from the translation files')
 parser.add_argument('--force-allow-unapproved', action='store_true', help='Include unapproved translations in the translation files')
@@ -25,9 +30,13 @@ args = parser.parse_args()
 CROWDIN_API_BASE_URL = "https://api.crowdin.com/api/v2"
 CROWDIN_API_TOKEN = args.api_token
 CROWDIN_PROJECT_ID = args.project_id
+CROWDIN_GLOSSARY_ID = args.glossary_id
+CROWDIN_CONCEPT_ID = args.concept_id
 DOWNLOAD_DIRECTORY = args.download_directory
 OUTPUT_DIRECTORY = args.output_directory
 CONVERSION_SCRIPT = args.conversion_script
+STATIC_STRING_OUTPUT_PATH = args.static_string_output_path
+STATIC_STRING_GENERATION_SCRIPT = args.static_string_generation_script
 SINGLE_OUTPUT = args.single_output
 SKIP_UNTRANSLATED_STRINGS = args.skip_untranslated_strings
 FORCE_ALLOW_UNAPPROVED = args.force_allow_unapproved
@@ -113,19 +122,35 @@ def main():
     # Completed downloading
     print(f"\033[2K{Fore.GREEN}✅ Downloading {num_languages} translations complete{Style.RESET_ALL}")
 
+    # Download non-translatable terms
+    print(f"{Fore.WHITE}⏳ Retrieving static strings...{Style.RESET_ALL}", end='\r')
+    static_string_response = requests.get(f"{CROWDIN_API_BASE_URL}/glossaries/{CROWDIN_GLOSSARY_ID}/terms?conceptId={CROWDIN_CONCEPT_ID}&limit=500", 
+                                      headers={"Authorization": f"Bearer {CROWDIN_API_TOKEN}"})
+    check_error(static_string_response)
+
+    if VERBOSE:
+        print(f"{Fore.BLUE}Response: {json.dumps(static_string_response.json(), indent=2)}{Style.RESET_ALL}")
+
+    print(f"\033[2K{Fore.GREEN}✅ Downloading static strings complete{Style.RESET_ALL}")
+
     # Convert translations
     if SINGLE_OUTPUT:
         print(f"\033[2K{Fore.WHITE}⏳ Converting all translations to target format...{Style.RESET_ALL}", end='\r')
-        os.system(f"python3 {CONVERSION_SCRIPT} {DOWNLOAD_DIRECTORY} {OUTPUT_DIRECTORY}")
+        subprocess.run(['python3', CONVERSION_SCRIPT, DOWNLOAD_DIRECTORY, OUTPUT_DIRECTORY], capture_output=False, text=True)
     else:
         for language in target_languages:
             lang_locale = language['locale']
             lang_two_letter_code = language['twoLettersCode']
             print(f"\033[2K{Fore.WHITE}⏳ Converting translations for {lang_locale} to target format...{Style.RESET_ALL}", end='\r')
             input_file = os.path.join(DOWNLOAD_DIRECTORY, f"{lang_locale}.xliff")
-            os.system(f"python3 {CONVERSION_SCRIPT} {input_file} {OUTPUT_DIRECTORY} {lang_locale} {lang_two_letter_code}")
+            subprocess.run(['python3', CONVERSION_SCRIPT, input_file, OUTPUT_DIRECTORY, lang_locale, lang_two_letter_code], capture_output=False, text=True)
     
     print(f"\033[2K{Fore.GREEN}✅ All conversions complete{Style.RESET_ALL}")
+
+    # Generate Static Strings
+    print(f"\033[2K{Fore.WHITE}⏳ Generating static strings file...{Style.RESET_ALL}", end='\r')
+    subprocess.run(['python3', STATIC_STRING_GENERATION_SCRIPT, json.dumps(static_string_response.json()), STATIC_STRING_OUTPUT_PATH], capture_output=False, text=True)
+    print(f"\033[2K{Fore.GREEN}✅ Static string generation complete{Style.RESET_ALL}")
 
 if __name__ == "__main__":
     try:
