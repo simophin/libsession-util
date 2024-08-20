@@ -5,7 +5,7 @@ import argparse
 import re
 
 # Variables that should be treated as numeric (using %d)
-NUMERIC_VARIABLES = ['count', 'total_count']
+NUMERIC_VARIABLES = ['count', 'found_count', 'total_count']
 
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description='Convert an XLIFF file to Android XML.')
