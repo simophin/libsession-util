@@ -390,6 +390,17 @@ request_info request_info::make(
             _timeout};
 }
 
+std::string onion_path::to_string() const {
+    std::vector<std::string> node_descriptions;
+    std::transform(
+            nodes.begin(),
+            nodes.end(),
+            std::back_inserter(node_descriptions),
+            [](const service_node& node) { return node.to_string(); });
+
+    return "{}"_format(fmt::join(node_descriptions, ", "));
+}
+
 // MARK: Initialization
 
 Network::Network(
@@ -896,7 +907,8 @@ void Network::establish_connection(
 
     // If the network is currently suspended then don't try to open a connection
     if (currently_suspended)
-        return callback({target, nullptr, nullptr}, "Network is suspended.");
+        return callback(
+                {target, std::make_shared<size_t>(0), nullptr, nullptr}, "Network is suspended.");
 
     auto conn_key_pair = ed25519::ed25519_key_pair();
     auto creds = quic::GNUTLSCreds::make_from_ed_seckey(from_unsigned_sv(conn_key_pair.second));
@@ -924,7 +936,10 @@ void Network::establish_connection(
                     std::call_once(*cb_called, [&]() {
                         if (cb) {
                             auto conn = conn_future.get();
-                            (*cb)({target, conn, conn->open_stream<quic::BTRequestStream>()},
+                            (*cb)({target,
+                                   std::make_shared<size_t>(0),
+                                   conn,
+                                   conn->open_stream<quic::BTRequestStream>()},
                                   std::nullopt);
                             cb.reset();
                         }
@@ -941,7 +956,8 @@ void Network::establish_connection(
                     // triggered when try to establish a connection
                     std::call_once(*cb_called, [&]() {
                         if (cb) {
-                            (*cb)({target, nullptr, nullptr}, std::nullopt);
+                            (*cb)({target, std::make_shared<size_t>(0), nullptr, nullptr},
+                                  std::nullopt);
                             cb.reset();
                         }
                     });
@@ -959,11 +975,15 @@ void Network::establish_connection(
                             if (!path.nodes.empty() && path.nodes.front() == target &&
                                 path.conn_info.conn &&
                                 conn.reference_id() == path.conn_info.conn->reference_id()) {
-                                drop_path(request_id, path_type, path);
+                                drop_path_when_empty(request_id, path_type, path);
                                 break;
                             }
                         }
                     }
+
+                    // Since a connection was closed we should also clear any pending path drops
+                    // in case this connection was one of those
+                    clear_empty_pending_path_drops();
 
                     // If the connection failed with a handshake timeout then the node is
                     // unreachable, either due to a device network issue or because the node is down
@@ -1474,20 +1494,13 @@ void Network::build_path(PathType path_type, std::string request_id) {
     in_progress_path_builds.erase(request_id);
 
     // Log that a path was built
-    std::vector<std::string> node_descriptions;
-    std::transform(
-            path_nodes.begin(),
-            path_nodes.end(),
-            std::back_inserter(node_descriptions),
-            [](const service_node& node) { return node.to_string(); });
-    auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
     log::info(
             cat,
             "Built new onion request path, now have {} {} path(s) ({}): [{}]",
             paths[path_type].size(),
             path_name,
             request_id,
-            path_description);
+            path.to_string());
 
     // If the connection info is valid and it's a standard path then update the
     // connection status to connected
@@ -1626,12 +1639,14 @@ void Network::get_service_nodes(
     payload.append("endpoint", "get_service_nodes");
     payload.append("params", detail::get_service_nodes_params(limit).dump());
 
+    conn_info.add_pending_request();
     conn_info.stream->command(
             "oxend_request",
             payload.view(),
-            [this, request_id, cb = std::move(callback)](quic::message resp) {
+            [this, request_id, conn_info, cb = std::move(callback)](quic::message resp) {
                 log::trace(cat, "{} got response for {}.", __PRETTY_FUNCTION__, request_id);
                 std::vector<service_node> result;
+                conn_info.remove_pending_request();
 
                 try {
                     auto [status_code, body] = validate_response(resp, true);
@@ -1643,6 +1658,11 @@ void Network::get_service_nodes(
 
                 // Output the result
                 cb(result, std::nullopt);
+
+                // After completing a request we should try to clear any pending path drops (just in
+                // case this request was the final one on a pending path drop)
+                if (!conn_info.has_pending_requests())
+                    clear_empty_pending_path_drops();
             });
 }
 
@@ -1702,8 +1722,14 @@ void Network::get_swarm(
                             __PRETTY_FUNCTION__,
                             hex_key,
                             request_id);
-                    if (!success || timeout || !response)
+                    if (!success || timeout || !response) {
+                        log::info(
+                                cat,
+                                "Failed to retrieve swarm due to error: {} ({}).",
+                                response.value_or("Unknown error"),
+                                request_id);
                         return cb({});
+                    }
 
                     std::vector<service_node> swarm;
 
@@ -1716,7 +1742,12 @@ void Network::get_swarm(
 
                         for (auto& snode : response_json["snodes"])
                             swarm.emplace_back(node_from_json(snode));
-                    } catch (...) {
+                    } catch (const std::exception& e) {
+                        log::info(
+                                cat,
+                                "Failed to parse swarm due to error: {} ({}).",
+                                e.what(),
+                                request_id);
                         return cb({});
                     }
 
@@ -1783,6 +1814,7 @@ void Network::send_request(
     if (info.body)
         payload = convert_sv<std::byte>(*info.body);
 
+    conn_info.add_pending_request();
     conn_info.stream->command(
             info.endpoint,
             payload,
@@ -1792,6 +1824,7 @@ void Network::send_request(
 
                 std::pair<uint16_t, std::string> result;
                 auto& [status_code, body] = result;
+                conn_info.remove_pending_request();
 
                 try {
                     result = validate_response(resp, false);
@@ -1803,6 +1836,11 @@ void Network::send_request(
                 }
 
                 cb(true, false, status_code, body);
+
+                // After completing a request we should try to clear any pending path drops (just in
+                // case this request was the final one on a pending path drop)
+                if (!conn_info.has_pending_requests())
+                    clear_empty_pending_path_drops();
             });
 }
 
@@ -2216,46 +2254,51 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
     return {status_code, response_string};
 }
 
-void Network::drop_path(std::string request_id, PathType path_type, onion_path path) {
-    // Close the connection immediately (just in case there are other requests happening)
-    if (path.conn_info.conn)
-        path.conn_info.conn->close_connection();
-
-    auto path_nodes = path.nodes;
+void Network::drop_path_when_empty(std::string request_id, PathType path_type, onion_path path) {
+    paths_pending_drop.emplace_back(path, path_type);
     paths[path_type].erase(
             std::remove(paths[path_type].begin(), paths[path_type].end(), path),
             paths[path_type].end());
-
-    std::vector<std::string> node_descriptions;
-    std::transform(
-            path_nodes.begin(),
-            path_nodes.end(),
-            std::back_inserter(node_descriptions),
-            [](service_node& node) { return node.to_string(); });
-    auto path_description = "{}"_format(fmt::join(node_descriptions, ", "));
     log::info(
             cat,
-            "Dropping path, now have {} {} paths(s) ({}): [{}]",
+            "Flagging path to be dropped, now have {} {} paths(s) ({}): [{}].",
             paths[path_type].size(),
             path_type_name(path_type, single_path_mode),
             request_id,
-            path_description);
+            path.to_string());
 
-    // Update the network status if we've removed all standard paths
-    if (paths[PathType::standard].empty())
-        update_status(ConnectionStatus::disconnected);
+    // Clear any paths which are waiting to be dropped
+    clear_empty_pending_path_drops();
 }
 
-void Network::handle_node_error(
-        service_node node, PathType path_type, connection_info conn_info, std::string request_id) {
-    handle_errors(
-            request_info::make(
-                    std::move(node), 0ms, std::nullopt, std::nullopt, path_type, request_id, ""),
-            conn_info,
-            false,
-            std::nullopt,
-            "Node Error",
-            std::nullopt);
+void Network::clear_empty_pending_path_drops() {
+    auto remaining_standard_paths = 0;
+    std::erase_if(paths_pending_drop, [this, &remaining_standard_paths](const auto& path_info) {
+        // If the path is no longer valid then we can drop it
+        if (!path_info.first.is_valid()) {
+            log::info(
+                    cat,
+                    "Removing flagged {} path: No longer valid: [{}].",
+                    path_type_name(path_info.second, single_path_mode),
+                    path_info.first.to_string());
+            return true;
+        }
+
+        if (!path_info.first.conn_info.has_pending_requests()) {
+            log::info(
+                    cat,
+                    "Removing flagged {} path: No remaining requests: [{}].",
+                    path_type_name(path_info.second, single_path_mode),
+                    path_info.first.to_string());
+            return true;
+        }
+        remaining_standard_paths++;
+        return false;
+    });
+
+    // Update the network status if we've removed all standard paths
+    if (remaining_standard_paths == 0 && paths[PathType::standard].empty())
+        update_status(ConnectionStatus::disconnected);
 }
 
 void Network::handle_errors(
@@ -2457,6 +2500,9 @@ void Network::handle_errors(
 
     // Retrieve the path for the connection_info (no paths share the same guard node so we can use
     // that to find it)
+    std::optional<onion_path> path;
+    auto is_active_path = true;
+
     auto path_it = std::find_if(
             paths[info.path_type].begin(),
             paths[info.path_type].end(),
@@ -2464,19 +2510,36 @@ void Network::handle_errors(
                 return !path.nodes.empty() && path.nodes.front() == guard_node;
             });
 
-    // If the path was already dropped then the snode pool would have already been
-    // updated so just log the failure and call the callback
-    if (path_it == paths[info.path_type].end()) {
-        log::info(
-                cat, "Request {} failed but {} path already dropped.", info.request_id, path_name);
+    // Try to retrieve the path this request was on, if it's not in an active or pending drop path
+    // then log a warning (as this shouldn't be possible) and call the callback
+    if (path_it != paths[info.path_type].end())
+        path = *path_it;
+    else {
+        auto path_pending_drop_it = std::find_if(
+                paths_pending_drop.begin(),
+                paths_pending_drop.end(),
+                [guard_node = conn_info.node](const auto& path_info) {
+                    return !path_info.first.nodes.empty() &&
+                           path_info.first.nodes.front() == guard_node;
+                });
 
-        if (handle_response)
-            (*handle_response)(false, timeout, status_code, response);
-        return;
+        if (path_pending_drop_it == paths_pending_drop.end()) {
+            log::warning(
+                    cat,
+                    "Request {} failed but {} path already dropped.",
+                    info.request_id,
+                    path_name);
+
+            if (handle_response)
+                (*handle_response)(false, timeout, status_code, response);
+            return;
+        }
+        path = path_pending_drop_it->first;
+        is_active_path = false;
     }
 
     // Update the failure counts and paths
-    auto updated_path = *path_it;
+    auto updated_path = *path;
     auto updated_failure_counts = snode_failure_counts;
     bool found_invalid_node = false;
     std::vector<service_node> nodes_to_drop;
@@ -2617,12 +2680,17 @@ void Network::handle_errors(
         return item.second == 0 || item.second >= snode_failure_threshold;
     });
 
-    // Drop the path if invalid
-    if (updated_path.failure_count >= path_failure_threshold)
-        drop_path(info.request_id, info.path_type, *path_it);
-    else
-        std::replace(
-                paths[info.path_type].begin(), paths[info.path_type].end(), *path_it, updated_path);
+    // Drop the path if invalid (and currnetly an active path)
+    if (is_active_path) {
+        if (updated_path.failure_count >= path_failure_threshold)
+            drop_path_when_empty(info.request_id, info.path_type, *path_it);
+        else
+            std::replace(
+                    paths[info.path_type].begin(),
+                    paths[info.path_type].end(),
+                    *path_it,
+                    updated_path);
+    }
 
     // Update the snode cache
     {

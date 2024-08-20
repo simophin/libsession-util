@@ -63,10 +63,26 @@ struct service_node : public oxen::quic::RemoteAddress {
 
 struct connection_info {
     service_node node;
+    std::shared_ptr<size_t> pending_requests;
     std::shared_ptr<oxen::quic::connection_interface> conn;
     std::shared_ptr<oxen::quic::BTRequestStream> stream;
 
     bool is_valid() const { return conn && stream && !stream->is_closing(); };
+    bool has_pending_requests() const { return !pending_requests || ((*pending_requests) == 0); };
+
+    void add_pending_request() {
+        if (!pending_requests)
+            pending_requests = std::make_shared<size_t>(0);
+        (*pending_requests)++;
+    };
+
+    // This is weird but since we are modifying the shared_ptr we aren't mutating
+    // the object so it can be a const function
+    void remove_pending_request() const {
+        if (!pending_requests)
+            return;
+        (*pending_requests)--;
+    };
 };
 
 struct onion_path {
@@ -75,6 +91,7 @@ struct onion_path {
     uint8_t failure_count;
 
     bool is_valid() const { return !nodes.empty() && conn_info.is_valid(); };
+    std::string to_string() const;
 
     bool operator==(const onion_path& other) const {
         // The `conn_info` and failure/timeout counts can be reset for a path in a number
@@ -155,6 +172,7 @@ class Network {
     oxen::quic::Network net;
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
     std::unordered_map<PathType, std::vector<onion_path>> paths;
+    std::vector<std::pair<onion_path, PathType>> paths_pending_drop;
 
     // Snode refresh state
     int snode_cache_refresh_failure_count;
@@ -591,7 +609,8 @@ class Network {
     /// response elsewhere).
     std::pair<uint16_t, std::string> validate_response(oxen::quic::message resp, bool is_bencoded);
 
-    void drop_path(std::string request_id, PathType path_type, onion_path path);
+    void drop_path_when_empty(std::string request_id, PathType path_type, onion_path path);
+    void clear_empty_pending_path_drops();
 
     /// API: network/handle_errors
     ///
@@ -614,25 +633,6 @@ class Network {
             std::optional<int16_t> status_code,
             std::optional<std::string> response,
             std::optional<network_response_callback_t> handle_response);
-
-    /// API: network/handle_node_error
-    ///
-    /// Convenience method to increment the failure count for a given node and path (if a node
-    /// doesn't have an associated path then just create one with the single node).  This just calls
-    /// into the 'handle_errors' function in a way that will trigger an update to the failure
-    /// counts.
-    ///
-    /// Inputs:
-    /// - `node` -- [in] the node to increment the failure count for.
-    /// - `path_type` -- [in] type of path the node (or provided path) belong to.
-    /// - `conn_info` -- [in] the connection info for the request that failed.
-    /// - `request_id` -- [in] the request id for the original request which resulted in a node
-    /// error.
-    void handle_node_error(
-            service_node node,
-            PathType path_type,
-            connection_info conn_info,
-            std::string request_id);
 };
 
 }  // namespace session::network
