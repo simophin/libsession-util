@@ -100,17 +100,47 @@ def convert_xliff_to_string_catalog():
 
                 if isinstance(translation, dict):  # It's a plural group
                     converted_translations = convert_placeholders_for_plurals(resname, translation)
-                    variations = {
-                        "plural": {
-                            form: {
-                                "stringUnit": {
-                                    "state": "translated",
-                                    "value": value
-                                }
-                            } for form, value in converted_translations.items()
+                    
+                    # Check if any of the translations contain '{count}'
+                    contains_count = any('{count}' in value for value in translation.values())
+
+                    if contains_count:
+                        # It's a standard plural which the code can switch off of using `{count}`
+                        variations = {
+                            "plural": {
+                                form: {
+                                    "stringUnit": {
+                                        "state": "translated",
+                                        "value": value
+                                    }
+                                } for form, value in converted_translations.items()
+                            }
                         }
-                    }
-                    string_catalog["strings"][resname]["localizations"][target_language] = {"variations": variations}
+                        string_catalog["strings"][resname]["localizations"][target_language] = {"variations": variations}
+                    else:
+                        # Otherwise we need to use a custom format which uses just the `{count}` and replaces it with an entire string
+                        string_catalog["strings"][resname]["localizations"][target_language] = {
+                            "stringUnit": {
+                                "state": "translated",
+                                "value": "%#@arg1@"
+                            },
+                            "substitutions": {
+                                "arg1": {
+                                    "argNum": 1,
+                                    "formatSpecifier": "lld",
+                                    "variations": {
+                                        "plural": {
+                                            form: {
+                                                "stringUnit": {
+                                                    "state": "translated",
+                                                    "value": value
+                                                }
+                                            } for form, value in converted_translations.items()
+                                        }
+                                    }
+                                }
+                            }
+                        }
                 else:
                     string_catalog["strings"][resname]["localizations"][target_language] = {
                         "stringUnit": {
