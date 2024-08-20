@@ -16,15 +16,15 @@ OUTPUT_PATH = args.output_path
 def main():
     Path(OUTPUT_PATH).parent.mkdir(parents=True, exist_ok=True)
     entries = json.loads(STATIC_STRING_JSON)['data']
-    max_key_length = max(len(entry['data']['note']) for entry in entries)
+    max_key_length = max(len(entry['data']['note'].upper()) for entry in entries)
 
     with open(OUTPUT_PATH, 'w', encoding='utf-8') as f:
         f.write('package org.session.libsession.utilities\n')
         f.write('\n')
         f.write('// Non-translatable strings for use with the UI\n')
-        f.write("object StringSubstitutionConstants {\n")
+        f.write("object NonTranslatableStringConstants {\n")
         for entry in entries:
-            key = entry['data']['note']
+            key = entry['data']['note'].upper()
             text = entry['data']['text']
             f.write(f'    const val {key:<{max_key_length}} = "{text}"\n')
 
