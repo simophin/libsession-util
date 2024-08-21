@@ -761,7 +761,7 @@ LIBSESSION_C_API bool session_decrypt_ons_response(
     try {
         std::optional<ustring> nonce;
         if (nonce_in)
-            nonce = ustring{*nonce_in, crypto_aead_xchacha20poly1305_ietf_NPUBBYTES};
+            nonce = ustring{nonce_in, crypto_aead_xchacha20poly1305_ietf_NPUBBYTES};
 
         auto session_id = session::decrypt_ons_response(
                 name_in, ustring_view{ciphertext_in, ciphertext_len}, nonce);
