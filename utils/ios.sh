@@ -99,12 +99,10 @@ fi
 
 # Build the individual architectures
 submodule_check=ON
-enable_visibility=OFF
 build_type="Release"
 
 if [ "$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Debug_libSession_Dev" ]; then
     submodule_check=OFF
-    enable_visibility=ON
     build_type="Debug"
 fi
 
@@ -119,7 +117,7 @@ for i in "${!TARGET_ARCHS[@]}"; do
         -DDEPLOYMENT_TARGET=$IPHONEOS_DEPLOYMENT_TARGET \
         -DENABLE_BITCODE=$ENABLE_BITCODE \
         -DBUILD_STATIC_DEPS=ON \
-        -DENABLE_VISIBILITY=$enable_visibility \
+        -DENABLE_VISIBILITY=ON \
         -DSUBMODULE_CHECK=$submodule_check \
         -DCMAKE_BUILD_TYPE=$build_type \
         -DLOCAL_MIRROR=https://oxen.rocks/deps
@@ -184,7 +182,7 @@ echo "}" >>"$modmap"
 
 # Need to add the module.modulemap into each architecture directory in the xcframework
 for dir in "${OUTPUT_DIR}/libsession-util.xcframework"/*/; do
-    cp "${modmap}" "${dir}/module.modulemap"
+    cp "${modmap}" "${dir}/Headers/module.modulemap"
 done
 
 rm -rf "${modmap}"
