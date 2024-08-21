@@ -68,7 +68,9 @@ struct connection_info {
     std::shared_ptr<oxen::quic::BTRequestStream> stream;
 
     bool is_valid() const { return conn && stream && !stream->is_closing(); };
-    bool has_pending_requests() const { return !pending_requests || ((*pending_requests) == 0); };
+    bool has_pending_requests() const {
+        return is_valid() && (!pending_requests || ((*pending_requests) == 0));
+    };
 
     void add_pending_request() {
         if (!pending_requests)
@@ -91,6 +93,7 @@ struct onion_path {
     uint8_t failure_count;
 
     bool is_valid() const { return !nodes.empty() && conn_info.is_valid(); };
+    bool has_pending_requests() const { return conn_info.has_pending_requests(); }
     std::string to_string() const;
 
     bool operator==(const onion_path& other) const {
@@ -159,6 +162,7 @@ class Network {
     bool need_clear_cache = false;
 
     // Values persisted to disk
+    std::optional<size_t> seed_node_cache_size;
     std::vector<service_node> snode_cache;
     std::unordered_map<std::string, uint8_t> snode_failure_counts;
     std::chrono::system_clock::time_point last_snode_cache_update{};
@@ -167,6 +171,7 @@ class Network {
     std::thread disk_write_thread;
 
     // General values
+    bool destroyed = false;
     bool suspended = false;
     ConnectionStatus status;
     oxen::quic::Network net;
@@ -437,6 +442,14 @@ class Network {
     /// Retrieves or creates a new endpoint pointer.
     std::shared_ptr<oxen::quic::Endpoint> get_endpoint();
 
+    /// API: network/min_snode_cache_size
+    ///
+    /// When talking to testnet it's occassionally possible for the cache size to be smaller than
+    /// the `min_snode_cache_count` value (which would result in an endless loop re-fetching the
+    /// node cache) so instead this function will return the smaller of the two if we've done a
+    /// fetch from a seed node.
+    size_t min_snode_cache_size() const;
+
     /// API: network/get_unused_nodes
     ///
     /// Retrieves a list of all nodes in the cache which are currently unused (ie. not present in an
@@ -609,7 +622,20 @@ class Network {
     /// response elsewhere).
     std::pair<uint16_t, std::string> validate_response(oxen::quic::message resp, bool is_bencoded);
 
+    /// API: network/drop_path_when_empty
+    ///
+    /// Flags a path to be dropped once all pending requests have finished.
+    ///
+    /// Inputs:
+    /// - `request_id` -- [in] the request_id which triggered the path drop.
+    /// - `path_type` -- [in] the type of path to build.
+    /// - `path` -- [in] the path to be dropped.
     void drop_path_when_empty(std::string request_id, PathType path_type, onion_path path);
+
+    /// API: network/clear_empty_pending_path_drops
+    ///
+    /// Iterates through all paths flagged to be dropped and actually drops any which are no longer
+    /// valid or have no more pending requests.
     void clear_empty_pending_path_drops();
 
     /// API: network/handle_errors

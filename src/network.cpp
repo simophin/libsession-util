@@ -430,6 +430,7 @@ Network::Network(
 Network::~Network() {
     // We need to explicitly close the connections at the start of the destructor to prevent ban
     // memory errors due to complex logic with the quic::Network instance
+    destroyed = true;
     _close_connections();
 
     {
@@ -805,6 +806,7 @@ void Network::_close_connections() {
     request_queue.clear();
     paths.clear();
     path_build_queue.clear();
+    paths_pending_drop.clear();
     unused_connections.clear();
     in_progress_connections.clear();
     snode_refresh_results.reset();
@@ -852,8 +854,20 @@ std::shared_ptr<quic::Endpoint> Network::get_endpoint() {
 
 // MARK: Request Queues and Path Building
 
+size_t Network::min_snode_cache_size() const {
+    if (!seed_node_cache_size)
+        return min_snode_cache_count;
+
+    // If the seed node cache size is somehow smaller than `min_snode_cache_count` (ie. Testnet
+    // having issues) then the minimum size should be the full cache size (minus enough to build a
+    // path) or at least the size of a path
+    auto min_path_size = static_cast<size_t>(path_size);
+    return std::min(
+            std::max(min_path_size, *seed_node_cache_size - min_path_size), min_snode_cache_count);
+}
+
 std::vector<service_node> Network::get_unused_nodes() {
-    if (snode_cache.size() < min_snode_cache_count)
+    if (snode_cache.size() < min_snode_cache_size())
         return {};
 
     // Exclude any IPs that are already in use from existing paths
@@ -962,6 +976,12 @@ void Network::establish_connection(
                         }
                     });
 
+                    // If the Network instance has been `destroyed` (ie. it's destructor has been
+                    // called) then don't do any of the following logic as it'll likely result in
+                    // undefined behaviours and crashes
+                    if (destroyed)
+                        return;
+
                     // Remove the connection from `unused_connection` if present
                     std::erase_if(unused_connections, [&conn, &target](auto& unused_conn) {
                         return (unused_conn.node == target && unused_conn.conn &&
@@ -1039,7 +1059,7 @@ void Network::establish_and_store_connection(std::string request_id) {
         unused_connection_and_path_build_nodes = get_unused_nodes();
 
     // If there aren't enough unused nodes then trigger a cache refresh
-    if (unused_connection_and_path_build_nodes->size() < min_snode_cache_count) {
+    if (unused_connection_and_path_build_nodes->size() < min_snode_cache_size()) {
         log::trace(
                 cat,
                 "Unable to establish new connection due to lack of unused nodes, refreshing snode "
@@ -1245,6 +1265,7 @@ void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool r
                                     "nodes ({}).",
                                     nodes.size(),
                                     request_id);
+                            seed_node_cache_size = nodes.size();
                             refresh_snode_cache_complete(nodes);
                         });
             });
@@ -1286,7 +1307,7 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
     // If we don't have enough nodes in the unused nodes it likely means we didn't have
     // enough nodes in the cache so instead just fetch from the seed nodes (which is a
     // trusted source so we can update the cache from a single response)
-    if (!unused_snode_refresh_nodes || unused_snode_refresh_nodes->size() < min_snode_cache_count)
+    if (!unused_snode_refresh_nodes || unused_snode_refresh_nodes->size() < min_snode_cache_size())
         return refresh_snode_cache_from_seed_nodes(request_id, true);
 
     // Target an unused node and increment the in progress refresh counter
@@ -2275,20 +2296,12 @@ void Network::clear_empty_pending_path_drops() {
     auto remaining_standard_paths = 0;
     std::erase_if(paths_pending_drop, [this, &remaining_standard_paths](const auto& path_info) {
         // If the path is no longer valid then we can drop it
-        if (!path_info.first.is_valid()) {
+        if (!path_info.first.has_pending_requests()) {
             log::info(
                     cat,
-                    "Removing flagged {} path: No longer valid: [{}].",
+                    "Removing flagged {} path: {}: [{}].",
                     path_type_name(path_info.second, single_path_mode),
-                    path_info.first.to_string());
-            return true;
-        }
-
-        if (!path_info.first.conn_info.has_pending_requests()) {
-            log::info(
-                    cat,
-                    "Removing flagged {} path: No remaining requests: [{}].",
-                    path_type_name(path_info.second, single_path_mode),
+                    (path_info.first.is_valid() ? "No remaining requests" : "No longer valid"),
                     path_info.first.to_string());
             return true;
         }

@@ -56,9 +56,7 @@ TEST_CASE("Logging callbacks", "[logging]") {
     }
 
     log::critical(log::Cat("test.a"), "abc {}", 21 * 2);
-    int line0 = __LINE__ - 1;
     log::info(log::Cat("test.b"), "hi");
-    int line1 = __LINE__ - 1;
 
     oxen::log::clear_sinks();
 
