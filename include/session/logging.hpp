@@ -104,4 +104,9 @@ LogLevel logger_get_level(std::string cat_name);
 /// correctly
 void manual_log(std::string_view msg);
 
+/// API: session/clear_loggers
+///
+/// Clears all currently set loggers
+void clear_loggers();
+
 }  // namespace session

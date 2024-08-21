@@ -63,6 +63,11 @@ LIBSESSION_EXPORT LOG_LEVEL session_logger_get_level(const char* cat_name);
 /// correctly
 LIBSESSION_EXPORT void session_manual_log(const char* msg);
 
+/// API: session/session_clear_loggers
+///
+/// Clears all currently set loggers
+LIBSESSION_EXPORT void session_clear_loggers();
+
 #ifdef __cplusplus
 }
 #endif

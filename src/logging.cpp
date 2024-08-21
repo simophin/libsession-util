@@ -51,6 +51,10 @@ LogLevel logger_get_level(std::string cat_name) {
     return log::get_level(std::move(cat_name));
 }
 
+void clear_loggers() {
+    log::clear_sinks();
+}
+
 }  // namespace session
 
 extern "C" {
@@ -93,6 +97,10 @@ LIBSESSION_C_API LOG_LEVEL session_logger_get_level(const char* cat_name) {
 
 LIBSESSION_C_API void session_manual_log(const char* msg) {
     session::manual_log(msg);
+}
+
+LIBSESSION_C_API void session_clear_loggers() {
+    session::clear_loggers();
 }
 
 }  // extern "C"
