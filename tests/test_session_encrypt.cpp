@@ -1,8 +1,8 @@
+#include <session/session_encrypt.h>
 #include <sodium/crypto_sign_ed25519.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <session/blinding.hpp>
-#include <session/session_encrypt.h>
 #include <session/session_encrypt.hpp>
 #include <session/util.hpp>
 
@@ -442,12 +442,14 @@ TEST_CASE("Session ONS response decryption C API", "[session-ons][session_decryp
             "dbd4bc89bd2c9e5322fd9f4cadcaa66a0c38f15d0c927a86cc36e895fe1f3c532a3958d972563f52ca858e94eec22dc360"_hexbytes;
     auto nonce = "00112233445566778899aabbccddeeff00ffeeddccbbaa99"_hexbytes;
 
-    char ons1[66];
-    CHECK(session_decrypt_ons_response(name, ciphertext.data(), ciphertext.size(), nonce.data(), ons1));
+    char ons1[67];
+    CHECK(session_decrypt_ons_response(
+            name, ciphertext.data(), ciphertext.size(), nonce.data(), ons1));
     CHECK(ons1 == "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72"sv);
 
-    char ons2[66];
-    CHECK(session_decrypt_ons_response(name, ciphertext_legacy.data(), ciphertext_legacy.size(), nullptr, ons2));
+    char ons2[67];
+    CHECK(session_decrypt_ons_response(
+            name, ciphertext_legacy.data(), ciphertext_legacy.size(), nullptr, ons2));
     CHECK(ons2 == "05d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72"sv);
 }
 
