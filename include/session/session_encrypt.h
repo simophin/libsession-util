@@ -103,7 +103,7 @@ LIBSESSION_EXPORT bool session_decrypt_incoming(
 /// - `ciphertext_in` -- [in] Pointer to a data buffer containing the encrypted data.
 /// - `ciphertext_len` -- [in] Length of `ciphertext_in`
 /// - `x25519_pubkey` -- [in] the x25519 public key of the receiver (32 bytes).
-/// - `x25519_seckey` -- [in] the x25519 secret key of the receiver (32 bytes).
+/// - `x25519_seckey` -- [in] the x25519 secret key of the receiver (64 bytes).
 /// - `session_id_out` -- [out] pointer to a buffer of at least 67 bytes where the null-terminated,
 ///   hex-encoded session_id of the message's author will be written if decryption/verification was
 ///   successful.
@@ -121,7 +121,7 @@ LIBSESSION_EXPORT bool session_decrypt_incoming_legacy_group(
         const unsigned char* ciphertext_in,
         size_t ciphertext_len,
         const unsigned char* x25519_pubkey, /* 32 bytes */
-        const unsigned char* x25519_seckey, /* 32 bytes */
+        const unsigned char* x25519_seckey, /* 64 bytes */
         char* session_id_out,               /* 67 byte output buffer */
         unsigned char** plaintext_out,
         size_t* plaintext_len);

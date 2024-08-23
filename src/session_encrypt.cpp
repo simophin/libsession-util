@@ -709,7 +709,7 @@ LIBSESSION_C_API bool session_decrypt_incoming_legacy_group(
     try {
         auto result = session::decrypt_incoming_session_id(
                 ustring_view{x25519_pubkey, 32},
-                ustring_view{x25519_seckey, 32},
+                ustring_view{x25519_seckey, 64},
                 ustring_view{ciphertext_in, ciphertext_len});
         auto [plaintext, session_id] = result;
 
