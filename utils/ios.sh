@@ -101,7 +101,7 @@ fi
 submodule_check=ON
 build_type="Release"
 
-if [ "$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Debug_libSession_Dev" ]; then
+if [ "$CONFIGURATION" == "Debug" || "$CONFIGURATION" == "Debug_Compile_LibSession" ]; then
     submodule_check=OFF
     build_type="Debug"
 fi
