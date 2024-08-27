@@ -192,7 +192,7 @@ std::pair<ustring, std::string> decrypt_incoming_session_id(
 ///
 /// Inputs:
 /// - `x25519_pubkey` -- the 32 byte x25519 public key of the recipient.
-/// - `x25519_seckey` -- the 64 byte x25519 private key of the recipient.
+/// - `x25519_seckey` -- the 32 byte x25519 private key of the recipient.
 /// - `ciphertext` -- the encrypted data
 ///
 /// Outputs:
