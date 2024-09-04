@@ -602,22 +602,45 @@ LIBSESSION_C_API bool convo_info_volatile_get_or_construct_legacy_group(
             false);
 }
 
-LIBSESSION_C_API void convo_info_volatile_set_1to1(
+LIBSESSION_C_API bool convo_info_volatile_set_1to1(
         config_object* conf, const convo_info_volatile_1to1* convo) {
-    wrap_exceptions(conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::one_to_one{*convo}); });
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->set(convo::one_to_one{*convo});
+                return true;
+            },
+            false);
 }
-LIBSESSION_C_API void convo_info_volatile_set_community(
+LIBSESSION_C_API bool convo_info_volatile_set_community(
         config_object* conf, const convo_info_volatile_community* convo) {
-    wrap_exceptions(conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::community{*convo}); });
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->set(convo::community{*convo});
+                return true;
+            },
+            false);
 }
-LIBSESSION_C_API void convo_info_volatile_set_group(
+LIBSESSION_C_API bool convo_info_volatile_set_group(
         config_object* conf, const convo_info_volatile_group* convo) {
-    wrap_exceptions(conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::group{*convo}); });
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->set(convo::group{*convo});
+                return true;
+            },
+            false);
 }
-LIBSESSION_C_API void convo_info_volatile_set_legacy_group(
+LIBSESSION_C_API bool convo_info_volatile_set_legacy_group(
         config_object* conf, const convo_info_volatile_legacy_group* convo) {
-    wrap_exceptions(
-            conf, [&] { unbox<ConvoInfoVolatile>(conf)->set(convo::legacy_group{*convo}); });
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<ConvoInfoVolatile>(conf)->set(convo::legacy_group{*convo});
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool convo_info_volatile_erase_1to1(config_object* conf, const char* session_id) {

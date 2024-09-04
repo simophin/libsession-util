@@ -708,17 +708,34 @@ LIBSESSION_C_API void user_groups_set_community(
         config_object* conf, const ugroups_community_info* comm) {
     unbox<UserGroups>(conf)->set(community_info{*comm});
 }
-LIBSESSION_C_API void user_groups_set_group(config_object* conf, const ugroups_group_info* group) {
-    wrap_exceptions(conf, [&] { unbox<UserGroups>(conf)->set(group_info{*group}); });
+LIBSESSION_C_API bool user_groups_set_group(config_object* conf, const ugroups_group_info* group) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<UserGroups>(conf)->set(group_info{*group});
+                return true;
+            },
+            false);
 }
-LIBSESSION_C_API void user_groups_set_legacy_group(
+LIBSESSION_C_API bool user_groups_set_legacy_group(
         config_object* conf, const ugroups_legacy_group_info* group) {
-    wrap_exceptions(conf, [&] { unbox<UserGroups>(conf)->set(legacy_group_info{*group}); });
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<UserGroups>(conf)->set(legacy_group_info{*group});
+                return true;
+            },
+            false);
 }
-LIBSESSION_C_API void user_groups_set_free_legacy_group(
+LIBSESSION_C_API bool user_groups_set_free_legacy_group(
         config_object* conf, ugroups_legacy_group_info* group) {
-    wrap_exceptions(
-            conf, [&] { unbox<UserGroups>(conf)->set(legacy_group_info{std::move(*group)}); });
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<UserGroups>(conf)->set(legacy_group_info{std::move(*group)});
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool user_groups_erase_community(

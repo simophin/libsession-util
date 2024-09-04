@@ -249,8 +249,14 @@ void Contacts::set(const contact_info& contact) {
     set_positive_int(info["j"], contact.created);
 }
 
-LIBSESSION_C_API void contacts_set(config_object* conf, const contacts_contact* contact) {
-    wrap_exceptions(conf, [&] { unbox<Contacts>(conf)->set(contact_info{*contact}); });
+LIBSESSION_C_API bool contacts_set(config_object* conf, const contacts_contact* contact) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<Contacts>(conf)->set(contact_info{*contact});
+                return true;
+            },
+            false);
 }
 
 void Contacts::set_name(std::string_view session_id, std::string name) {

@@ -219,9 +219,14 @@ LIBSESSION_C_API bool groups_members_get_or_construct(
             false);
 }
 
-LIBSESSION_C_API void groups_members_set(config_object* conf, const config_group_member* member) {
+LIBSESSION_C_API bool groups_members_set(config_object* conf, const config_group_member* member) {
     return wrap_exceptions(
-            conf, [&] { unbox<groups::Members>(conf)->set(groups::member{*member}); });
+            conf,
+            [&] {
+                unbox<groups::Members>(conf)->set(groups::member{*member});
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_C_API bool groups_members_erase(config_object* conf, const char* session_id) {

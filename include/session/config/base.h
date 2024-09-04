@@ -204,7 +204,10 @@ LIBSESSION_EXPORT void config_confirm_pushed(
 /// - `conf` -- [in] Pointer to config_object object
 /// - `out` -- [out] Pointer to the output location
 /// - `outlen` -- [out] Length of output
-LIBSESSION_EXPORT void config_dump(config_object* conf, unsigned char** out, size_t* outlen);
+///
+/// Output:
+/// - `bool` -- Returns true if the call succeeds, false if an error occurs.
+LIBSESSION_EXPORT bool config_dump(config_object* conf, unsigned char** out, size_t* outlen);
 
 /// API: base/config_needs_dump
 ///
@@ -311,7 +314,7 @@ LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size
 ///
 /// Declaration:
 /// ```cpp
-/// VOID config_add_key(
+/// BOOL config_add_key(
 ///     [in, out]       config_object*          conf,
 ///     [in]            const unsigned char*    key
 /// );
@@ -321,7 +324,10 @@ LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size
 /// Inputs:
 /// - `conf` -- [in, out] Pointer to config_object object
 /// - `key` -- [in] Pointer to the binary key object, must be 32 bytes
-LIBSESSION_EXPORT void config_add_key(config_object* conf, const unsigned char* key);
+///
+/// Output:
+/// - `bool` -- Returns true if the call succeeds, false if an error occurs.
+LIBSESSION_EXPORT bool config_add_key(config_object* conf, const unsigned char* key);
 
 /// API: base/config_add_key_low_prio
 ///
@@ -330,7 +336,7 @@ LIBSESSION_EXPORT void config_add_key(config_object* conf, const unsigned char* 
 ///
 /// Declaration:
 /// ```cpp
-/// VOID config_add_key_low_prio(
+/// BOOL config_add_key_low_prio(
 ///     [in, out]       config_object*          conf,
 ///     [in]            const unsigned char*    key
 /// );
@@ -340,7 +346,10 @@ LIBSESSION_EXPORT void config_add_key(config_object* conf, const unsigned char* 
 /// Inputs:
 /// - `conf` -- [in, out] Pointer to config_object object
 /// - `key` -- [in] Pointer to the binary key object, must be 32 bytes
-LIBSESSION_EXPORT void config_add_key_low_prio(config_object* conf, const unsigned char* key);
+///
+/// Output:
+/// - `bool` -- Returns true if the call succeeds, false if an error occurs.
+LIBSESSION_EXPORT bool config_add_key_low_prio(config_object* conf, const unsigned char* key);
 
 /// API: base/config_clear_keys
 ///
@@ -486,7 +495,10 @@ LIBSESSION_EXPORT const char* config_encryption_domain(const config_object* conf
 /// Inputs:
 /// - `secret` -- pointer to a 64-byte sodium-style Ed25519 "secret key" buffer (technically the
 ///   seed+precomputed pubkey concatenated together) that sets both the secret key and public key.
-LIBSESSION_EXPORT void config_set_sig_keys(config_object* conf, const unsigned char* secret);
+///
+/// Output:
+/// - `bool` -- Returns true if the call succeeds, false if an error occurs.
+LIBSESSION_EXPORT bool config_set_sig_keys(config_object* conf, const unsigned char* secret);
 
 /// API: base/config_set_sig_pubkey
 ///
@@ -496,7 +508,10 @@ LIBSESSION_EXPORT void config_set_sig_keys(config_object* conf, const unsigned c
 ///
 /// Inputs:
 /// - `pubkey` -- pointer to the 32-byte Ed25519 pubkey that must have signed incoming messages.
-LIBSESSION_EXPORT void config_set_sig_pubkey(config_object* conf, const unsigned char* pubkey);
+///
+/// Output:
+/// - `bool` -- Returns true if the call succeeds, false if an error occurs.
+LIBSESSION_EXPORT bool config_set_sig_pubkey(config_object* conf, const unsigned char* pubkey);
 
 /// API: base/config_get_sig_pubkey
 ///

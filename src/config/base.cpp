@@ -728,14 +728,18 @@ LIBSESSION_EXPORT void config_confirm_pushed(
     unbox(conf)->confirm_pushed(seqno, msg_hash);
 }
 
-LIBSESSION_EXPORT void config_dump(config_object* conf, unsigned char** out, size_t* outlen) {
-    wrap_exceptions(conf, [&] {
-        assert(out && outlen);
-        auto data = unbox(conf)->dump();
-        *outlen = data.size();
-        *out = static_cast<unsigned char*>(std::malloc(data.size()));
-        std::memcpy(*out, data.data(), data.size());
-    });
+LIBSESSION_EXPORT bool config_dump(config_object* conf, unsigned char** out, size_t* outlen) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                assert(out && outlen);
+                auto data = unbox(conf)->dump();
+                *outlen = data.size();
+                *out = static_cast<unsigned char*>(std::malloc(data.size()));
+                std::memcpy(*out, data.data(), data.size());
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_EXPORT bool config_needs_dump(const config_object* conf) {
@@ -769,12 +773,24 @@ LIBSESSION_EXPORT unsigned char* config_get_keys(const config_object* conf, size
     return buf;
 }
 
-LIBSESSION_EXPORT void config_add_key(config_object* conf, const unsigned char* key) {
-    wrap_exceptions(conf, [&] { unbox(conf)->add_key({key, 32}); });
+LIBSESSION_EXPORT bool config_add_key(config_object* conf, const unsigned char* key) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox(conf)->add_key({key, 32});
+                return true;
+            },
+            false);
 }
 
-LIBSESSION_EXPORT void config_add_key_low_prio(config_object* conf, const unsigned char* key) {
-    wrap_exceptions(conf, [&] { unbox(conf)->add_key({key, 32}, /*high_priority=*/false); });
+LIBSESSION_EXPORT bool config_add_key_low_prio(config_object* conf, const unsigned char* key) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox(conf)->add_key({key, 32}, /*high_priority=*/false);
+                return true;
+            },
+            false);
 }
 LIBSESSION_EXPORT int config_clear_keys(config_object* conf) {
     return unbox(conf)->clear_keys();
@@ -800,12 +816,24 @@ LIBSESSION_EXPORT const char* config_encryption_domain(const config_object* conf
     return unbox(conf)->encryption_domain();
 }
 
-LIBSESSION_EXPORT void config_set_sig_keys(config_object* conf, const unsigned char* secret) {
-    wrap_exceptions(conf, [&] { unbox(conf)->set_sig_keys({secret, 64}); });
+LIBSESSION_EXPORT bool config_set_sig_keys(config_object* conf, const unsigned char* secret) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox(conf)->set_sig_keys({secret, 64});
+                return true;
+            },
+            false);
 }
 
-LIBSESSION_EXPORT void config_set_sig_pubkey(config_object* conf, const unsigned char* pubkey) {
-    wrap_exceptions(conf, [&] { unbox(conf)->set_sig_pubkey({pubkey, 32}); });
+LIBSESSION_EXPORT bool config_set_sig_pubkey(config_object* conf, const unsigned char* pubkey) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox(conf)->set_sig_pubkey({pubkey, 32});
+                return true;
+            },
+            false);
 }
 
 LIBSESSION_EXPORT const unsigned char* config_get_sig_pubkey(const config_object* conf) {
