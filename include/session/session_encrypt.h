@@ -5,6 +5,7 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "export.h"
 
@@ -211,6 +212,22 @@ LIBSESSION_EXPORT bool session_decrypt_push_notification(
         const unsigned char* enc_key_in, /* 32 bytes */
         unsigned char** plaintext_out,
         size_t* plaintext_len);
+
+/// API: crypto/compute_message_hash
+///
+/// Computes the hash for a message.
+///
+/// Inputs:
+/// - `pubkey_hex_in` -- the pubkey as a 67 character hex string that the message will be stored in.
+/// NULL terminated.
+/// - `ns` -- the namespace that the message will be stored in.
+/// - `data` -- the base64 encoded message data that will be stored for the message.  NULL
+/// terminated.
+///
+/// Outputs:
+/// - `std::string` -- a deterministic hash for the message.
+LIBSESSION_EXPORT bool session_compute_message_hash(
+        const char* pubkey_hex_in, int16_t ns, const char* base64_data_in, char* hash_out);
 
 #ifdef __cplusplus
 }

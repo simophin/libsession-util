@@ -1,10 +1,12 @@
 #include "session/session_encrypt.hpp"
 
+#include <oxenc/base64.h>
 #include <oxenc/hex.h>
 #include <session/session_encrypt.h>
 #include <sodium/crypto_aead_xchacha20poly1305.h>
 #include <sodium/crypto_box.h>
 #include <sodium/crypto_core_ed25519.h>
+#include <sodium/crypto_generichash.h>
 #include <sodium/crypto_generichash_blake2b.h>
 #include <sodium/crypto_pwhash.h>
 #include <sodium/crypto_scalarmult.h>
@@ -24,6 +26,35 @@
 using namespace std::literals;
 
 namespace session {
+
+namespace detail {
+    inline int64_t to_epoch_ms(std::chrono::system_clock::time_point t) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(t.time_since_epoch()).count();
+    }
+
+    // detail::to_hashable takes either an integral type, system_clock::time_point, or a string
+    // type and converts it to a string_view by writing an integer value (using std::to_chars)
+    // into the buffer space (which should be at least 20 bytes), and returning a string_view
+    // into the written buffer space.  For strings/string_views the string_view is returned
+    // directly from the argument. system_clock::time_points are converted into integral
+    // milliseconds since epoch then treated as an integer value.
+    template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    std::string_view to_hashable(const T& val, char*& buffer) {
+        auto [p, ec] = std::to_chars(buffer, buffer + 20, val);
+        std::string_view s(buffer, p - buffer);
+        buffer = p;
+        return s;
+    }
+    inline std::string_view to_hashable(
+            const std::chrono::system_clock::time_point& val, char*& buffer) {
+        return to_hashable(to_epoch_ms(val), buffer);
+    }
+    template <typename T, std::enable_if_t<std::is_convertible_v<T, std::string_view>, int> = 0>
+    std::string_view to_hashable(const T& value, char*&) {
+        return value;
+    }
+
+}  // namespace detail
 
 // Version tag we prepend to encrypted-for-blinded-user messages.  This is here so we can detect if
 // some future version changes the format (and if not even try to load it).
@@ -626,6 +657,66 @@ ustring decrypt_push_notification(ustring_view payload, ustring_view enc_key) {
     return buf;
 }
 
+template <typename Func, typename... T>
+std::string compute_hash(Func hasher, const T&... args) {
+    // Allocate a buffer of 20 bytes per integral value (which is the largest the any integral
+    // value can be when stringified).
+    std::array<
+            char,
+            (0 + ... +
+             (std::is_integral_v<T> || std::is_same_v<T, std::chrono::system_clock::time_point>
+                      ? 20
+                      : 0))>
+            buffer;
+    auto* b = buffer.data();
+    return hasher({detail::to_hashable(args, b)...});
+}
+
+std::string compute_hash_blake2b_b64(std::vector<std::string_view> parts) {
+    constexpr size_t HASH_SIZE = 32;
+    crypto_generichash_state state;
+    crypto_generichash_init(&state, nullptr, 0, HASH_SIZE);
+    for (const auto& s : parts)
+        crypto_generichash_update(
+                &state, reinterpret_cast<const unsigned char*>(s.data()), s.size());
+    std::array<unsigned char, HASH_SIZE> hash;
+    crypto_generichash_final(&state, hash.data(), HASH_SIZE);
+
+    std::string b64hash = oxenc::to_base64(hash.begin(), hash.end());
+    // Trim padding:
+    while (!b64hash.empty() && b64hash.back() == '=')
+        b64hash.pop_back();
+    return b64hash;
+}
+
+std::string compute_message_hash(
+        const std::string_view pubkey_hex, int16_t ns, std::string_view data) {
+    if (pubkey_hex.size() != 66)
+        throw std::invalid_argument{
+                "Invalid pubkey_hex: Expecting 66 character hex-encoded pubkey"};
+
+    // This function is based on the `computeMessageHash` function on the storage-server used to
+    // generate a message hash:
+    // https://github.com/oxen-io/oxen-storage-server/blob/dev/oxenss/rpc/request_handler.cpp
+    auto pubkey = oxenc::from_hex(pubkey_hex.substr(2));
+    uint8_t netid_raw;
+    oxenc::from_hex(pubkey_hex.begin(), pubkey_hex.begin() + 2, &netid_raw);
+    char netid = static_cast<char>(netid_raw);
+
+    std::array<char, 20> ns_buf;
+    char* ns_buf_ptr = ns_buf.data();
+    std::string_view ns_for_hash = ns != 0 ? detail::to_hashable(ns, ns_buf_ptr) : ""sv;
+
+    auto decoded_data = oxenc::from_base64(data);
+
+    return compute_hash(
+            compute_hash_blake2b_b64,
+            std::string_view{&netid, 1},
+            pubkey,
+            ns_for_hash,
+            decoded_data);
+}
+
 }  // namespace session
 
 using namespace session;
@@ -786,6 +877,18 @@ LIBSESSION_C_API bool session_decrypt_push_notification(
         *plaintext_out = static_cast<unsigned char*>(malloc(plaintext.size()));
         *plaintext_len = plaintext.size();
         std::memcpy(*plaintext_out, plaintext.data(), plaintext.size());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+LIBSESSION_C_API bool session_compute_message_hash(
+        const char* pubkey_hex_in, int16_t ns, const char* base64_data_in, char* hash_out) {
+    try {
+        auto hash = session::compute_message_hash(pubkey_hex_in, ns, base64_data_in);
+
+        std::memcpy(hash_out, hash.c_str(), hash.size() + 1);
         return true;
     } catch (...) {
         return false;
