@@ -201,7 +201,13 @@ typedef void (*network_onion_response_callback_t)(
 /// - `node` -- [in] address information about the service node the request should be sent to.
 /// - `body` -- [in] data to send to the specified node.
 /// - `body_size` -- [in] size of the `body`.
-/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `request_timeout_ms` -- [in] timeout in milliseconds to use for the request.  This won't take
+/// the path build into account so if the path build takes forever then this request will never
+/// timeout.
+/// - `request_and_path_build_timeout_ms` -- [in] timeout in milliseconds to use for the request and
+/// path build (if required).  This value takes presedence over `request_timeout_ms` if provided,
+/// the request itself will be given a timeout of this value subtracting however long it took to
+/// build the path.  A value of `0` will be ignored and `request_timeout_ms` will be used instead.
 /// - `callback` -- [in] callback to be called with the result of the request.
 /// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback. Set to
 /// NULL if unused.
@@ -211,7 +217,8 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
         const unsigned char* body,
         size_t body_size,
         const char* swarm_pubkey_hex,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx);
 
@@ -224,7 +231,13 @@ LIBSESSION_EXPORT void network_send_onion_request_to_snode_destination(
 /// - `server` -- [in] struct containing information about the server the request should be sent to.
 /// - `body` -- [in] data to send to the specified endpoint.
 /// - `body_size` -- [in] size of the `body`.
-/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `request_timeout_ms` -- [in] timeout in milliseconds to use for the request.  This won't take
+/// the path build into account so if the path build takes forever then this request will never
+/// timeout.
+/// - `request_and_path_build_timeout_ms` -- [in] timeout in milliseconds to use for the request and
+/// path build (if required).  This value takes presedence over `request_timeout_ms` if provided,
+/// the request itself will be given a timeout of this value subtracting however long it took to
+/// build the path.  A value of `0` will be ignored and `request_timeout_ms` will be used instead.
 /// - `callback` -- [in] callback to be called with the result of the request.
 /// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
 /// to NULL if unused.
@@ -233,7 +246,8 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
         const network_server_destination server,
         const unsigned char* body,
         size_t body_size,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx);
 
@@ -247,7 +261,13 @@ LIBSESSION_EXPORT void network_send_onion_request_to_server_destination(
 /// - `data` -- [in] data to upload to the file server.
 /// - `data_len` -- [in] size of the `data`.
 /// - `file_name` -- [in, optional] name of the file being uploaded. MUST be null terminated.
-/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `request_timeout_ms` -- [in] timeout in milliseconds to use for the request.  This won't take
+/// the path build into account so if the path build takes forever then this request will never
+/// timeout.
+/// - `request_and_path_build_timeout_ms` -- [in] timeout in milliseconds to use for the request and
+/// path build (if required).  This value takes presedence over `request_timeout_ms` if provided,
+/// the request itself will be given a timeout of this value subtracting however long it took to
+/// build the path.  A value of `0` will be ignored and `request_timeout_ms` will be used instead.
 /// - `callback` -- [in] callback to be called with the result of the request.
 /// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
 /// to NULL if unused.
@@ -257,7 +277,8 @@ LIBSESSION_EXPORT void network_upload_to_server(
         const unsigned char* data,
         size_t data_len,
         const char* file_name,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx);
 
@@ -268,14 +289,21 @@ LIBSESSION_EXPORT void network_upload_to_server(
 /// Inputs:
 /// - `network` -- [in] Pointer to the network object.
 /// - `server` -- [in] struct containing information about file to be downloaded.
-/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `request_timeout_ms` -- [in] timeout in milliseconds to use for the request.  This won't take
+/// the path build into account so if the path build takes forever then this request will never
+/// timeout.
+/// - `request_and_path_build_timeout_ms` -- [in] timeout in milliseconds to use for the request and
+/// path build (if required).  This value takes presedence over `request_timeout_ms` if provided,
+/// the request itself will be given a timeout of this value subtracting however long it took to
+/// build the path.  A value of `0` will be ignored and `request_timeout_ms` will be used instead.
 /// - `callback` -- [in] callback to be called with the result of the request.
 /// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
 /// to NULL if unused.
 LIBSESSION_EXPORT void network_download_from_server(
         network_object* network,
         const network_server_destination server,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx);
 
@@ -287,7 +315,13 @@ LIBSESSION_EXPORT void network_download_from_server(
 /// - `network` -- [in] Pointer to the network object.
 /// - `platform` -- [in] the platform to retrieve the client version for.
 /// - `ed25519_secret` -- [in] the users ed25519 secret key (used for blinded auth - 64 bytes).
-/// - `timeout_ms` -- [in] timeout in milliseconds to use for the request.
+/// - `request_timeout_ms` -- [in] timeout in milliseconds to use for the request.  This won't take
+/// the path build into account so if the path build takes forever then this request will never
+/// timeout.
+/// - `request_and_path_build_timeout_ms` -- [in] timeout in milliseconds to use for the request and
+/// path build (if required).  This value takes presedence over `request_timeout_ms` if provided,
+/// the request itself will be given a timeout of this value subtracting however long it took to
+/// build the path.  A value of `0` will be ignored and `request_timeout_ms` will be used instead.
 /// - `callback` -- [in] callback to be called with the result of the request.
 /// - `ctx` -- [in, optional] Pointer to an optional context to pass through to the callback.  Set
 /// to NULL if unused.
@@ -295,7 +329,8 @@ LIBSESSION_EXPORT void network_get_client_version(
         network_object* network,
         CLIENT_PLATFORM platform,
         const unsigned char* ed25519_secret, /* 64 bytes */
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx);
 

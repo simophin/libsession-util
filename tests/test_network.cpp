@@ -23,7 +23,12 @@ struct Result {
 };
 
 service_node test_node(const ustring ed_pk, const uint16_t index, const bool unique_ip = true) {
-    return service_node{ed_pk, {2, 8, 0}, INVALID_SWARM_ID, (unique_ip ? fmt::format("0.0.0.{}", index) : "1.1.1.1"), index};
+    return service_node{
+            ed_pk,
+            {2, 8, 0},
+            INVALID_SWARM_ID,
+            (unique_ip ? fmt::format("0.0.0.{}", index) : "1.1.1.1"),
+            index};
 }
 
 std::optional<service_node> node_for_destination(network_destination destination) {
@@ -72,7 +77,8 @@ class TestNetwork : public Network {
         unused_connections = unused_connections_;
     }
 
-    void set_in_progress_connections(std::unordered_map<std::string, service_node> in_progress_connections_) {
+    void set_in_progress_connections(
+            std::unordered_map<std::string, service_node> in_progress_connections_) {
         in_progress_connections = in_progress_connections_;
     }
 
@@ -90,21 +96,27 @@ class TestNetwork : public Network {
         all_swarms = all_swarms_;
     }
 
-    void set_swarm(session::onionreq::x25519_pubkey swarm_pubkey, swarm_id_t swarm_id, std::vector<service_node> swarm) {
+    void set_swarm(
+            session::onionreq::x25519_pubkey swarm_pubkey,
+            swarm_id_t swarm_id,
+            std::vector<service_node> swarm) {
         swarm_cache[swarm_pubkey.hex()] = {swarm_id, swarm};
     }
 
-    std::pair<swarm_id_t, std::vector<service_node>> get_cached_swarm(session::onionreq::x25519_pubkey swarm_pubkey) {
+    std::pair<swarm_id_t, std::vector<service_node>> get_cached_swarm(
+            session::onionreq::x25519_pubkey swarm_pubkey) {
         return swarm_cache[swarm_pubkey.hex()];
     }
 
     swarm_id_t get_swarm_id(std::string swarm_pubkey_hex) {
         if (swarm_pubkey_hex.size() == 66)
             swarm_pubkey_hex = swarm_pubkey_hex.substr(2);
-        
+
         auto pk = x25519_pubkey::from_hex(swarm_pubkey_hex);
         std::promise<swarm_id_t> prom;
-        get_swarm(pk, [&prom](swarm_id_t result, std::vector<service_node>){ prom.set_value(result); });
+        get_swarm(pk, [&prom](swarm_id_t result, std::vector<service_node>) {
+            prom.set_value(result);
+        });
         return prom.get_future().get();
     }
 
@@ -205,6 +217,15 @@ class TestNetwork : public Network {
             return *find_valid_path_response;
 
         return Network::find_valid_path(info, paths);
+    }
+
+    void check_request_queue_timeouts(std::optional<std::string> request_timeout_id) override {
+        const auto func_name = "check_request_queue_timeouts";
+
+        if (check_should_ignore_and_log_call(func_name))
+            return;
+
+        Network::check_request_queue_timeouts(request_timeout_id);
     }
 
     void _send_onion_request(
@@ -315,6 +336,8 @@ TEST_CASE("Network error handling", "[network]") {
             std::nullopt,
             PathType::standard,
             0ms,
+            std::nullopt,
+            std::chrono::system_clock::now(),
             std::nullopt,
             true};
     Result result;
@@ -479,6 +502,8 @@ TEST_CASE("Network error handling", "[network]") {
             PathType::standard,
             0ms,
             std::nullopt,
+            std::chrono::system_clock::now(),
+            std::nullopt,
             true};
     network.emplace(std::nullopt, true, true, false);
     network->set_suspended(true);  // Make no requests in this test
@@ -495,7 +520,8 @@ TEST_CASE("Network error handling", "[network]") {
             [](bool, bool, int16_t, std::optional<std::string>) {});
     CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
     REQUIRE(network->last_request_info.has_value());
-    CHECK(node_for_destination(network->last_request_info->destination) != node_for_destination(mock_request2.destination));
+    CHECK(node_for_destination(network->last_request_info->destination) !=
+          node_for_destination(mock_request2.destination));
 
     // Check that when a retry request of a 421 receives it's own 421 that it tries
     // to update the snode cache
@@ -508,11 +534,14 @@ TEST_CASE("Network error handling", "[network]") {
             x25519_pubkey::from_hex(x_pk_hex),
             PathType::standard,
             0ms,
+            std::nullopt,
+            std::chrono::system_clock::now(),
             request_info::RetryReason::redirect,
             true};
     network.emplace(std::nullopt, true, true, false);
     network->set_suspended(true);  // Make no requests in this test
-    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled", "refresh_snode_cache");
+    network->ignore_calls_to(
+            "_send_onion_request", "update_disk_cache_throttled", "refresh_snode_cache");
     network->set_paths(PathType::standard, {path});
     network->handle_errors(
             mock_request3,
@@ -523,7 +552,8 @@ TEST_CASE("Network error handling", "[network]") {
             [](bool, bool, int16_t, std::optional<std::string>) {});
     CHECK(EVENTUALLY(10ms, network->called("refresh_snode_cache")));
 
-    // Check when the retry after refreshing the snode cache due to a 421 receives it's own 421 it is handled like any other error
+    // Check when the retry after refreshing the snode cache due to a 421 receives it's own 421 it
+    // is handled like any other error
     auto mock_request4 = request_info{
             "BBBB",
             target,
@@ -533,6 +563,8 @@ TEST_CASE("Network error handling", "[network]") {
             x25519_pubkey::from_hex(x_pk_hex),
             PathType::standard,
             0ms,
+            std::nullopt,
+            std::chrono::system_clock::now(),
             request_info::RetryReason::redirect_swarm_refresh,
             true};
     network.emplace(std::nullopt, true, true, false);
@@ -579,6 +611,8 @@ TEST_CASE("Network error handling", "[network]") {
             x25519_pubkey::from_hex(x_pk_hex),
             PathType::standard,
             0ms,
+            std::nullopt,
+            std::chrono::system_clock::now(),
             std::nullopt,
             false};
     network.emplace(std::nullopt, true, true, false);
@@ -684,7 +718,12 @@ TEST_CASE("Network Path Building", "[network][get_unused_nodes]") {
     network->add_pending_request(
             PathType::standard,
             request_info::make(
-                    snode_cache.front(), 1s, std::nullopt, std::nullopt, PathType::standard));
+                    snode_cache.front(),
+                    std::nullopt,
+                    std::nullopt,
+                    1s,
+                    std::nullopt,
+                    PathType::standard));
     unused_nodes = network->get_unused_nodes();
     std::stable_sort(unused_nodes.begin(), unused_nodes.end());
     CHECK(unused_nodes == std::vector<service_node>{snode_cache.begin() + 1, snode_cache.end()});
@@ -789,7 +828,12 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network->add_pending_request(
             PathType::download,
             request_info::make(
-                    snode_cache.back(), 1s, std::nullopt, std::nullopt, PathType::download));
+                    snode_cache.back(),
+                    std::nullopt,
+                    std::nullopt,
+                    1s,
+                    std::nullopt,
+                    PathType::download));
     network->build_path(PathType::download, "Test1");
     CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
     CHECK(network->get_paths(PathType::download).size() == 1);
@@ -805,7 +849,12 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network->add_pending_request(
             PathType::standard,
             request_info::make(
-                    snode_cache.back(), 1s, std::nullopt, std::nullopt, PathType::standard));
+                    snode_cache.back(),
+                    std::nullopt,
+                    std::nullopt,
+                    1s,
+                    std::nullopt,
+                    PathType::standard));
     network->build_path(PathType::standard, "Test1");
     CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
     CHECK(network->get_paths(PathType::standard).size() == 1);
@@ -823,7 +872,7 @@ TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
             "144.76.164.202",
             uint16_t{35400}};
     auto network = TestNetwork(std::nullopt, true, false, false);
-    auto info = request_info::make(target, 0ms, std::nullopt, std::nullopt);
+    auto info = request_info::make(target, std::nullopt, std::nullopt, 0ms);
     auto invalid_path = onion_path{
             {test_service_node, nullptr, nullptr, nullptr}, {test_service_node}, uint8_t{0}};
 
@@ -851,7 +900,7 @@ TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
             std::move(result.first), std::vector<service_node>{test_service_node}, uint8_t{0}};
 
     // It excludes paths which include the IP of the target
-    auto shared_ip_info = request_info::make(test_service_node, 0ms, std::nullopt, std::nullopt);
+    auto shared_ip_info = request_info::make(test_service_node, std::nullopt, std::nullopt, 0ms);
     CHECK_FALSE(network.find_valid_path(shared_ip_info, {valid_path}).has_value());
 
     // It returns a path when there is a valid one
@@ -984,6 +1033,65 @@ TEST_CASE("Network requests", "[network][establish_connection]") {
     CHECK_FALSE(result.second.has_value());
 }
 
+TEST_CASE("Network requests", "[network][check_request_queue_timeouts]") {
+    auto test_service_node = service_node{
+            "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
+            {2, 8, 0},
+            INVALID_SWARM_ID,
+            "144.76.164.202",
+            uint16_t{35400}};
+    std::optional<TestNetwork> network;
+    std::promise<Result> prom;
+
+    // Test that it doesn't start checking for timeouts when the request doesn't have
+    // a build paths timeout
+    network.emplace(std::nullopt, true, true, false);
+    network->send_onion_request(
+            test_service_node,
+            ustring{to_usv("{\"method\":\"info\",\"params\":{}}")},
+            std::nullopt,
+            [](bool, bool, int16_t, std::optional<std::string>) {},
+            oxen::quic::DEFAULT_TIMEOUT,
+            std::nullopt);
+    CHECK(ALWAYS(300ms, network->did_not_call("check_request_queue_timeouts")));
+
+    // Test that it does start checking for timeouts when the request has a
+    // paths build timeout
+    network.emplace(std::nullopt, true, true, false);
+    network->ignore_calls_to("build_path");
+    network->send_onion_request(
+            test_service_node,
+            ustring{to_usv("{\"method\":\"info\",\"params\":{}}")},
+            std::nullopt,
+            [](bool, bool, int16_t, std::optional<std::string>) {},
+            oxen::quic::DEFAULT_TIMEOUT,
+            oxen::quic::DEFAULT_TIMEOUT);
+    CHECK(EVENTUALLY(300ms, network->called("check_request_queue_timeouts")));
+
+    // Test that it fails the request with a timeout if it has a build path timeout
+    // and the path build takes too long
+    network.emplace(std::nullopt, true, true, false);
+    network->ignore_calls_to("build_path");
+    network->send_onion_request(
+            test_service_node,
+            ustring{to_usv("{\"method\":\"info\",\"params\":{}}")},
+            std::nullopt,
+            [&prom](bool success,
+                    bool timeout,
+                    int16_t status_code,
+                    std::optional<std::string> response) {
+                prom.set_value({success, timeout, status_code, response});
+            },
+            oxen::quic::DEFAULT_TIMEOUT,
+            100ms);
+
+    // Wait for the result to be set
+    auto result = prom.get_future().get();
+
+    CHECK_FALSE(result.success);
+    CHECK(result.timeout);
+}
+
 TEST_CASE("Network requests", "[network][send_request]") {
     auto test_service_node = service_node{
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
@@ -1006,8 +1114,9 @@ TEST_CASE("Network requests", "[network][send_request]") {
                 network.send_request(
                         request_info::make(
                                 test_service_node,
-                                3s,
                                 ustring{to_usv("{}")},
+                                std::nullopt,
+                                3s,
                                 std::nullopt,
                                 PathType::standard,
                                 std::nullopt,
@@ -1051,14 +1160,15 @@ TEST_CASE("Network onion request", "[network][send_onion_request]") {
             test_service_node,
             ustring{to_usv("{\"method\":\"info\",\"params\":{}}")},
             std::nullopt,
-            oxen::quic::DEFAULT_TIMEOUT,
             [&result_promise](
                     bool success,
                     bool timeout,
                     int16_t status_code,
                     std::optional<std::string> response) {
                 result_promise.set_value({success, timeout, status_code, response});
-            });
+            },
+            oxen::quic::DEFAULT_TIMEOUT,
+            oxen::quic::DEFAULT_TIMEOUT);
 
     // Wait for the result to be set
     auto result = result_promise.get_future().get();
@@ -1096,6 +1206,7 @@ TEST_CASE("Network direct request C API", "[network][network_send_request]") {
             body.size(),
             nullptr,
             std::chrono::milliseconds{oxen::quic::DEFAULT_TIMEOUT}.count(),
+            std::chrono::milliseconds{oxen::quic::DEFAULT_TIMEOUT}.count(),
             [](bool success,
                bool timeout,
                int16_t status_code,
@@ -1128,91 +1239,130 @@ TEST_CASE("Network direct request C API", "[network][network_send_request]") {
 TEST_CASE("Network swarm", "[network][detail][pubkey_to_swarm_space]") {
     x25519_pubkey pk;
 
-    pk = x25519_pubkey::from_hex("3506f4a71324b7dd114eddbf4e311f39dde243e1f2cb97c40db1961f70ebaae8");
+    pk = x25519_pubkey::from_hex(
+            "3506f4a71324b7dd114eddbf4e311f39dde243e1f2cb97c40db1961f70ebaae8");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 17589930838143112648ULL);
-    pk = x25519_pubkey::from_hex("cf27da303a50ac8c4b2d43d27259505c9bcd73fc21cf2a57902c3d050730b604");
+    pk = x25519_pubkey::from_hex(
+            "cf27da303a50ac8c4b2d43d27259505c9bcd73fc21cf2a57902c3d050730b604");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 10370619079776428163ULL);
-    pk = x25519_pubkey::from_hex("d3511706b8b34f6e8411bf07bd22ba6b2435ca56846fbccf6eb1e166a6cd15cc");
+    pk = x25519_pubkey::from_hex(
+            "d3511706b8b34f6e8411bf07bd22ba6b2435ca56846fbccf6eb1e166a6cd15cc");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 2144983569669512198ULL);
-    pk = x25519_pubkey::from_hex("0f06693428fca9102a451e3f28d9cc743d8ea60a89ab6aa69eb119470c11cbd3");
+    pk = x25519_pubkey::from_hex(
+            "0f06693428fca9102a451e3f28d9cc743d8ea60a89ab6aa69eb119470c11cbd3");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 9690840703409570833ULL);
-    pk = x25519_pubkey::from_hex("ffba630924aa1224bb930dde21c0d11bf004608f2812217f8ac812d6c7e3ad48");
+    pk = x25519_pubkey::from_hex(
+            "ffba630924aa1224bb930dde21c0d11bf004608f2812217f8ac812d6c7e3ad48");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 4532060000165252872ULL);
-    pk = x25519_pubkey::from_hex("eeeeeeeeeeeeeeee777777777777777711111111111111118888888888888888");
+    pk = x25519_pubkey::from_hex(
+            "eeeeeeeeeeeeeeee777777777777777711111111111111118888888888888888");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 0);
-    pk = x25519_pubkey::from_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    pk = x25519_pubkey::from_hex(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 0);
-    pk = x25519_pubkey::from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
+    pk = x25519_pubkey::from_hex(
+            "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 1);
-    pk = x25519_pubkey::from_hex("ffffffffffffffffffffffffffffffffffffffffffffffff7fffffffffffffff");
+    pk = x25519_pubkey::from_hex(
+            "ffffffffffffffffffffffffffffffffffffffffffffffff7fffffffffffffff");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 1ULL << 63);
-    pk = x25519_pubkey::from_hex("000000000000000000000000000000000000000000000000ffffffffffffffff");
+    pk = x25519_pubkey::from_hex(
+            "000000000000000000000000000000000000000000000000ffffffffffffffff");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == (uint64_t)-1);
-    pk = x25519_pubkey::from_hex("0000000000000000000000000000000000000000000000000123456789abcdef");
+    pk = x25519_pubkey::from_hex(
+            "0000000000000000000000000000000000000000000000000123456789abcdef");
     CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 0x0123456789abcdefULL);
 }
 
 TEST_CASE("Network swarm", "[network][get_swarm]") {
     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
-    std::vector<std::pair<swarm_id_t, std::vector<service_node>>> swarms = {{100, {}}, {200, {}}, {300, {}}, {399, {}}, {498, {}}, {596, {}}, {694, {}}};
+    std::vector<std::pair<swarm_id_t, std::vector<service_node>>> swarms = {
+            {100, {}}, {200, {}}, {300, {}}, {399, {}}, {498, {}}, {596, {}}, {694, {}}};
     auto network = TestNetwork(std::nullopt, true, true, false);
     network.set_snode_cache({test_node(ed_pk, 0)});
     network.set_all_swarms(swarms);
 
     // Exact matches:
     // 0x64 = 100, 0xc8 = 200, 0x1f2 = 498
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000064") == 100);
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000c8") == 200);
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001f2") == 498);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000006"
+                               "4") == 100);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000c"
+                               "8") == 200);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001f"
+                               "2") == 498);
 
     // Nearest
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000000") == 100);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000001") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000000"
+                               "0") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000000"
+                               "1") == 100);
 
     // Nearest, with wraparound
     // 0x8000... is closest to the top value
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000008000000000000000") == 694);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000000"
+                               "0") == 694);
 
     // 0xa000... is closest (via wraparound) to the smallest
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000a000000000000000") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000a00000000000000"
+                               "0") == 100);
 
     // This is the invalid swarm id for swarms, but should still work for a client
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000ffffffffffffffff") == 100);
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffffe") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffff"
+                               "f") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffff"
+                               "e") == 100);
 
     // Midpoint tests; we prefer the lower value when exactly in the middle between two swarms.
     // 0x96 = 150
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000095") == 100);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000096") == 100);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000097") == 200);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000009"
+                               "5") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000009"
+                               "6") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000009"
+                               "7") == 200);
 
     // 0xfa = 250
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000f9") == 200);
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000fa") == 200);
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000fb") == 300);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000f"
+                               "9") == 200);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000f"
+                               "a") == 200);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000f"
+                               "b") == 300);
 
     // 0x15d = 349
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000015d") == 300);
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000015e") == 399);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000015"
+                               "d") == 300);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000015"
+                               "e") == 399);
 
     // 0x1c0 = 448
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001c0") == 399);
-    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001c1") == 498);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001c"
+                               "0") == 399);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001c"
+                               "1") == 498);
 
     // 0x223 = 547
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000222") == 498);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000223") == 498);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000224") == 596);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000022"
+                               "2") == 498);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000022"
+                               "3") == 498);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000022"
+                               "4") == 596);
 
     // 0x285 = 645
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000285") == 596);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000286") == 694);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000028"
+                               "5") == 596);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000028"
+                               "6") == 694);
 
     // 0x800....d is the midpoint between 694 and 100 (the long way).  We always round "down" (which
     // in this case, means wrapping to the largest swarm).
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018c") == 694);
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018d") == 694);
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018e") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018"
+                               "c") == 694);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018"
+                               "d") == 694);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018"
+                               "e") == 100);
 
     // With a swarm at -20 the midpoint is now 40 (=0x28).  When our value is the *low* value we
     // prefer the *last* swarm in the case of a tie (while consistent with the general case of
@@ -1220,16 +1370,21 @@ TEST_CASE("Network swarm", "[network][get_swarm]") {
     // *sigh*).
     swarms.push_back({(uint64_t)-20, {}});
     network.set_all_swarms(swarms);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000027") == swarms.back().first);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000028") == swarms.back().first);
-    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000029") == swarms.front().first);
-    
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000002"
+                               "7") == swarms.back().first);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000002"
+                               "8") == swarms.back().first);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000002"
+                               "9") == swarms.front().first);
+
     // The code used to have a broken edge case if we have a swarm at zero and a client at max-u64
     // because of an overflow in how the distance is calculated (the first swarm will be calculated
     // as max-u64 away, rather than 1 away), and so the id always maps to the highest swarm (even
     // though 0xfff...fe maps to the lowest swarm; the first check here, then, would fail.
     swarms.insert(swarms.begin(), {0, {}});
     network.set_all_swarms(swarms);
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000ffffffffffffffff") == 0);
-    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffffe") == 0);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffff"
+                               "f") == 0);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffff"
+                               "e") == 0);
 }

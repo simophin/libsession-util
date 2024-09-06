@@ -52,8 +52,9 @@ namespace {
 
     constexpr int16_t error_network_suspended = -10001;
     constexpr int16_t error_building_onion_request = -10002;
+    constexpr int16_t error_path_build_timeout = -10003;
 
-    // The amount of time the snode cache can be used before it needs to be refreshed
+    // The amount of time the snode cache can be used before it needs to be refreshed/
     constexpr auto snode_cache_expiration_duration = 2h;
 
     // The smallest size the snode cache can get to before we need to fetch more.
@@ -70,6 +71,9 @@ namespace {
 
     // The number of times a snode can fail before it's replaced.
     constexpr uint16_t snode_failure_threshold = 3;
+
+    // The frequency to check if queued requests have timed out due to a pending path build
+    constexpr auto queued_request_path_build_timeout_frequency = 250ms;
 
     const fs::path default_cache_path{u8"."}, file_testnet{u8"testnet"},
             file_snode_pool{u8"snode_pool"};
@@ -405,13 +409,53 @@ namespace detail {
                 info.request_id,
                 path_type_name(info.path_type, single_path_mode));
     }
+
+    std::vector<network_service_node> convert_service_nodes(
+            std::vector<session::network::service_node> nodes) {
+        std::vector<network_service_node> converted_nodes;
+        for (auto& node : nodes) {
+            auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
+            auto ipv4 = node.to_ipv4();
+            network_service_node converted_node;
+            converted_node.ip[0] = (ipv4.addr >> 24) & 0xFF;
+            converted_node.ip[1] = (ipv4.addr >> 16) & 0xFF;
+            converted_node.ip[2] = (ipv4.addr >> 8) & 0xFF;
+            converted_node.ip[3] = ipv4.addr & 0xFF;
+            strncpy(converted_node.ed25519_pubkey_hex, ed25519_pubkey_hex.c_str(), 64);
+            converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
+            converted_node.quic_port = node.port();
+            converted_nodes.push_back(converted_node);
+        }
+
+        return converted_nodes;
+    }
+
+    ServerDestination convert_server_destination(const network_server_destination server) {
+        std::optional<std::vector<std::pair<std::string, std::string>>> headers;
+        if (server.headers_size > 0) {
+            headers = std::vector<std::pair<std::string, std::string>>{};
+
+            for (size_t i = 0; i < server.headers_size; i++)
+                headers->emplace_back(server.headers[i], server.header_values[i]);
+        }
+
+        return ServerDestination{
+                server.protocol,
+                server.host,
+                server.endpoint,
+                x25519_pubkey::from_hex({server.x25519_pubkey, 64}),
+                server.port,
+                headers,
+                server.method};
+    }
 }  // namespace detail
 
 request_info request_info::make(
         onionreq::network_destination _dest,
-        std::chrono::milliseconds _timeout,
         std::optional<ustring> _original_body,
         std::optional<session::onionreq::x25519_pubkey> _swarm_pk,
+        std::chrono::milliseconds _request_timeout,
+        std::optional<std::chrono::milliseconds> _request_and_path_build_timeout,
         PathType _type,
         std::optional<std::string> _req_id,
         std::optional<std::string> _ep,
@@ -424,7 +468,8 @@ request_info request_info::make(
             std::move(_original_body),
             std::move(_swarm_pk),
             _type,
-            _timeout};
+            _request_timeout,
+            _request_and_path_build_timeout};
 }
 
 std::string onion_path::to_string() const {
@@ -526,7 +571,11 @@ void Network::load_cache_from_disk() {
             all_swarms = detail::generate_swarms(loaded_cache);
         }
 
-        log::info(cat, "Loaded cache of {} snodes, {} swarms.", snode_cache.size(), all_swarms.size());
+        log::info(
+                cat,
+                "Loaded cache of {} snodes, {} swarms.",
+                snode_cache.size(),
+                all_swarms.size());
     } catch (const std::exception& e) {
         log::error(cat, "Failed to load snode cache, will rebuild ({}).", e.what());
 
@@ -1166,8 +1215,9 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
     };
     auto info = request_info::make(
             target_node,
-            quic::DEFAULT_TIMEOUT,
             ustring{quic::to_usv(payload.dump())},
+            std::nullopt,
+            quic::DEFAULT_TIMEOUT,
             std::nullopt,
             PathType::standard,
             request_id);
@@ -1604,6 +1654,59 @@ void Network::get_random_nodes(
 
 // MARK: Request Handling
 
+void Network::check_request_queue_timeouts(std::optional<std::string> request_timeout_id_) {
+    // If the network is suspended (or destroyed) then don't bother checking for timeouts
+    if (suspended || destroyed)
+        return;
+
+    // If there is an existing timeout checking loop then we don't want to start a second
+    if (request_timeout_id != request_timeout_id_)
+        return;
+
+    // If there wasn't an existing loop id then set it here
+    if (!request_timeout_id)
+        request_timeout_id = random::random_base32(4);
+
+    // Timeout and remove any pending requests which should timeout based on path build time
+    auto has_remaining_timeout_requests = false;
+    auto time_now = std::chrono::system_clock::now();
+
+    for (auto& [path_type, requests_for_path] : request_queue)
+        std::erase_if(
+                requests_for_path,
+                [&has_remaining_timeout_requests, &time_now](const auto& request) {
+                    // If the request doesn't have a path build timeout then ignore it
+                    if (!request.first.request_and_path_build_timeout)
+                        return false;
+
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            time_now - request.first.creation_time);
+
+                    if (duration > *request.first.request_and_path_build_timeout) {
+                        request.second(
+                                false,
+                                true,
+                                error_path_build_timeout,
+                                "Timed out waiting for path build.");
+                        return true;
+                    }
+
+                    has_remaining_timeout_requests = true;
+                    return false;
+                });
+
+    // If there are no more timeout requests then stop looping here
+    if (!has_remaining_timeout_requests) {
+        request_timeout_id = std::nullopt;
+        return;
+    }
+
+    // Otherwise schedule the next check
+    net.call_later(queued_request_path_build_timeout_frequency, [this]() {
+        check_request_queue_timeouts(request_timeout_id);
+    });
+}
+
 void Network::send_request(
         request_info info, connection_info conn_info, network_response_callback_t handle_response) {
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, info.request_id);
@@ -1616,11 +1719,26 @@ void Network::send_request(
     if (info.body)
         payload = convert_sv<std::byte>(*info.body);
 
+    // Calculate the remaining timeout
+    std::chrono::milliseconds timeout = info.request_timeout;
+
+    if (info.request_and_path_build_timeout) {
+        auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now() - info.creation_time);
+
+        timeout = *info.request_and_path_build_timeout - elapsed_time;
+
+        // If the timeout was somehow negative then just fail the request (no point continuing if
+        // we have already timed out)
+        if (timeout < std::chrono::milliseconds(0))
+            return handle_response(false, true, error_path_build_timeout, std::nullopt);
+    }
+
     conn_info.add_pending_request();
     conn_info.stream->command(
             info.endpoint,
             payload,
-            info.timeout,
+            timeout,
             [this, info, conn_info, cb = std::move(handle_response)](quic::message resp) {
                 log::trace(cat, "{} got response for {}.", __PRETTY_FUNCTION__, info.request_id);
 
@@ -1650,15 +1768,17 @@ void Network::send_onion_request(
         onionreq::network_destination destination,
         std::optional<ustring> body,
         std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
-        std::chrono::milliseconds timeout,
         network_response_callback_t handle_response,
+        std::chrono::milliseconds request_timeout,
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout,
         PathType type) {
     _send_onion_request(
             request_info::make(
                     std::move(destination),
-                    timeout,
                     std::move(body),
                     std::move(swarm_pubkey),
+                    request_timeout,
+                    request_and_path_build_timeout,
                     type),
             std::move(handle_response));
 }
@@ -1684,6 +1804,12 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                 return cb(false, false, error_network_suspended, "Network is suspended.");
 
             request_queue[info.path_type].emplace_back(std::move(info), std::move(cb));
+
+            // If the request has a path_build_timeout then start the timeout check loop
+            if (info.request_and_path_build_timeout)
+                net.call_later(queued_request_path_build_timeout_frequency, [this]() {
+                    check_request_queue_timeouts();
+                });
         });
     }
 
@@ -1826,8 +1952,9 @@ void Network::upload_file_to_server(
         ustring data,
         onionreq::ServerDestination server,
         std::optional<std::string> file_name,
-        std::chrono::milliseconds timeout,
-        network_response_callback_t handle_response) {
+        network_response_callback_t handle_response,
+        std::chrono::milliseconds request_timeout,
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout) {
     std::vector<std::pair<std::string, std::string>> headers;
     std::unordered_set<std::string> existing_keys;
 
@@ -1857,16 +1984,18 @@ void Network::upload_file_to_server(
                     server.method},
             data,
             std::nullopt,
-            timeout,
             handle_response,
+            request_timeout,
+            request_and_path_build_timeout,
             PathType::upload);
 }
 
 void Network::download_file(
         std::string_view download_url,
         session::onionreq::x25519_pubkey x25519_pubkey,
-        std::chrono::milliseconds timeout,
-        network_response_callback_t handle_response) {
+        network_response_callback_t handle_response,
+        std::chrono::milliseconds request_timeout,
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout) {
     const auto& [proto, host, port, path] = parse_url(download_url);
 
     if (!path)
@@ -1874,23 +2003,32 @@ void Network::download_file(
 
     download_file(
             ServerDestination{proto, host, *path, x25519_pubkey, port, std::nullopt, "GET"},
-            timeout,
-            handle_response);
+            handle_response,
+            request_timeout,
+            request_and_path_build_timeout);
 }
 
 void Network::download_file(
         onionreq::ServerDestination server,
-        std::chrono::milliseconds timeout,
-        network_response_callback_t handle_response) {
+        network_response_callback_t handle_response,
+        std::chrono::milliseconds request_timeout,
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout) {
     send_onion_request(
-            server, std::nullopt, std::nullopt, timeout, handle_response, PathType::download);
+            server,
+            std::nullopt,
+            std::nullopt,
+            handle_response,
+            request_timeout,
+            request_and_path_build_timeout,
+            PathType::download);
 }
 
 void Network::get_client_version(
         Platform platform,
         onionreq::ed25519_seckey seckey,
-        std::chrono::milliseconds timeout,
-        network_response_callback_t handle_response) {
+        network_response_callback_t handle_response,
+        std::chrono::milliseconds request_timeout,
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout) {
     std::string endpoint;
 
     switch (platform) {
@@ -1924,8 +2062,9 @@ void Network::get_client_version(
                     "http", std::string(file_server), endpoint, pubkey, 80, headers, "GET"},
             std::nullopt,
             pubkey,
-            timeout,
             handle_response,
+            request_timeout,
+            request_and_path_build_timeout,
             PathType::standard);
 }
 
@@ -2307,7 +2446,7 @@ void Network::handle_errors(
                                 info.request_id);
                         break;
 
-                    default: break; // Unhandled case should just behave like any other error
+                    default: break;  // Unhandled case should just behave like any other error
                 }
             } catch (...) {
             }
@@ -2475,45 +2614,6 @@ void Network::handle_errors(
         (*handle_response)(false, timeout, status_code, response);
 }
 
-std::vector<network_service_node> convert_service_nodes(
-        std::vector<session::network::service_node> nodes) {
-    std::vector<network_service_node> converted_nodes;
-    for (auto& node : nodes) {
-        auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
-        auto ipv4 = node.to_ipv4();
-        network_service_node converted_node;
-        converted_node.ip[0] = (ipv4.addr >> 24) & 0xFF;
-        converted_node.ip[1] = (ipv4.addr >> 16) & 0xFF;
-        converted_node.ip[2] = (ipv4.addr >> 8) & 0xFF;
-        converted_node.ip[3] = ipv4.addr & 0xFF;
-        strncpy(converted_node.ed25519_pubkey_hex, ed25519_pubkey_hex.c_str(), 64);
-        converted_node.ed25519_pubkey_hex[64] = '\0';  // Ensure null termination
-        converted_node.quic_port = node.port();
-        converted_nodes.push_back(converted_node);
-    }
-
-    return converted_nodes;
-}
-
-ServerDestination convert_server_destination(const network_server_destination server) {
-    std::optional<std::vector<std::pair<std::string, std::string>>> headers;
-    if (server.headers_size > 0) {
-        headers = std::vector<std::pair<std::string, std::string>>{};
-
-        for (size_t i = 0; i < server.headers_size; i++)
-            headers->emplace_back(server.headers[i], server.header_values[i]);
-    }
-
-    return ServerDestination{
-            server.protocol,
-            server.host,
-            server.endpoint,
-            x25519_pubkey::from_hex({server.x25519_pubkey, 64}),
-            server.port,
-            headers,
-            server.method};
-}
-
 }  // namespace session::network
 
 // MARK: C API
@@ -2615,7 +2715,7 @@ LIBSESSION_C_API void network_set_paths_changed_callback(
             // Allocate the memory for the onion_request_paths* array
             auto* c_paths_array = static_cast<onion_request_path*>(std::malloc(paths_mem_size));
             for (size_t i = 0; i < paths.size(); ++i) {
-                auto c_nodes = session::network::convert_service_nodes(paths[i]);
+                auto c_nodes = network::detail::convert_service_nodes(paths[i]);
 
                 // Allocate memory that persists outside the loop
                 size_t node_array_size = sizeof(network_service_node) * c_nodes.size();
@@ -2638,7 +2738,7 @@ LIBSESSION_C_API void network_get_swarm(
     unbox(network).get_swarm(
             x25519_pubkey::from_hex({swarm_pubkey_hex, 64}),
             [cb = std::move(callback), ctx](swarm_id_t, std::vector<service_node> nodes) {
-                auto c_nodes = session::network::convert_service_nodes(nodes);
+                auto c_nodes = network::detail::convert_service_nodes(nodes);
                 cb(c_nodes.data(), c_nodes.size(), ctx);
             });
 }
@@ -2651,7 +2751,7 @@ LIBSESSION_C_API void network_get_random_nodes(
     assert(callback);
     unbox(network).get_random_nodes(
             count, [cb = std::move(callback), ctx](std::vector<service_node> nodes) {
-                auto c_nodes = session::network::convert_service_nodes(nodes);
+                auto c_nodes = network::detail::convert_service_nodes(nodes);
                 cb(c_nodes.data(), c_nodes.size(), ctx);
             });
 }
@@ -2662,7 +2762,8 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
         const unsigned char* body_,
         size_t body_size,
         const char* swarm_pubkey_hex,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx) {
     assert(callback);
@@ -2676,6 +2777,11 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
         if (swarm_pubkey_hex)
             swarm_pubkey = x25519_pubkey::from_hex({swarm_pubkey_hex, 64});
 
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout;
+        if (request_and_path_build_timeout_ms > 0)
+            request_and_path_build_timeout =
+                    std::chrono::milliseconds{request_and_path_build_timeout_ms};
+
         std::array<uint8_t, 4> ip;
         std::memcpy(ip.data(), node.ip, ip.size());
 
@@ -2688,7 +2794,6 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                         node.quic_port},
                 body,
                 swarm_pubkey,
-                std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
@@ -2703,7 +2808,9 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                            ctx);
                     else
                         cb(success, timeout, status_code, nullptr, 0, ctx);
-                });
+                },
+                std::chrono::milliseconds{request_timeout_ms},
+                request_and_path_build_timeout);
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
     }
@@ -2714,7 +2821,8 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
         const network_server_destination server,
         const unsigned char* body_,
         size_t body_size,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx) {
     assert(server.method && server.protocol && server.host && server.endpoint &&
@@ -2725,11 +2833,15 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
         if (body_size > 0)
             body = {body_, body_size};
 
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout;
+        if (request_and_path_build_timeout_ms > 0)
+            request_and_path_build_timeout =
+                    std::chrono::milliseconds{request_and_path_build_timeout_ms};
+
         unbox(network).send_onion_request(
-                convert_server_destination(server),
+                network::detail::convert_server_destination(server),
                 body,
                 std::nullopt,
-                std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
@@ -2744,7 +2856,9 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                            ctx);
                     else
                         cb(success, timeout, status_code, nullptr, 0, ctx);
-                });
+                },
+                std::chrono::milliseconds{request_timeout_ms},
+                request_and_path_build_timeout);
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
     }
@@ -2756,7 +2870,8 @@ LIBSESSION_C_API void network_upload_to_server(
         const unsigned char* data,
         size_t data_len,
         const char* file_name_,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx) {
     assert(data && server.method && server.protocol && server.host && server.endpoint &&
@@ -2767,11 +2882,15 @@ LIBSESSION_C_API void network_upload_to_server(
         if (file_name_)
             file_name = file_name_;
 
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout;
+        if (request_and_path_build_timeout_ms > 0)
+            request_and_path_build_timeout =
+                    std::chrono::milliseconds{request_and_path_build_timeout_ms};
+
         unbox(network).upload_file_to_server(
                 {data, data_len},
-                convert_server_destination(server),
+                network::detail::convert_server_destination(server),
                 file_name,
-                std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
@@ -2786,7 +2905,9 @@ LIBSESSION_C_API void network_upload_to_server(
                            ctx);
                     else
                         cb(success, timeout, status_code, nullptr, 0, ctx);
-                });
+                },
+                std::chrono::milliseconds{request_timeout_ms},
+                request_and_path_build_timeout);
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
     }
@@ -2795,16 +2916,21 @@ LIBSESSION_C_API void network_upload_to_server(
 LIBSESSION_C_API void network_download_from_server(
         network_object* network,
         const network_server_destination server,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx) {
     assert(server.method && server.protocol && server.host && server.endpoint &&
            server.x25519_pubkey && callback);
 
     try {
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout;
+        if (request_and_path_build_timeout_ms > 0)
+            request_and_path_build_timeout =
+                    std::chrono::milliseconds{request_and_path_build_timeout_ms};
+
         unbox(network).download_file(
-                convert_server_destination(server),
-                std::chrono::milliseconds{timeout_ms},
+                network::detail::convert_server_destination(server),
                 [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
@@ -2819,7 +2945,9 @@ LIBSESSION_C_API void network_download_from_server(
                            ctx);
                     else
                         cb(success, timeout, status_code, nullptr, 0, ctx);
-                });
+                },
+                std::chrono::milliseconds{request_timeout_ms},
+                request_and_path_build_timeout);
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
     }
@@ -2829,16 +2957,21 @@ LIBSESSION_C_API void network_get_client_version(
         network_object* network,
         CLIENT_PLATFORM platform,
         const unsigned char* ed25519_secret,
-        int64_t timeout_ms,
+        int64_t request_timeout_ms,
+        int64_t request_and_path_build_timeout_ms,
         network_onion_response_callback_t callback,
         void* ctx) {
     assert(platform && callback);
 
     try {
+        std::optional<std::chrono::milliseconds> request_and_path_build_timeout;
+        if (request_and_path_build_timeout_ms > 0)
+            request_and_path_build_timeout =
+                    std::chrono::milliseconds{request_and_path_build_timeout_ms};
+
         unbox(network).get_client_version(
                 static_cast<Platform>(platform),
                 onionreq::ed25519_seckey::from_bytes({ed25519_secret, 64}),
-                std::chrono::milliseconds{timeout_ms},
                 [cb = std::move(callback), ctx](
                         bool success,
                         bool timeout,
@@ -2853,7 +2986,9 @@ LIBSESSION_C_API void network_get_client_version(
                            ctx);
                     else
                         cb(success, timeout, status_code, nullptr, 0, ctx);
-                });
+                },
+                std::chrono::milliseconds{request_timeout_ms},
+                request_and_path_build_timeout);
     } catch (const std::exception& e) {
         callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
     }

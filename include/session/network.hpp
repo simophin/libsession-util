@@ -135,9 +135,10 @@ namespace detail {
 struct request_info {
     static request_info make(
             onionreq::network_destination _dest,
-            std::chrono::milliseconds _timeout,
             std::optional<ustring> _original_body,
             std::optional<session::onionreq::x25519_pubkey> _swarm_pk,
+            std::chrono::milliseconds _request_timeout,
+            std::optional<std::chrono::milliseconds> _request_and_path_build_timeout = std::nullopt,
             PathType _type = PathType::standard,
             std::optional<std::string> _req_id = std::nullopt,
             std::optional<std::string> endpoint = "onion_req",
@@ -157,7 +158,9 @@ struct request_info {
     std::optional<ustring> original_body;
     std::optional<session::onionreq::x25519_pubkey> swarm_pubkey;
     PathType path_type;
-    std::chrono::milliseconds timeout;
+    std::chrono::milliseconds request_timeout;
+    std::optional<std::chrono::milliseconds> request_and_path_build_timeout;
+    std::chrono::system_clock::time_point creation_time = std::chrono::system_clock::now();
 
     /// The reason we are retrying the request (if it's a retry). Generally only used for internal
     /// purposes (like receiving a `421`) in order to prevent subsequent retries.
@@ -221,6 +224,7 @@ class Network {
 
     // Request state
     bool has_scheduled_resume_queues = false;
+    std::optional<std::string> request_timeout_id;
     std::chrono::system_clock::time_point last_resume_queues_timestamp{};
     std::unordered_map<PathType, std::vector<std::pair<request_info, network_response_callback_t>>>
             request_queue;
@@ -291,35 +295,31 @@ class Network {
     void get_random_nodes(
             uint16_t count, std::function<void(std::vector<service_node> nodes)> callback);
 
-    /// API: network/send_request
-    ///
-    /// Send a request via the network.
-    ///
-    /// Inputs:
-    /// - `info` -- [in] wrapper around all of the information required to send a request.
-    /// - `conn` -- [in] connection information used to send the request.
-    /// - `handle_response` -- [in] callback to be called with the result of the request.
-    void send_request(
-            request_info info, connection_info conn, network_response_callback_t handle_response);
-
     /// API: network/send_onion_request
     ///
     /// Sends a request via onion routing to the provided service node or server destination.
     ///
     /// Inputs:
-    /// - 'type' - [in] the type of paths to send the request across.
     /// - `destination` -- [in] service node or server destination information.
     /// - `body` -- [in] data to send to the specified destination.
     /// - `swarm_pubkey` -- [in, optional] pubkey for the swarm the request is associated with.
     /// Should be NULL if the request is not associated with a swarm.
-    /// - `timeout` -- [in] timeout in milliseconds to use for the request.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
+    /// - `request_timeout` -- [in] timeout in milliseconds to use for the request.  This won't take
+    /// the path build into account so if the path build takes forever then this request will never
+    /// timeout.
+    /// - `request_and_path_build_timeout` -- [in] timeout in milliseconds to use for the request
+    /// and path build (if required).  This value takes presedence over `request_timeout` if
+    /// provided, the request itself will be given a timeout of this value subtracting however long
+    /// it took to build the path.
+    /// - 'type' - [in] the type of paths to send the request across.
     void send_onion_request(
             onionreq::network_destination destination,
             std::optional<ustring> body,
             std::optional<session::onionreq::x25519_pubkey> swarm_pubkey,
-            std::chrono::milliseconds timeout,
             network_response_callback_t handle_response,
+            std::chrono::milliseconds request_timeout,
+            std::optional<std::chrono::milliseconds> request_and_path_build_timeout = std::nullopt,
             PathType type = PathType::standard);
 
     /// API: network/upload_file_to_server
@@ -330,14 +330,21 @@ class Network {
     /// - 'data' - [in] the data to be uploaded to a server.
     /// - `server` -- [in] the server destination to upload the file to.
     /// - `file_name` -- [in, optional] optional name to use for the file.
-    /// - `timeout` -- [in] timeout in milliseconds to use for the request.
+    /// - `request_timeout` -- [in] timeout in milliseconds to use for the request.  This won't take
+    /// the path build into account so if the path build takes forever then this request will never
+    /// timeout.
+    /// - `request_and_path_build_timeout` -- [in] timeout in milliseconds to use for the request
+    /// and path build (if required).  This value takes presedence over `request_timeout` if
+    /// provided, the request itself will be given a timeout of this value subtracting however long
+    /// it took to build the path.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void upload_file_to_server(
             ustring data,
             onionreq::ServerDestination server,
             std::optional<std::string> file_name,
-            std::chrono::milliseconds timeout,
-            network_response_callback_t handle_response);
+            network_response_callback_t handle_response,
+            std::chrono::milliseconds request_timeout,
+            std::optional<std::chrono::milliseconds> request_and_path_build_timeout = std::nullopt);
 
     /// API: network/download_file
     ///
@@ -345,12 +352,19 @@ class Network {
     ///
     /// Inputs:
     /// - `server` -- [in] the server destination to download the file from.
-    /// - `timeout` -- [in] timeout in milliseconds to use for the request.
+    /// - `request_timeout` -- [in] timeout in milliseconds to use for the request.  This won't take
+    /// the path build into account so if the path build takes forever then this request will never
+    /// timeout.
+    /// - `request_and_path_build_timeout` -- [in] timeout in milliseconds to use for the request
+    /// and path build (if required).  This value takes presedence over `request_timeout` if
+    /// provided, the request itself will be given a timeout of this value subtracting however long
+    /// it took to build the path.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void download_file(
             onionreq::ServerDestination server,
-            std::chrono::milliseconds timeout,
-            network_response_callback_t handle_response);
+            network_response_callback_t handle_response,
+            std::chrono::milliseconds request_timeout,
+            std::optional<std::chrono::milliseconds> request_and_path_build_timeout = std::nullopt);
 
     /// API: network/download_file
     ///
@@ -362,12 +376,20 @@ class Network {
     /// - `download_url` -- [in] the url to download the file from.
     /// - `x25519_pubkey` -- [in] the server destination to download the file from.
     /// - `timeout` -- [in] timeout in milliseconds to use for the request.
+    /// - `request_timeout` -- [in] timeout in milliseconds to use for the request.  This won't take
+    /// the path build into account so if the path build takes forever then this request will never
+    /// timeout.
+    /// - `request_and_path_build_timeout` -- [in] timeout in milliseconds to use for the request
+    /// and path build (if required).  This value takes presedence over `request_timeout` if
+    /// provided, the request itself will be given a timeout of this value subtracting however long
+    /// it took to build the path.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void download_file(
             std::string_view download_url,
             onionreq::x25519_pubkey x25519_pubkey,
-            std::chrono::milliseconds timeout,
-            network_response_callback_t handle_response);
+            network_response_callback_t handle_response,
+            std::chrono::milliseconds request_timeout,
+            std::optional<std::chrono::milliseconds> request_and_path_build_timeout = std::nullopt);
 
     /// API: network/get_client_version
     ///
@@ -376,13 +398,20 @@ class Network {
     /// Inputs:
     /// - `platform` -- [in] the platform to retrieve the client version for.
     /// - `seckey` -- [in] the users ed25519 secret key (to generated blinded auth).
-    /// - `timeout` -- [in] timeout in milliseconds to use for the request.
+    /// - `request_timeout` -- [in] timeout in milliseconds to use for the request.  This won't take
+    /// the path build into account so if the path build takes forever then this request will never
+    /// timeout.
+    /// - `request_and_path_build_timeout` -- [in] timeout in milliseconds to use for the request
+    /// and path build (if required).  This value takes presedence over `request_timeout` if
+    /// provided, the request itself will be given a timeout of this value subtracting however long
+    /// it took to build the path.
     /// - `handle_response` -- [in] callback to be called with the result of the request.
     void get_client_version(
             Platform platform,
             onionreq::ed25519_seckey seckey,
-            std::chrono::milliseconds timeout,
-            network_response_callback_t handle_response);
+            network_response_callback_t handle_response,
+            std::chrono::milliseconds request_timeout,
+            std::optional<std::chrono::milliseconds> request_and_path_build_timeout = std::nullopt);
 
   private:
     /// API: network/all_path_ips
@@ -586,6 +615,27 @@ class Network {
             std::optional<int> limit,
             std::function<void(std::vector<service_node> nodes, std::optional<std::string> error)>
                     callback);
+
+    /// API: network/check_request_queue_timeouts
+    ///
+    /// Checks if any of the requests in the request queue have timed out (and fails them if so).
+    ///
+    /// Inputs:
+    /// - 'request_timeout_id' - [in] id for the timeout loop to prevent multiple loops from being
+    /// scheduled.
+    virtual void check_request_queue_timeouts(
+            std::optional<std::string> request_timeout_id = std::nullopt);
+
+    /// API: network/send_request
+    ///
+    /// Send a request via the network.
+    ///
+    /// Inputs:
+    /// - `info` -- [in] wrapper around all of the information required to send a request.
+    /// - `conn` -- [in] connection information used to send the request.
+    /// - `handle_response` -- [in] callback to be called with the result of the request.
+    void send_request(
+            request_info info, connection_info conn, network_response_callback_t handle_response);
 
     /// API: network/_send_onion_request
     ///
