@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <oxen/quic.hpp>
 
 #include "onionreq/builder.hpp"
@@ -28,27 +29,43 @@ enum class PathType {
     download,
 };
 
+using swarm_id_t = uint64_t;
+constexpr swarm_id_t INVALID_SWARM_ID = std::numeric_limits<uint64_t>::max();
+
 struct service_node : public oxen::quic::RemoteAddress {
   public:
     std::vector<int> storage_server_version;
+    swarm_id_t swarm_id;
 
     service_node() = delete;
 
     template <typename... Opt>
     service_node(
-            std::string_view remote_pk, std::vector<int> storage_server_version, Opt&&... opts) :
+            std::string_view remote_pk,
+            std::vector<int> storage_server_version,
+            swarm_id_t swarm_id,
+            Opt&&... opts) :
             oxen::quic::RemoteAddress{remote_pk, std::forward<Opt>(opts)...},
-            storage_server_version{storage_server_version} {}
+            storage_server_version{storage_server_version},
+            swarm_id{swarm_id} {}
 
     template <typename... Opt>
-    service_node(ustring_view remote_pk, std::vector<int> storage_server_version, Opt&&... opts) :
+    service_node(
+            ustring_view remote_pk,
+            std::vector<int> storage_server_version,
+            swarm_id_t swarm_id,
+            Opt&&... opts) :
             oxen::quic::RemoteAddress{remote_pk, std::forward<Opt>(opts)...},
-            storage_server_version{storage_server_version} {}
+            storage_server_version{storage_server_version},
+            swarm_id{swarm_id} {}
 
     service_node(const service_node& obj) :
-            oxen::quic::RemoteAddress{obj}, storage_server_version{obj.storage_server_version} {}
+            oxen::quic::RemoteAddress{obj},
+            storage_server_version{obj.storage_server_version},
+            swarm_id{obj.swarm_id} {}
     service_node& operator=(const service_node& obj) {
         storage_server_version = obj.storage_server_version;
+        swarm_id = obj.swarm_id;
         oxen::quic::RemoteAddress::operator=(obj);
         _copy_internals(obj);
         return *this;
@@ -57,7 +74,7 @@ struct service_node : public oxen::quic::RemoteAddress {
     bool operator==(const service_node& other) const {
         return static_cast<const oxen::quic::RemoteAddress&>(*this) ==
                        static_cast<const oxen::quic::RemoteAddress&>(other) &&
-               storage_server_version == other.storage_server_version;
+               storage_server_version == other.storage_server_version && swarm_id == other.swarm_id;
     }
 };
 
@@ -104,6 +121,10 @@ struct onion_path {
 };
 
 namespace detail {
+    swarm_id_t pubkey_to_swarm_space(const session::onionreq::x25519_pubkey& pk);
+    std::vector<std::pair<swarm_id_t, std::vector<service_node>>> generate_swarms(
+            std::vector<service_node> nodes);
+
     std::optional<service_node> node_for_destination(onionreq::network_destination destination);
 
     session::onionreq::x25519_pubkey pubkey_for_destination(
@@ -123,8 +144,10 @@ struct request_info {
             std::optional<ustring> _body = std::nullopt);
 
     enum class RetryReason {
+        none,
         decryption_failure,
         redirect,
+        redirect_swarm_refresh,
     };
 
     std::string request_id;
@@ -156,17 +179,12 @@ class Network {
     bool has_pending_disk_write = false;
     bool shut_down_disk_thread = false;
     bool need_write = false;
-    bool need_pool_write = false;
-    bool need_failure_counts_write = false;
-    bool need_swarm_write = false;
     bool need_clear_cache = false;
 
     // Values persisted to disk
     std::optional<size_t> seed_node_cache_size;
     std::vector<service_node> snode_cache;
-    std::unordered_map<std::string, uint8_t> snode_failure_counts;
     std::chrono::system_clock::time_point last_snode_cache_update{};
-    std::unordered_map<std::string, std::vector<service_node>> swarm_cache;
 
     std::thread disk_write_thread;
 
@@ -178,6 +196,10 @@ class Network {
     std::shared_ptr<oxen::quic::Endpoint> endpoint;
     std::unordered_map<PathType, std::vector<onion_path>> paths;
     std::vector<std::pair<onion_path, PathType>> paths_pending_drop;
+    std::vector<service_node> unused_nodes;
+    std::unordered_map<std::string, uint8_t> snode_failure_counts;
+    std::vector<std::pair<swarm_id_t, std::vector<service_node>>> all_swarms;
+    std::unordered_map<std::string, std::pair<swarm_id_t, std::vector<service_node>>> swarm_cache;
 
     // Snode refresh state
     int snode_cache_refresh_failure_count;
@@ -188,10 +210,9 @@ class Network {
     std::shared_ptr<std::vector<std::vector<service_node>>> snode_refresh_results;
 
     // First hop state
-    std::optional<std::vector<service_node>> unused_connection_and_path_build_nodes;
     int connection_failures = 0;
     std::deque<connection_info> unused_connections;
-    std::unordered_set<std::string> in_progress_connections;
+    std::unordered_map<std::string, service_node> in_progress_connections;
 
     // Path build state
     int path_build_failures = 0;
@@ -256,16 +277,7 @@ class Network {
     /// the callback will be called with an empty list).
     void get_swarm(
             session::onionreq::x25519_pubkey swarm_pubkey,
-            std::function<void(std::vector<service_node> swarm)> callback);
-
-    /// API: network/set_swarm
-    ///
-    /// Update the nodes to be used for a swarm.  This function should never be called directly.
-    ///
-    /// Inputs:
-    /// - 'swarm_pubkey' - [in] public key for the swarm.
-    /// - `swarm` -- [in] nodes for the swarm.
-    void set_swarm(session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm);
+            std::function<void(swarm_id_t swarm_id, std::vector<service_node> swarm)> callback);
 
     /// API: network/get_random_nodes
     ///

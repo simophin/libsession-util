@@ -15,6 +15,7 @@
 #include <sodium/utils.h>
 
 #include <exception>
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <oxen/log/format.hpp>
@@ -297,6 +298,7 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
     unbox(builder).set_destination(session::network::service_node(
             oxenc::from_hex({ed25519_pubkey, 64}),
             {0},
+            session::network::INVALID_SWARM_ID,
             "{}"_format(fmt::join(target_ip, ".")),
             quic_port));
 }

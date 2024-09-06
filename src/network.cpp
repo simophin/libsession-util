@@ -56,17 +56,11 @@ namespace {
     // The amount of time the snode cache can be used before it needs to be refreshed
     constexpr auto snode_cache_expiration_duration = 2h;
 
-    // The amount of time a swarm cache can be used before it needs to be refreshed
-    constexpr auto swarm_cache_expiration_duration = (24h * 7);
-
     // The smallest size the snode cache can get to before we need to fetch more.
     constexpr size_t min_snode_cache_count = 12;
 
     // The number of snodes to use to refresh the cache.
     constexpr int num_snodes_to_refresh_cache_from = 3;
-
-    // The smallest size a swarm can get to before we need to fetch it again.
-    constexpr uint16_t min_swarm_snode_count = 3;
 
     // The number of snodes (including the guard snode) in a path.
     constexpr uint8_t path_size = 3;
@@ -77,10 +71,10 @@ namespace {
     // The number of times a snode can fail before it's replaced.
     constexpr uint16_t snode_failure_threshold = 3;
 
-    // File names
-    const fs::path file_testnet{u8"testnet"}, file_snode_pool{u8"snode_pool"},
-            file_snode_pool_updated{u8"snode_pool_updated"}, swarm_dir{u8"swarm"},
-            default_cache_path{u8"."}, file_snode_failure_counts{u8"snode_failure_counts"};
+    const fs::path default_cache_path{u8"."}, file_testnet{u8"testnet"},
+            file_snode_pool{u8"snode_pool"};
+    const std::vector<fs::path> legacy_files{
+            u8"snode_pool_updated", u8"swarm", u8"snode_failure_counts"};
 
     constexpr auto node_not_found_prefix = "502 Bad Gateway\n\nNext node not found: "sv;
     constexpr auto node_not_found_prefix_no_status = "Next node not found: "sv;
@@ -165,13 +159,17 @@ namespace {
         else
             port = json["port_omq"].get<uint16_t>();
 
-        return {oxenc::from_hex(pk_ed), storage_server_version, ip, port};
+        swarm_id_t swarm_id = INVALID_SWARM_ID;
+        if (json.contains("swarm_id"))
+            swarm_id = json["swarm_id"].get<swarm_id_t>();
+
+        return {oxenc::from_hex(pk_ed), storage_server_version, swarm_id, ip, port};
     }
 
     service_node node_from_disk(std::string_view str, bool can_ignore_version = false) {
-        // Format is "{ip}|{port}|{version}|{ed_pubkey}
+        // Format is "{ip}|{port}|{version}|{ed_pubkey}|{swarm_id}"
         auto parts = split(str, "|");
-        if (parts.size() != 4)
+        if (parts.size() != 5)
             throw std::invalid_argument("Invalid service node serialisation: {}"_format(str));
         if (parts[3].size() != 64 || !oxenc::is_hex(parts[3]))
             throw std::invalid_argument{
@@ -185,9 +183,13 @@ namespace {
         if (!can_ignore_version && storage_server_version == std::vector<int>{0})
             throw std::invalid_argument{"Invalid service node serialization: invalid version"};
 
+        swarm_id_t swarm_id = INVALID_SWARM_ID;
+        quic::parse_int(parts[4], swarm_id);
+
         return {
                 oxenc::from_hex(parts[3]),  // ed25519_pubkey
                 storage_server_version,     // storage_server_version
+                swarm_id,                   // swarm_id
                 std::string(parts[0]),      // ip
                 port,                       // port
         };
@@ -195,18 +197,18 @@ namespace {
 
     const std::vector<service_node> seed_nodes_testnet{
             node_from_disk("144.76.164.202|35400|2.8.0|"
-                           "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"sv)};
+                           "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9|"sv)};
     const std::vector<service_node> seed_nodes_mainnet{
             node_from_disk("144.76.164.202|20200|2.8.0|"
-                           "1f000f09a7b07828dcb72af7cd16857050c10c02bd58afb0e38111fb6cda1fef"sv),
+                           "1f000f09a7b07828dcb72af7cd16857050c10c02bd58afb0e38111fb6cda1fef|"sv),
             node_from_disk("88.99.102.229|20201|2.8.0|"
-                           "1f101f0acee4db6f31aaa8b4df134e85ca8a4878efaef7f971e88ab144c1a7ce"sv),
+                           "1f101f0acee4db6f31aaa8b4df134e85ca8a4878efaef7f971e88ab144c1a7ce|"sv),
             node_from_disk("195.16.73.17|20202|2.8.0|"
-                           "1f202f00f4d2d4acc01e20773999a291cf3e3136c325474d159814e06199919f"sv),
+                           "1f202f00f4d2d4acc01e20773999a291cf3e3136c325474d159814e06199919f|"sv),
             node_from_disk("104.194.11.120|20203|2.8.0|"
-                           "1f303f1d7523c46fa5398826740d13282d26b5de90fbae5749442f66afb6d78b"sv),
+                           "1f303f1d7523c46fa5398826740d13282d26b5de90fbae5749442f66afb6d78b|"sv),
             node_from_disk("104.194.8.115|20204|2.8.0|"
-                           "1f604f1c858a121a681d8f9b470ef72e6946ee1b9c5ad15a35e16b50c28db7b0"sv)};
+                           "1f604f1c858a121a681d8f9b470ef72e6946ee1b9c5ad15a35e16b50c28db7b0|"sv)};
     constexpr auto file_server = "filev2.getsession.org"sv;
     constexpr auto file_server_pubkey =
             "da21e1d886c6fbaea313f75298bd64aab03a97ce985b46bb2dad9f2089c8ee59"sv;
@@ -227,15 +229,16 @@ namespace {
     };
 
     std::string node_to_disk(service_node node) {
-        // Format is "{ip}|{port}|{version}|{ed_pubkey}
+        // Format is "{ip}|{port}|{version}|{ed_pubkey}|{swarm_id}"
         auto ed25519_pubkey_hex = oxenc::to_hex(node.view_remote_key());
 
         return fmt::format(
-                "{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}",
                 node.host(),
                 node.port(),
                 "{}"_format(fmt::join(node.storage_server_version, ".")),
-                ed25519_pubkey_hex);
+                ed25519_pubkey_hex,
+                node.swarm_id);
     }
 
     session::onionreq::x25519_pubkey compute_xpk(ustring_view ed25519_pk) {
@@ -264,6 +267,35 @@ namespace {
 }  // namespace
 
 namespace detail {
+    swarm_id_t pubkey_to_swarm_space(const session::onionreq::x25519_pubkey& pk) {
+        swarm_id_t res = 0;
+        for (size_t i = 0; i < 4; i++) {
+            swarm_id_t buf;
+            std::memcpy(&buf, pk.data() + i * 8, 8);
+            res ^= buf;
+        }
+        oxenc::big_to_host_inplace(res);
+
+        return res;
+    }
+
+    std::vector<std::pair<swarm_id_t, std::vector<service_node>>> generate_swarms(
+            std::vector<service_node> nodes) {
+        std::vector<std::pair<swarm_id_t, std::vector<service_node>>> result;
+        std::unordered_map<uint64_t, std::vector<service_node>> _grouped_nodes;
+
+        for (const auto& node : nodes)
+            _grouped_nodes[node.swarm_id].push_back(node);
+
+        for (auto& [swarm_id, nodes] : _grouped_nodes)
+            result.emplace_back(swarm_id, std::move(nodes));
+
+        std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
+        return result;
+    }
+
     std::optional<service_node> node_for_destination(network_destination destination) {
         if (auto* dest = std::get_if<service_node>(&destination))
             return *dest;
@@ -288,7 +320,8 @@ namespace detail {
                  {{"public_ip", true},
                   {"pubkey_ed25519", true},
                   {"storage_lmq_port", true},
-                  {"storage_server_version", true}}}};
+                  {"storage_server_version", true},
+                  {"swarm_id", true}}}};
 
         if (limit)
             params["limit"] = *limit;
@@ -318,13 +351,14 @@ namespace detail {
             std::vector<int> storage_server_version;
             node_consumer.skip_until("storage_server_version");
             auto version_consumer = node_consumer.consume_list_consumer();
+            auto swarm_id = consume_integer<uint64_t>(node_consumer, "swarm_id");
 
             while (!version_consumer.is_finished()) {
                 storage_server_version.emplace_back(version_consumer.consume_integer<int>());
             }
 
             result.emplace_back(
-                    pubkey_ed25519, storage_server_version, public_ip, storage_lmq_port);
+                    pubkey_ed25519, storage_server_version, swarm_id, public_ip, storage_lmq_port);
         }
 
         return result;
@@ -356,9 +390,12 @@ namespace detail {
         auto reason = "unknown retry";
 
         switch (*info.retry_reason) {
+            case request_info::RetryReason::none: reason = "unknown retry"; break;
             case request_info::RetryReason::redirect: reason = "421 retry"; break;
-
             case request_info::RetryReason::decryption_failure: reason = "decryption error"; break;
+            case request_info::RetryReason::redirect_swarm_refresh:
+                reason = "421 swarm refresh retry";
+                break;
         }
 
         log::info(
@@ -451,38 +488,24 @@ void Network::load_cache_from_disk() {
         if (use_testnet != fs::exists(testnet_stub) && fs::exists(testnet_stub))
             fs::remove_all(cache_path);
 
-        // Create the cache directory (and swarm_dir, inside it) if needed
-        auto swarm_path = cache_path / swarm_dir;
-        fs::create_directories(swarm_path);
+        // Remove any legacy files (don't want to leave old data around)
+        for (const auto& path : legacy_files) {
+            auto path_to_remove = cache_path / path;
+            fs::remove_all(path_to_remove);
+        }
 
         // If we are using testnet then create a file to indicate that
         if (use_testnet)
             write_whole_file(testnet_stub);
 
-        // Load the last time the snode pool was updated
-        //
-        // Note: We aren't just reading the write time of the file because Apple consider
-        // accessing file timestamps a method that can be used to track the user (and we
-        // want to avoid being flagged as using such)
-        if (auto last_updated_path = cache_path / file_snode_pool_updated;
-            fs::exists(last_updated_path)) {
-            try {
-                auto timestamp_str = read_whole_file(last_updated_path);
-                while (timestamp_str.ends_with('\n'))
-                    timestamp_str.pop_back();
-
-                std::time_t timestamp;
-                if (!quic::parse_int(timestamp_str, timestamp))
-                    throw std::runtime_error{"invalid file data: expected timestamp first line"};
-
-                last_snode_cache_update = std::chrono::system_clock::from_time_t(timestamp);
-            } catch (const std::exception& e) {
-                log::error(cat, "Ignoring invalid last update timestamp file: {}", e.what());
-            }
-        }
-
         // Load the snode pool
         if (auto pool_path = cache_path / file_snode_pool; fs::exists(pool_path)) {
+            auto ftime = fs::last_write_time(pool_path);
+            last_snode_cache_update =
+                    std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                            ftime - fs::file_time_type::clock::now() +
+                            std::chrono::system_clock::now());
+
             auto file = open_for_reading(pool_path);
             std::vector<service_node> loaded_cache;
             std::string line;
@@ -497,127 +520,13 @@ void Network::load_cache_from_disk() {
             }
 
             if (invalid_entries > 0)
-                log::warning(
-                        cat, "Skipped {} invalid entries in snode pool cache.", invalid_entries);
+                log::warning(cat, "Skipped {} invalid entries in snode cache.", invalid_entries);
 
             snode_cache = loaded_cache;
+            all_swarms = detail::generate_swarms(loaded_cache);
         }
 
-        // Load the failure counts
-        if (auto failure_counts_path = cache_path / file_snode_failure_counts;
-            fs::exists(failure_counts_path)) {
-            auto file = open_for_reading(failure_counts_path);
-            std::unordered_map<std::string, uint8_t> loaded_failure_count;
-            std::string line;
-            auto invalid_entries = 0;
-
-            while (std::getline(file, line)) {
-                try {
-                    auto parts = split(line, "|");
-                    uint8_t failure_count;
-
-                    if (parts.size() != 2)
-                        throw std::invalid_argument(
-                                "Invalid failure count serialisation: {}"_format(line));
-                    if (!quic::parse_int(parts[1], failure_count))
-                        throw std::invalid_argument{
-                                "Invalid failure count serialization: invalid failure count"};
-
-                    // If we somehow already have a value then we should use whichever has the
-                    // larger failure count (want to avoid keeping a bad node around longer than
-                    // needed)
-                    if (loaded_failure_count.try_emplace(std::string(parts[0]), failure_count)
-                                .first->second < failure_count)
-                        loaded_failure_count[std::string(parts[0])] = failure_count;
-                } catch (...) {
-                    ++invalid_entries;
-                }
-            }
-
-            if (invalid_entries > 0)
-                log::warning(
-                        cat,
-                        "Skipped {} invalid entries in snode failure count cache.",
-                        invalid_entries);
-
-            snode_failure_counts = loaded_failure_count;
-        }
-
-        // Load the swarm cache
-        auto time_now = std::chrono::system_clock::now();
-        std::unordered_map<std::string, std::vector<service_node>> loaded_cache;
-        std::vector<fs::path> caches_to_remove;
-        auto invalid_swarm_entries = 0;
-
-        for (auto& entry : fs::directory_iterator(swarm_path)) {
-            // If the pubkey was valid then process the content
-            const auto& path = entry.path();
-            auto file = open_for_reading(path);
-            std::vector<service_node> nodes;
-            std::string line;
-            bool checked_swarm_expiration = false;
-            std::chrono::seconds swarm_lifetime = 0s;
-            auto filename = path.filename().string();
-
-            while (std::getline(file, line)) {
-                try {
-                    // If we haven't checked if the swarm cache has expired then do so, removing
-                    // any expired/invalid caches
-                    if (!checked_swarm_expiration) {
-                        std::time_t timestamp;
-                        if (!quic::parse_int(line, timestamp))
-                            throw std::runtime_error{
-                                    "invalid file data: expected timestamp first line"};
-                        auto swarm_last_updated = std::chrono::system_clock::from_time_t(timestamp);
-                        swarm_lifetime = std::chrono::duration_cast<std::chrono::seconds>(
-                                time_now - swarm_last_updated);
-                        checked_swarm_expiration = true;
-
-                        if (swarm_lifetime < swarm_cache_expiration_duration)
-                            throw load_cache_exception{"Expired swarm cache."};
-
-                        continue;
-                    }
-
-                    // Otherwise try to parse as a node (for the swarm cache we can ignore invalid
-                    // versions as the `get_swarm` API doesn't return version info)
-                    nodes.push_back(node_from_disk(line, true));
-                } catch (const std::exception& e) {
-                    // Don't bother logging for expired entries (we include the count separately at
-                    // the end)
-                    if (dynamic_cast<const load_cache_exception*>(&e) == nullptr)
-                        ++invalid_swarm_entries;
-
-                    // The cache is invalid, we should remove it
-                    if (!checked_swarm_expiration) {
-                        caches_to_remove.emplace_back(path);
-                        break;
-                    }
-                }
-            }
-
-            // If we got nodes the add it to the cache, otherwise we want to remove it
-            if (!nodes.empty())
-                loaded_cache[filename] = std::move(nodes);
-            else
-                caches_to_remove.emplace_back(path);
-        }
-
-        if (invalid_swarm_entries > 0)
-            log::warning(cat, "Skipped {} invalid entries in swarm cache.", invalid_swarm_entries);
-
-        swarm_cache = loaded_cache;
-
-        // Remove any expired cache files
-        for (auto& expired_cache : caches_to_remove)
-            fs::remove_all(expired_cache);
-
-        log::info(
-                cat,
-                "Loaded cache of {} snodes, {} swarms ({} expired swarms).",
-                snode_cache.size(),
-                swarm_cache.size(),
-                caches_to_remove.size());
+        log::info(cat, "Loaded cache of {} snodes, {} swarms.", snode_cache.size(), all_swarms.size());
     } catch (const std::exception& e) {
         log::error(cat, "Failed to load snode cache, will rebuild ({}).", e.what());
 
@@ -648,96 +557,43 @@ void Network::update_disk_cache_throttled(bool force_immediate_write) {
 void Network::disk_write_thread_loop() {
     std::unique_lock lock{snode_cache_mutex};
     while (true) {
-        snode_cache_cv.wait(lock, [this] { return need_write || shut_down_disk_thread; });
+        snode_cache_cv.wait(
+                lock, [this] { return need_write || need_clear_cache || shut_down_disk_thread; });
 
         if (need_write) {
-            // Make local copies so that we can release the lock and not
-            // worry about other threads wanting to change things:
+            // Make a local copy so that we can release the lock and not
+            // worry about other threads wanting to change things
             auto snode_cache_write = snode_cache;
-            auto snode_failure_counts_write = snode_failure_counts;
-            auto last_pool_update_write = last_snode_cache_update;
-            auto swarm_cache_write = swarm_cache;
 
             lock.unlock();
             {
                 try {
                     // Create the cache directories if needed
-                    auto swarm_base = cache_path / swarm_dir;
-                    fs::create_directories(swarm_base);
+                    fs::create_directories(cache_path);
+
+                    // If we are using testnet then create a file to indicate that
+                    if (use_testnet) {
+                        auto testnet_stub = cache_path / file_testnet;
+                        write_whole_file(testnet_stub);
+                    }
 
                     // Save the snode pool to disk
-                    if (need_pool_write) {
-                        auto pool_path = cache_path / file_snode_pool, pool_tmp = pool_path;
-                        pool_tmp += u8"_new";
+                    auto pool_path = cache_path / file_snode_pool, pool_tmp = pool_path;
+                    pool_tmp += u8"_new";
 
-                        {
-                            std::stringstream ss;
-                            for (auto& snode : snode_cache_write)
-                                ss << node_to_disk(snode) << '\n';
+                    {
+                        std::stringstream ss;
+                        for (auto& snode : snode_cache_write)
+                            ss << node_to_disk(snode) << '\n';
 
-                            std::ofstream file(pool_tmp, std::ios::binary);
-                            file << ss.rdbuf();
-                        }
-
-                        fs::rename(pool_tmp, pool_path);
-
-                        // Write the last update timestamp to disk
-                        write_whole_file(
-                                cache_path / file_snode_pool_updated,
-                                "{}"_format(std::chrono::system_clock::to_time_t(
-                                        last_pool_update_write)));
-                        need_pool_write = false;
-                        log::debug(cat, "Finished writing snode pool cache to disk.");
+                        std::ofstream file(pool_tmp, std::ios::binary);
+                        file << ss.rdbuf();
                     }
 
-                    // Save the snode failure counts to disk
-                    if (need_failure_counts_write) {
-                        auto failure_counts_path = cache_path / file_snode_failure_counts,
-                             failure_counts_tmp = failure_counts_path;
-                        failure_counts_tmp += u8"_new";
-
-                        {
-                            std::stringstream ss;
-                            for (auto& [key, count] : snode_failure_counts_write)
-                                ss << fmt::format("{}|{}", key, count) << '\n';
-
-                            std::ofstream file(failure_counts_tmp, std::ios::binary);
-                            file << ss.rdbuf();
-                        }
-
-                        fs::rename(failure_counts_tmp, failure_counts_path);
-                        need_failure_counts_write = false;
-                        log::debug(cat, "Finished writing snode failure counts to disk.");
-                    }
-
-                    // Write the swarm cache to disk
-                    if (need_swarm_write) {
-                        auto time_now = std::chrono::system_clock::now();
-
-                        for (auto& [key, swarm] : swarm_cache_write) {
-                            auto swarm_path = swarm_base / key, swarm_tmp = swarm_path;
-                            swarm_tmp += u8"_new";
-
-                            // Write the timestamp
-                            std::stringstream ss;
-                            ss << std::chrono::system_clock::to_time_t(time_now) << '\n';
-
-                            // Write the nodes
-                            for (auto& snode : swarm)
-                                ss << node_to_disk(snode) << '\n';
-
-                            // FIXME: In the future we should store the swarm info in the encrypted
-                            // database instead of a plaintext file
-                            std::ofstream swarm_file(swarm_tmp, std::ios::binary);
-                            swarm_file << ss.rdbuf();
-
-                            fs::rename(swarm_tmp, swarm_path);
-                        }
-                        need_swarm_write = false;
-                        log::debug(cat, "Finished writing swarm cache to disk.");
-                    }
-
+                    fs::rename(pool_tmp, pool_path);
                     need_write = false;
+
+                    log::debug(cat, "Finished writing snode cache to disk.");
                 } catch (const std::exception& e) {
                     log::error(cat, "Failed to write snode cache: {}", e.what());
                 }
@@ -746,9 +602,6 @@ void Network::disk_write_thread_loop() {
         }
         if (need_clear_cache) {
             snode_cache = {};
-            last_snode_cache_update = {};
-            snode_failure_counts = {};
-            swarm_cache = {};
 
             lock.unlock();
             if (fs::exists(cache_path))
@@ -811,7 +664,6 @@ void Network::_close_connections() {
     in_progress_connections.clear();
     snode_refresh_results.reset();
     current_snode_cache_refresh_request_id = std::nullopt;
-    unused_connection_and_path_build_nodes = std::nullopt;
 
     update_status(ConnectionStatus::disconnected);
     log::info(cat, "Closed all connections.");
@@ -878,14 +730,25 @@ std::vector<service_node> Network::get_unused_nodes() {
         node_ips_to_exlude.emplace_back(conn_info.node.to_ipv4());
 
     // Exclude in progress connections
-    for (const auto& conn_info : unused_connections)
-        node_ips_to_exlude.emplace_back(conn_info.node.to_ipv4());
+    for (const auto& [request_id, node] : in_progress_connections)
+        node_ips_to_exlude.emplace_back(node.to_ipv4());
 
     // Exclude pending requests
     for (const auto& [path_type, path_type_requests] : request_queue)
         for (const auto& [info, callback] : path_type_requests)
             if (auto* dest = std::get_if<service_node>(&info.destination))
                 node_ips_to_exlude.emplace_back(dest->to_ipv4());
+
+    // Exclude any nodes which have surpassed the failure threshold
+    for (const auto& [node_string, failure_count] : snode_failure_counts)
+        if (failure_count >= snode_failure_threshold) {
+            size_t colon_pos = node_string.find(':');
+
+            if (colon_pos != std::string::npos)
+                node_ips_to_exlude.emplace_back(quic::ipv4{node_string.substr(0, colon_pos)});
+            else
+                node_ips_to_exlude.emplace_back(quic::ipv4{node_string});
+        }
 
     // Populate the unused nodes with any nodes in the cache which shouldn't be excluded
     std::vector<service_node> result;
@@ -1006,39 +869,11 @@ void Network::establish_connection(
                     clear_empty_pending_path_drops();
 
                     // If the connection failed with a handshake timeout then the node is
-                    // unreachable, either due to a device network issue or because the node is down
-                    // - since we frequently refresh the snode cache it's better to assume the
-                    // latter to avoid using a potentially bad node being used in the path so we
-                    // want to drop the snode from the cache and any swarms
-                    if (error_code == static_cast<uint64_t>(NGTCP2_ERR_HANDSHAKE_TIMEOUT)) {
-                        {
-                            std::lock_guard lock{snode_cache_mutex};
-
-                            // Update the snode failure counts
-                            if (snode_failure_counts.erase(target.to_string()) > 0)
-                                need_failure_counts_write = true;
-
-                            // Remove the node from any swarms
-                            for (auto& [key, nodes] : swarm_cache) {
-                                auto it = std::remove(nodes.begin(), nodes.end(), target);
-                                if (it != nodes.end()) {
-                                    nodes.erase(it, nodes.end());
-                                    need_swarm_write = true;
-                                }
-                            }
-
-                            // Remove the node from the cache
-                            auto it = std::remove(snode_cache.begin(), snode_cache.end(), target);
-                            if (it != snode_cache.end()) {
-                                snode_cache.erase(it, snode_cache.end());
-                                need_pool_write = true;
-                            }
-
-                            if (need_failure_counts_write || need_swarm_write || need_pool_write)
-                                need_write = true;
-                        }
-                        update_disk_cache_throttled();
-                    }
+                    // unreachable, either due to a device network issue or because the node
+                    // is down so set the failure count to the failure threshold so it won't
+                    // be used for subsequent requests
+                    if (error_code == static_cast<uint64_t>(NGTCP2_ERR_HANDSHAKE_TIMEOUT))
+                        snode_failure_counts[target.to_string()] = snode_failure_threshold;
                 });
             });
 
@@ -1055,11 +890,11 @@ void Network::establish_and_store_connection(std::string request_id) {
         update_status(ConnectionStatus::connecting);
 
     // Re-populate the unused nodes if it ends up being empty
-    if (!unused_connection_and_path_build_nodes || unused_connection_and_path_build_nodes->empty())
-        unused_connection_and_path_build_nodes = get_unused_nodes();
+    if (unused_nodes.empty())
+        unused_nodes = get_unused_nodes();
 
     // If there aren't enough unused nodes then trigger a cache refresh
-    if (unused_connection_and_path_build_nodes->size() < min_snode_cache_size()) {
+    if (unused_nodes.size() < min_snode_cache_size()) {
         log::trace(
                 cat,
                 "Unable to establish new connection due to lack of unused nodes, refreshing snode "
@@ -1081,13 +916,13 @@ void Network::establish_and_store_connection(std::string request_id) {
         connection_failures = 0;
 
     // Grab a node from the `unused_nodes` list to establish a connection to
-    auto target_node = unused_connection_and_path_build_nodes->back();
-    unused_connection_and_path_build_nodes->pop_back();
+    auto target_node = unused_nodes.back();
+    unused_nodes.pop_back();
 
     // Try to establish a new connection to the target (this has a 3s handshake timeout as we
     // wouldn't want to use any nodes which take longer than that anyway)
     log::info(cat, "Establishing connection to {} for {}.", target_node.to_string(), request_id);
-    in_progress_connections.emplace(request_id);
+    in_progress_connections.emplace(request_id, target_node);
 
     establish_connection(
             request_id,
@@ -1131,13 +966,6 @@ void Network::establish_and_store_connection(std::string request_id) {
                         net.call_soon([this]() {
                             establish_and_store_connection(random::random_base32(4));
                         });
-
-                // If there are no more pending requests, path builds or connections then we should
-                // reset the `unused_connection_and_path_build_nodes` since it shouldn't be needed
-                // anymore
-                if (request_queue.empty() && path_build_queue.empty() &&
-                    in_progress_connections.empty())
-                    unused_connection_and_path_build_nodes = std::nullopt;
             });
 }
 
@@ -1151,7 +979,6 @@ void Network::refresh_snode_cache_complete(std::vector<service_node> nodes) {
         std::lock_guard lock{snode_cache_mutex};
         snode_cache = nodes;
         last_snode_cache_update = std::chrono::system_clock::now();
-        need_pool_write = true;
         need_write = true;
     }
     update_disk_cache_throttled();
@@ -1162,6 +989,18 @@ void Network::refresh_snode_cache_complete(std::vector<service_node> nodes) {
     in_progress_snode_cache_refresh_count = 0;
     unused_snode_refresh_nodes = std::nullopt;
     snode_refresh_results.reset();
+
+    // Reset the snode failure counts (assume if the snode refresh includes
+    // nodes then they are valid)
+    snode_failure_counts.clear();
+
+    // Since we've updated the snode cache the swarm cache could be invalid
+    // so we need to regenerate it (the resulting `all_swarms` needs to be
+    // stored in ascending order as it is required for the logic to find the
+    // appropriate swarm for a given pubkey)
+    all_swarms.clear();
+    swarm_cache.clear();
+    all_swarms = detail::generate_swarms(nodes);
 
     // Run any post-refresh processes
     for (const auto& callback : after_snode_cache_refresh)
@@ -1292,27 +1131,25 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
         return;
     }
 
-    // Reset the snode refresh states when starting a new snode cache refresh
+    // We are starting a new cache refresh so store an identifier for it
     if (!current_snode_cache_refresh_request_id) {
         log::info(cat, "Refreshing snode cache ({}).", request_id);
         current_snode_cache_refresh_request_id = request_id;
-
-        // Shuffle to ensure we pick random nodes to fetch from
-        CSRNG rng;
-        unused_snode_refresh_nodes = get_unused_nodes();
-        std::shuffle(unused_snode_refresh_nodes->begin(), unused_snode_refresh_nodes->end(), rng);
-        snode_refresh_results = std::make_shared<std::vector<std::vector<service_node>>>();
     }
 
-    // If we don't have enough nodes in the unused nodes it likely means we didn't have
-    // enough nodes in the cache so instead just fetch from the seed nodes (which is a
-    // trusted source so we can update the cache from a single response)
-    if (!unused_snode_refresh_nodes || unused_snode_refresh_nodes->size() < min_snode_cache_size())
+    // If we don't have enough nodes in the unused nodes then refresh it
+    if (unused_nodes.size() < min_snode_cache_size())
+        unused_nodes = get_unused_nodes();
+
+    // If we still don't have enough nodes in the unused nodes it likely means we didn't
+    // have enough nodes in the cache so instead just fetch from the seed nodes (which is
+    // a trusted source so we can update the cache from a single response)
+    if (unused_nodes.size() < min_snode_cache_size())
         return refresh_snode_cache_from_seed_nodes(request_id, true);
 
     // Target an unused node and increment the in progress refresh counter
-    auto target_node = unused_snode_refresh_nodes->back();
-    unused_snode_refresh_nodes->pop_back();
+    auto target_node = unused_nodes.back();
+    unused_nodes.pop_back();
     in_progress_snode_cache_refresh_count++;
 
     // If there are still more concurrent refresh_snode_cache requests we want to trigger then
@@ -1395,7 +1232,6 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
                     current_snode_cache_refresh_request_id = std::nullopt;
                     snode_cache_refresh_failure_count = 0;
                     in_progress_snode_cache_refresh_count = 0;
-                    unused_snode_refresh_nodes = std::nullopt;
                     snode_refresh_results.reset();
                     return;
                 }
@@ -1452,12 +1288,11 @@ void Network::build_path(PathType path_type, std::string request_id) {
     }
 
     // Reset the unused nodes list if it's too small
-    if ((!unused_connection_and_path_build_nodes ||
-         unused_connection_and_path_build_nodes->size() < path_size))
-        unused_connection_and_path_build_nodes = get_unused_nodes();
+    if (unused_nodes.size() < path_size)
+        unused_nodes = get_unused_nodes();
 
     // If we still don't have enough unused nodes then we need to refresh the cache
-    if (unused_connection_and_path_build_nodes->size() < path_size) {
+    if (unused_nodes.size() < path_size) {
         log::info(
                 cat,
                 "Re-queing {} path build due to insufficient nodes ({}).",
@@ -1478,11 +1313,11 @@ void Network::build_path(PathType path_type, std::string request_id) {
     std::vector<service_node> path_nodes = {conn_info.node};
 
     while (path_nodes.size() < path_size) {
-        if (unused_connection_and_path_build_nodes->empty()) {
+        if (unused_nodes.empty()) {
             // Log the error and try build again after a slight delay
             log::info(
                     cat,
-                    "Unable to build {} path due to lack of suitable unused path build nodes ({}).",
+                    "Unable to build {} path due to lack of suitable unused nodes ({}).",
                     path_name,
                     request_id);
 
@@ -1496,8 +1331,8 @@ void Network::build_path(PathType path_type, std::string request_id) {
         }
 
         // Grab the next unused node to continue building the path
-        auto node = unused_connection_and_path_build_nodes->back();
-        unused_connection_and_path_build_nodes->pop_back();
+        auto node = unused_nodes.back();
+        unused_nodes.pop_back();
 
         // Ensure we don't put two nodes with the same IP into the same path
         auto snode_with_ip_it = std::find_if(
@@ -1559,11 +1394,6 @@ void Network::build_path(PathType path_type, std::string request_id) {
         });
     } else
         request_queue.erase(path_type);
-
-    // If there are no more pending requests, path builds or connections then we should reset the
-    // `unused_connection_and_path_build_nodes` since it shouldn't be needed anymore
-    if (request_queue.empty() && path_build_queue.empty() && in_progress_connections.empty())
-        unused_connection_and_path_build_nodes = std::nullopt;
 }
 
 std::optional<onion_path> Network::find_valid_path(
@@ -1687,118 +1517,65 @@ void Network::get_service_nodes(
             });
 }
 
-// MARK: Node Retrieval
+// MARK: Swarm Management
 
 void Network::get_swarm(
         session::onionreq::x25519_pubkey swarm_pubkey,
-        std::function<void(std::vector<service_node> swarm)> callback) {
-    auto request_id = random::random_base32(4);
-    log::trace(cat, "{} called for {} as {}.", __PRETTY_FUNCTION__, swarm_pubkey.hex(), request_id);
+        std::function<void(swarm_id_t swarm_id, std::vector<service_node> swarm)> callback) {
+    log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, swarm_pubkey.hex());
 
-    net.call([this, request_id, swarm_pubkey, cb = std::move(callback)]() {
-        // If we have a cached swarm, and it meets the minimum size requirements, then return it
-        if (swarm_cache[swarm_pubkey.hex()].size() > min_swarm_snode_count)
-            return cb(swarm_cache[swarm_pubkey.hex()]);
+    net.call([this, swarm_pubkey, cb = std::move(callback)]() {
+        // If we have a cached swarm then return it
+        auto cached_swarm = swarm_cache[swarm_pubkey.hex()];
+        if (!cached_swarm.second.empty())
+            return cb(cached_swarm.first, cached_swarm.second);
 
-        // Pick a random node from the snode pool to fetch the swarm from
-        log::info(
-                cat,
-                "Get swarm had no valid cached swarm for {}, fetching from random node ({}).",
-                swarm_pubkey.hex(),
-                request_id);
-
-        // If we have no snode cache then we need to rebuild the cache and run this request again
-        // once it's rebuild
-        if (snode_cache.empty()) {
+        // If we have no snode cache or no swarms then we need to rebuild the cache (which will also
+        // rebuild the swarms) and run this request again
+        if (snode_cache.empty() || all_swarms.empty()) {
             after_snode_cache_refresh.emplace_back([this, swarm_pubkey, cb = std::move(cb)]() {
                 get_swarm(swarm_pubkey, std::move(cb));
             });
             return net.call_soon([this]() { refresh_snode_cache(); });
         }
 
-        CSRNG rng;
-        auto random_cache = snode_cache;
-        std::shuffle(random_cache.begin(), random_cache.end(), rng);
+        // If there is only a single swarm then return it
+        if (all_swarms.size() == 1)
+            return cb(all_swarms.front().first, all_swarms.front().second);
 
-        nlohmann::json params{{"pubkey", "05" + swarm_pubkey.hex()}};
-        nlohmann::json payload{
-                {"method", "get_swarm"},
-                {"params", params},
-        };
-        auto info = request_info::make(
-                random_cache.front(),
-                quic::DEFAULT_TIMEOUT,
-                ustring{quic::to_usv(payload.dump())},
-                swarm_pubkey,
-                PathType::standard,
-                request_id);
+        // Generate a swarm_id for the pubkey
+        const swarm_id_t swarm_id = detail::pubkey_to_swarm_space(swarm_pubkey);
 
-        _send_onion_request(
-                info,
-                [this, hex_key = swarm_pubkey.hex(), request_id, cb = std::move(cb)](
-                        bool success, bool timeout, int16_t, std::optional<std::string> response) {
-                    log::trace(
-                            cat,
-                            "{} got response for {} as {}.",
-                            __PRETTY_FUNCTION__,
-                            hex_key,
-                            request_id);
-                    if (!success || timeout || !response) {
-                        log::info(
-                                cat,
-                                "Failed to retrieve swarm due to error: {} ({}).",
-                                response.value_or("Unknown error"),
-                                request_id);
-                        return cb({});
-                    }
-
-                    std::vector<service_node> swarm;
-
-                    try {
-                        nlohmann::json response_json = nlohmann::json::parse(*response);
-
-                        if (!response_json.contains("snodes") ||
-                            !response_json["snodes"].is_array())
-                            throw std::runtime_error{"JSON missing swarm field."};
-
-                        for (auto& snode : response_json["snodes"])
-                            swarm.emplace_back(node_from_json(snode));
-                    } catch (const std::exception& e) {
-                        log::info(
-                                cat,
-                                "Failed to parse swarm due to error: {} ({}).",
-                                e.what(),
-                                request_id);
-                        return cb({});
-                    }
-
-                    // Update the cache
-                    log::info(cat, "Retrieved swarm for {} ({}).", hex_key, request_id);
-                    {
-                        std::lock_guard lock{snode_cache_mutex};
-                        swarm_cache[hex_key] = swarm;
-                        need_swarm_write = true;
-                        need_write = true;
-                    }
-                    update_disk_cache_throttled();
-
-                    cb(swarm);
+        // Find the right boundary, i.e. first swarm with swarm_id >= res
+        auto right_it = std::lower_bound(
+                all_swarms.begin(), all_swarms.end(), swarm_id, [](const auto& s, uint64_t v) {
+                    return s.first < v;
                 });
+
+        if (right_it == all_swarms.end())
+            // res is > the top swarm_id, meaning it is big and in the wrapping space between last
+            // and first elements.
+            right_it = all_swarms.begin();
+
+        // Our "left" is the one just before that (with wraparound, if right is the first swarm)
+        auto left_it = std::prev(right_it == all_swarms.begin() ? all_swarms.end() : right_it);
+
+        uint64_t dright = right_it->first - swarm_id;
+        uint64_t dleft = swarm_id - left_it->first;
+        auto swarm = &*(dright < dleft ? right_it : left_it);
+
+        // Update the cache with the result
+        log::info(
+                cat,
+                "Found swarm with {} nodes for {}, adding to cache.",
+                swarm->second.size(),
+                swarm_pubkey.hex());
+        swarm_cache[swarm_pubkey.hex()] = *swarm;
+        cb(swarm->first, swarm->second);
     });
 }
 
-void Network::set_swarm(
-        session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm) {
-    net.call([this, hex_key = swarm_pubkey.hex(), swarm]() mutable {
-        {
-            std::lock_guard lock{snode_cache_mutex};
-            swarm_cache[hex_key] = swarm;
-            need_swarm_write = true;
-            need_write = true;
-        }
-        update_disk_cache_throttled();
-    });
-}
+// MARK: Node Retrieval
 
 void Network::get_random_nodes(
         uint16_t count, std::function<void(std::vector<service_node> nodes)> callback) {
@@ -1806,18 +1583,22 @@ void Network::get_random_nodes(
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
 
     net.call([this, request_id, count, cb = std::move(callback)]() mutable {
-        // If we don't have sufficient nodes in the snode cache then add this to
-        if (snode_cache.size() < count) {
+        // If we don't have sufficient unused nodes then regenerate it
+        if (unused_nodes.size() < count)
+            unused_nodes = get_unused_nodes();
+
+        // If we still don't have sufficient nodes then we need to refresh the snode cache
+        if (unused_nodes.size() < count) {
             after_snode_cache_refresh.emplace_back(
                     [this, count, cb = std::move(cb)]() { get_random_nodes(count, cb); });
             return net.call_soon([this]() { refresh_snode_cache(); });
         }
 
         // Otherwise callback with the requested random number of nodes
-        CSRNG rng;
-        auto random_cache = snode_cache;
-        std::shuffle(random_cache.begin(), random_cache.end(), rng);
-        cb(std::vector<service_node>(random_cache.begin(), random_cache.begin() + count));
+        auto random_nodes =
+                std::vector<service_node>(unused_nodes.begin(), unused_nodes.begin() + count);
+        unused_nodes.erase(unused_nodes.begin(), unused_nodes.begin() + count);
+        cb(random_nodes);
     });
 }
 
@@ -2416,79 +2197,118 @@ void Network::handle_errors(
                 if (!handle_response || !info.swarm_pubkey || !target)
                     throw std::invalid_argument{"Unable to handle redirect."};
 
-                // If this was the first 421 then we want to retry using another node in the
-                // swarm to get confirmation that we should switch to a different swarm
-                if (!info.retry_reason ||
-                    info.retry_reason != request_info::RetryReason::redirect) {
-                    auto cached_swarm = swarm_cache[info.swarm_pubkey->hex()];
+                switch (info.retry_reason.value_or(request_info::RetryReason::none)) {
+                    // If this was the first 421 then we want to retry using another node in the
+                    // swarm to get confirmation that we should switch to a different swarm
+                    case request_info::RetryReason::none:
+                    case request_info::RetryReason::decryption_failure: {
+                        auto cached_swarm = swarm_cache[info.swarm_pubkey->hex()];
 
-                    if (cached_swarm.empty())
-                        throw std::invalid_argument{
-                                "Unable to handle redirect due to lack of swarm."};
+                        if (cached_swarm.second.empty())
+                            throw std::invalid_argument{
+                                    "Unable to handle redirect due to lack of swarm."};
 
-                    CSRNG rng;
-                    std::vector<session::network::service_node> swarm_copy = cached_swarm;
-                    std::shuffle(swarm_copy.begin(), swarm_copy.end(), rng);
+                        CSRNG rng;
+                        std::vector<service_node> swarm_copy;
+                        std::copy_if(
+                                cached_swarm.second.begin(),
+                                cached_swarm.second.end(),
+                                std::back_inserter(swarm_copy),
+                                [&target = *target](const auto& node) { return node != target; });
+                        std::shuffle(swarm_copy.begin(), swarm_copy.end(), rng);
 
-                    std::optional<session::network::service_node> random_node;
+                        if (swarm_copy.empty())
+                            throw std::invalid_argument{"No other nodes in the swarm."};
 
-                    for (auto& node : swarm_copy) {
-                        if (node == *target)
-                            continue;
-
-                        random_node = node;
-                        break;
+                        log::info(
+                                cat,
+                                "Received 421 error in request {} on {} path, retrying once before "
+                                "updating swarm.",
+                                info.request_id,
+                                path_name);
+                        auto updated_info = info;
+                        updated_info.destination = swarm_copy.front();
+                        updated_info.retry_reason = request_info::RetryReason::redirect;
+                        return net.call_soon(
+                                [this, updated_info, cb = std::move(*handle_response)]() {
+                                    _send_onion_request(updated_info, std::move(cb));
+                                });
                     }
 
-                    if (!random_node)
-                        throw std::invalid_argument{"No other nodes in the swarm."};
+                    // If we got a second 421 then it's likely that our cached swarm is out of date
+                    // so we need to refresh our snode cache, regenerate our swarm and try one more
+                    // time
+                    case request_info::RetryReason::redirect:
+                        log::info(
+                                cat,
+                                "Received second 421 error in request {} on {} path, refreshing "
+                                "snode cache before trying one final time.",
+                                info.request_id,
+                                path_name);
+                        after_snode_cache_refresh.emplace_back([this,
+                                                                swarm_pubkey = info.swarm_pubkey,
+                                                                info,
+                                                                status_code,
+                                                                response,
+                                                                cb = std::move(
+                                                                        *handle_response)]() {
+                            get_swarm(
+                                    *swarm_pubkey,
+                                    [this, info, status_code, response, cb = std::move(cb)](
+                                            swarm_id_t, std::vector<service_node> swarm) {
+                                        auto target =
+                                                detail::node_for_destination(info.destination);
 
-                    log::info(
-                            cat,
-                            "Received 421 error in request {} on {} path, retrying once before "
-                            "updating swarm.",
-                            info.request_id,
-                            path_name);
-                    auto updated_info = info;
-                    updated_info.destination = *random_node;
-                    updated_info.retry_reason = request_info::RetryReason::redirect;
-                    return net.call_soon([this, updated_info, cb = std::move(*handle_response)]() {
-                        _send_onion_request(updated_info, std::move(cb));
-                    });
+                                        CSRNG rng;
+                                        std::vector<service_node> swarm_copy;
+                                        std::copy_if(
+                                                swarm.begin(),
+                                                swarm.end(),
+                                                std::back_inserter(swarm_copy),
+                                                [&target = *target](const auto& node) {
+                                                    return node != target;
+                                                });
+                                        std::shuffle(swarm_copy.begin(), swarm_copy.end(), rng);
+
+                                        // If there are no nodes in the swarm then don't bother
+                                        // trying again
+                                        if (swarm_copy.empty()) {
+                                            log::info(
+                                                    cat,
+                                                    "Second 421 retry for request {} resulted in "
+                                                    "another 421 and had no other nodes in the "
+                                                    "swarm.",
+                                                    info.request_id);
+                                            return cb(false, false, status_code, response);
+                                        }
+
+                                        auto updated_info = info;
+                                        updated_info.retry_reason =
+                                                request_info::RetryReason::redirect_swarm_refresh;
+                                        updated_info.destination = swarm_copy.front();
+                                        net.call_soon([this, updated_info, cb = std::move(cb)]() {
+                                            _send_onion_request(updated_info, std::move(cb));
+                                        });
+                                    });
+                        });
+                        return net.call_soon([this, request_id = info.request_id]() {
+                            refresh_snode_cache(request_id);
+                        });
+
+                    // If we got a 421 after refreshing the swarm then there is some bigger issue
+                    // (ie. our local swarm generation logic differs from the server or we are
+                    // getting invalid swarm ids back when updating our cache) so the best we can
+                    // do is handle this like any other error
+                    case request_info::RetryReason::redirect_swarm_refresh:
+                        log::info(
+                                cat,
+                                "Received another 421 for request {} after refreshing the snode "
+                                "cache, failing request.",
+                                info.request_id);
+                        break;
+
+                    default: break; // Unhandled case should just behave like any other error
                 }
-
-                if (!response)
-                    throw std::invalid_argument{"No response data."};
-
-                auto response_json = nlohmann::json::parse(*response);
-                auto snodes = response_json["snodes"];
-
-                if (!snodes.is_array())
-                    throw std::invalid_argument{"Invalid JSON response."};
-
-                std::vector<session::network::service_node> swarm;
-
-                for (auto snode : snodes)
-                    swarm.emplace_back(node_from_json(snode));
-
-                if (swarm.empty())
-                    throw std::invalid_argument{"No snodes in the response."};
-
-                log::info(
-                        cat,
-                        "Retry for request {} resulted in another 421 on {} path, updating swarm.",
-                        info.request_id,
-                        path_name);
-
-                // Update the cache
-                {
-                    std::lock_guard lock{snode_cache_mutex};
-                    swarm_cache[info.swarm_pubkey->hex()] = swarm;
-                    need_swarm_write = true;
-                    need_write = true;
-                }
-                update_disk_cache_throttled();
-                return (*handle_response)(false, false, status_code, response);
             } catch (...) {
             }
 
@@ -2553,9 +2373,7 @@ void Network::handle_errors(
 
     // Update the failure counts and paths
     auto updated_path = *path;
-    auto updated_failure_counts = snode_failure_counts;
     bool found_invalid_node = false;
-    std::vector<service_node> nodes_to_drop;
 
     if (response) {
         std::optional<std::string_view> ed25519PublicKey;
@@ -2578,14 +2396,12 @@ void Network::handle_errors(
                     updated_path.nodes.end(),
                     [&edpk_view](const auto& node) { return node.view_remote_key() == edpk_view; });
 
-            // If we found an invalid node then store it to increment the failure count
             if (snode_it != updated_path.nodes.end()) {
                 found_invalid_node = true;
 
                 // If we get an explicit node failure then we should just immediately drop it and
                 // try to repair the existing path by replacing the bad node with another one
-                updated_failure_counts.erase(snode_it->to_string());
-                nodes_to_drop.emplace_back(*snode_it);
+                snode_failure_counts[snode_it->to_string()] = snode_failure_threshold;
 
                 try {
                     // If the node that's gone bad is the guard node then we just have to
@@ -2593,32 +2409,17 @@ void Network::handle_errors(
                     if (snode_it == updated_path.nodes.begin())
                         throw std::runtime_error{"Cannot recover if guard node is bad"};
 
-                    // Try to find an unused node to patch the path
-                    std::vector<service_node> unused_snodes;
-                    std::vector<quic::ipv4> existing_path_node_ips = all_path_ips();
-
-                    std::copy_if(
-                            snode_cache.begin(),
-                            snode_cache.end(),
-                            std::back_inserter(unused_snodes),
-                            [&existing_path_node_ips](const auto& node) {
-                                return std::find(
-                                               existing_path_node_ips.begin(),
-                                               existing_path_node_ips.end(),
-                                               node.to_ipv4()) == existing_path_node_ips.end();
-                            });
-
-                    if (unused_snodes.empty())
+                    if (unused_nodes.empty())
                         throw std::runtime_error{"No remaining nodes"};
 
-                    CSRNG rng;
-                    std::shuffle(unused_snodes.begin(), unused_snodes.end(), rng);
+                    auto target_node = unused_nodes.back();
+                    unused_nodes.pop_back();
 
                     std::replace(
                             updated_path.nodes.begin(),
                             updated_path.nodes.end(),
                             *snode_it,
-                            unused_snodes.front());
+                            target_node);
                     log::info(
                             cat,
                             "Found bad node ({}) in {} path, replacing node.",
@@ -2646,54 +2447,19 @@ void Network::handle_errors(
         // If the path has failed too many times we want to drop the guard snode (marking it as
         // invalid) and increment the failure count of each node in the path)
         if (updated_path.failure_count >= path_failure_threshold) {
-            for (auto& it : updated_path.nodes) {
-                auto& failure_count =
-                        updated_failure_counts.try_emplace(it.to_string(), 0).first->second;
-                failure_count += 1;
+            for (auto& it : updated_path.nodes)
+                ++snode_failure_counts[it.to_string()];
 
-                if (failure_count >= snode_failure_threshold)
-                    nodes_to_drop.emplace_back(it);
-            }
-
-            // Set the failure count of the guard node to match the threshold so we drop it
-            updated_failure_counts[updated_path.nodes[0].to_string()] = snode_failure_threshold;
-            nodes_to_drop.emplace_back(updated_path.nodes[0]);
-        } else if (updated_path.nodes.size() < path_size) {
-            // If the path doesn't have enough nodes then it's likely that this failure was
+            // Set the failure count of the guard node to match the threshold so we don't use it
+            // again until we refresh the cache
+            snode_failure_counts[updated_path.nodes[0].to_string()] = snode_failure_threshold;
+        } else if (updated_path.nodes.size() < path_size)
             // triggered when trying to establish a new path and, as such, we should increase
             // the failure count of the guard node since it is probably invalid
-            auto& failure_count =
-                    updated_failure_counts.try_emplace(updated_path.nodes[0].to_string(), 0)
-                            .first->second;
-            failure_count += 1;
-
-            if (failure_count >= snode_failure_threshold)
-                nodes_to_drop.emplace_back(updated_path.nodes[0]);
-        }
+            ++snode_failure_counts[updated_path.nodes[0].to_string()];
     }
 
-    // Make sure to remove any nodes we want to drop from the swarm cache as well
-    auto updated_swarm_cache = swarm_cache;
-    bool requires_swarm_cache_update = false;
-
-    if (!nodes_to_drop.empty()) {
-        for (auto& [key, nodes] : updated_swarm_cache) {
-            for (const auto& drop_node : nodes_to_drop) {
-                auto it = std::remove(nodes.begin(), nodes.end(), drop_node);
-                if (it != nodes.end()) {
-                    nodes.erase(it, nodes.end());
-                    requires_swarm_cache_update = true;
-                }
-            }
-        }
-    }
-
-    // No need to track the failure counts of nodes which have been dropped, or haven't failed
-    std::erase_if(updated_failure_counts, [](const auto& item) {
-        return item.second == 0 || item.second >= snode_failure_threshold;
-    });
-
-    // Drop the path if invalid (and currnetly an active path)
+    // Drop the path if invalid (and currently an active path)
     if (is_active_path) {
         if (updated_path.failure_count >= path_failure_threshold)
             drop_path_when_empty(info.request_id, info.path_type, *path_it);
@@ -2704,28 +2470,6 @@ void Network::handle_errors(
                     *path_it,
                     updated_path);
     }
-
-    // Update the snode cache
-    {
-        std::lock_guard lock{snode_cache_mutex};
-
-        // Update the snode failure counts
-        snode_failure_counts = updated_failure_counts;
-        need_failure_counts_write = true;
-        need_swarm_write = requires_swarm_cache_update;
-
-        if (requires_swarm_cache_update)
-            swarm_cache = updated_swarm_cache;
-
-        for (const auto& node : nodes_to_drop) {
-            snode_cache.erase(
-                    std::remove(snode_cache.begin(), snode_cache.end(), node), snode_cache.end());
-            need_pool_write = true;
-        }
-
-        need_write = true;
-    }
-    update_disk_cache_throttled();
 
     if (handle_response)
         (*handle_response)(false, timeout, status_code, response);
@@ -2893,7 +2637,7 @@ LIBSESSION_C_API void network_get_swarm(
     assert(swarm_pubkey_hex && callback);
     unbox(network).get_swarm(
             x25519_pubkey::from_hex({swarm_pubkey_hex, 64}),
-            [cb = std::move(callback), ctx](std::vector<service_node> nodes) {
+            [cb = std::move(callback), ctx](swarm_id_t, std::vector<service_node> nodes) {
                 auto c_nodes = session::network::convert_service_nodes(nodes);
                 cb(c_nodes.data(), c_nodes.size(), ctx);
             });
@@ -2938,7 +2682,8 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
         unbox(network).send_onion_request(
                 service_node{
                         oxenc::from_hex({node.ed25519_pubkey_hex, 64}),
-                        {0},  // For a destination node we don't care about the version
+                        {0},
+                        INVALID_SWARM_ID,
                         "{}"_format(fmt::join(ip, ".")),
                         node.quic_port},
                 body,

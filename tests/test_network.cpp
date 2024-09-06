@@ -22,6 +22,17 @@ struct Result {
     std::optional<std::string> response;
 };
 
+service_node test_node(const ustring ed_pk, const uint16_t index, const bool unique_ip = true) {
+    return service_node{ed_pk, {2, 8, 0}, INVALID_SWARM_ID, (unique_ip ? fmt::format("0.0.0.{}", index) : "1.1.1.1"), index};
+}
+
+std::optional<service_node> node_for_destination(network_destination destination) {
+    if (auto* dest = std::get_if<service_node>(&destination))
+        return *dest;
+
+    return std::nullopt;
+}
+
 }  // namespace
 
 namespace session::network {
@@ -31,6 +42,7 @@ class TestNetwork : public Network {
     std::vector<std::string> calls_to_ignore;
     std::chrono::milliseconds retry_delay_value = 0ms;
     std::optional<std::optional<onion_path>> find_valid_path_response;
+    std::optional<request_info> last_request_info;
 
     TestNetwork(
             std::optional<fs::path> cache_path,
@@ -60,7 +72,7 @@ class TestNetwork : public Network {
         unused_connections = unused_connections_;
     }
 
-    void set_in_progress_connections(std::unordered_set<std::string> in_progress_connections_) {
+    void set_in_progress_connections(std::unordered_map<std::string, service_node> in_progress_connections_) {
         in_progress_connections = in_progress_connections_;
     }
 
@@ -74,12 +86,26 @@ class TestNetwork : public Network {
 
     std::vector<onion_path> get_paths(PathType path_type) { return paths[path_type]; }
 
-    void set_swarm(session::onionreq::x25519_pubkey swarm_pubkey, std::vector<service_node> swarm) {
-        Network::set_swarm(swarm_pubkey, swarm);
+    void set_all_swarms(std::vector<std::pair<swarm_id_t, std::vector<service_node>>> all_swarms_) {
+        all_swarms = all_swarms_;
     }
 
-    std::vector<service_node> get_swarm_value(session::onionreq::x25519_pubkey swarm_pubkey) {
+    void set_swarm(session::onionreq::x25519_pubkey swarm_pubkey, swarm_id_t swarm_id, std::vector<service_node> swarm) {
+        swarm_cache[swarm_pubkey.hex()] = {swarm_id, swarm};
+    }
+
+    std::pair<swarm_id_t, std::vector<service_node>> get_cached_swarm(session::onionreq::x25519_pubkey swarm_pubkey) {
         return swarm_cache[swarm_pubkey.hex()];
+    }
+
+    swarm_id_t get_swarm_id(std::string swarm_pubkey_hex) {
+        if (swarm_pubkey_hex.size() == 66)
+            swarm_pubkey_hex = swarm_pubkey_hex.substr(2);
+        
+        auto pk = x25519_pubkey::from_hex(swarm_pubkey_hex);
+        std::promise<swarm_id_t> prom;
+        get_swarm(pk, [&prom](swarm_id_t result, std::vector<service_node>){ prom.set_value(result); });
+        return prom.get_future().get();
     }
 
     void set_failure_count(service_node node, uint8_t failure_count) {
@@ -115,14 +141,11 @@ class TestNetwork : public Network {
 
     int get_path_build_failures() { return path_build_failures; }
 
-    void set_unused_connection_and_path_build_nodes(
-            std::optional<std::vector<service_node>> unused_connection_and_path_build_nodes_) {
-        unused_connection_and_path_build_nodes = unused_connection_and_path_build_nodes_;
-    }
+    void set_unused_nodes(std::vector<service_node> unused_nodes_) { unused_nodes = unused_nodes_; }
 
-    std::optional<std::vector<service_node>> get_unused_connection_and_path_build_nodes() {
-        return unused_connection_and_path_build_nodes;
-    }
+    std::vector<service_node> get_unused_nodes() { return Network::get_unused_nodes(); }
+
+    std::vector<service_node> get_unused_nodes_value() { return unused_nodes; }
 
     void add_pending_request(PathType path_type, request_info info) {
         request_queue[path_type].emplace_back(
@@ -187,6 +210,7 @@ class TestNetwork : public Network {
     void _send_onion_request(
             request_info info, network_response_callback_t handle_response) override {
         const auto func_name = "_send_onion_request";
+        last_request_info = info;
 
         if (check_should_ignore_and_log_call(func_name))
             return;
@@ -277,11 +301,11 @@ TEST_CASE("Network error handling", "[network]") {
             "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab78862834829a"
             "87e0afadfed763fa8785e893dbde7f2c001ff1071aa55005c347f"_hexbytes;
     auto x_pk_hex = "d2ad010eeb72d72e561d9de7bd7b6989af77dcabffa03a5111a6c859ae5c3a72";
-    auto target = service_node{ed_pk, {2, 8, 0}, "0.0.0.0", uint16_t{0}};
-    auto target2 = service_node{ed_pk2, {2, 8, 0}, "0.0.0.1", uint16_t{1}};
-    auto target3 = service_node{ed_pk2, {2, 8, 0}, "0.0.0.2", uint16_t{2}};
-    auto target4 = service_node{ed_pk2, {2, 8, 0}, "0.0.0.3", uint16_t{3}};
-    auto path = onion_path{{{target}, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
+    auto target = test_node(ed_pk, 0);
+    auto target2 = test_node(ed_pk2, 1);
+    auto target3 = test_node(ed_pk2, 2);
+    auto target4 = test_node(ed_pk2, 3);
+    auto path = onion_path{{target, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
     auto mock_request = request_info{
             "AAAA",
             target,
@@ -294,19 +318,17 @@ TEST_CASE("Network error handling", "[network]") {
             std::nullopt,
             true};
     Result result;
-    auto network = TestNetwork(std::nullopt, true, true, false);
-    network.set_suspended(true);  // Make no requests in this test
-    network.ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    std::optional<TestNetwork> network;
 
     // Check the handling of the codes which make no changes
     auto codes_with_no_changes = {400, 404, 406, 425};
 
     for (auto code : codes_with_no_changes) {
-        network.set_paths(PathType::standard, {path});
-        network.set_failure_count(target, 0);
-        network.set_failure_count(target2, 0);
-        network.set_failure_count(target3, 0);
-        network.handle_errors(
+        network.emplace(std::nullopt, true, true, false);
+        network->set_suspended(true);  // Make no requests in this test
+        network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+        network->set_paths(PathType::standard, {path});
+        network->handle_errors(
                 mock_request,
                 {target, nullptr, nullptr, nullptr},
                 false,
@@ -324,18 +346,18 @@ TEST_CASE("Network error handling", "[network]") {
         CHECK_FALSE(result.timeout);
         CHECK(result.status_code == code);
         CHECK_FALSE(result.response.has_value());
-        CHECK(network.get_failure_count(target) == 0);
-        CHECK(network.get_failure_count(target2) == 0);
-        CHECK(network.get_failure_count(target3) == 0);
-        CHECK(network.get_failure_count(PathType::standard, path) == 0);
+        CHECK(network->get_failure_count(target) == 0);
+        CHECK(network->get_failure_count(target2) == 0);
+        CHECK(network->get_failure_count(target3) == 0);
+        CHECK(network->get_failure_count(PathType::standard, path) == 0);
     }
 
     // Check general error handling (first failure)
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->set_paths(PathType::standard, {path});
+    network->handle_errors(
             mock_request,
             {target, nullptr, nullptr, nullptr},
             false,
@@ -352,18 +374,18 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 1);
+    CHECK(network->get_failure_count(target) == 0);
+    CHECK(network->get_failure_count(target2) == 0);
+    CHECK(network->get_failure_count(target3) == 0);
+    CHECK(network->get_failure_count(PathType::standard, path) == 1);
 
-    // Check general error handling with no response (too many path failures)
-    path = onion_path{{{target}, nullptr, nullptr, nullptr}, {target, target2, target3}, 9};
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
+    // // Check general error handling with no response (too many path failures)
+    path = onion_path{{target, nullptr, nullptr, nullptr}, {target, target2, target3}, 9};
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->set_paths(PathType::standard, {path});
+    network->handle_errors(
             mock_request,
             {target, nullptr, nullptr, nullptr},
             false,
@@ -381,20 +403,21 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK_FALSE(result.response.has_value());
-    CHECK(network.get_failure_count(target) == 0);                    // Guard node dropped
-    CHECK(network.get_failure_count(target2) == 1);                   // Other nodes incremented
-    CHECK(network.get_failure_count(target3) == 1);                   // Other nodes incremented
-    CHECK(network.get_failure_count(PathType::standard, path) == 0);  // Path dropped and reset
+    CHECK(network->get_failure_count(target) == 3);                    // Guard node dropped
+    CHECK(network->get_failure_count(target2) == 1);                   // Other nodes incremented
+    CHECK(network->get_failure_count(target3) == 1);                   // Other nodes incremented
+    CHECK(network->get_failure_count(PathType::standard, path) == 0);  // Path dropped and reset
 
-    // Check general error handling with a path and specific node failure
-    path = onion_path{{{target}, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
+    // // Check general error handling with a path and specific node failure
+    path = onion_path{{target, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
     auto response = std::string{"Next node not found: "} + ed25519_pubkey::from_bytes(ed_pk2).hex();
-    network.set_snode_cache({target, target2, target3, target4});
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 1);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->set_snode_cache({target, target2, target3, target4});
+    network->set_unused_nodes({target4});
+    network->set_paths(PathType::standard, {path});
+    network->handle_errors(
             mock_request,
             {target, nullptr, nullptr, nullptr},
             false,
@@ -412,19 +435,19 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
     CHECK(result.response == response);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);  // Node will have been dropped
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_paths(PathType::standard).front().nodes[1] != target2);
-    CHECK(network.get_failure_count(PathType::standard, path) ==
+    CHECK(network->get_failure_count(target) == 0);
+    CHECK(network->get_failure_count(target2) == 3);  // Node will have been dropped
+    CHECK(network->get_failure_count(target3) == 0);
+    CHECK(network->get_paths(PathType::standard).front().nodes[1] != target2);
+    CHECK(network->get_failure_count(PathType::standard, path) ==
           1);  // Incremented because conn_info is invalid
 
     // Check a 421 with no swarm data throws (no good way to handle this case)
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->set_paths(PathType::standard, {path});
+    network->handle_errors(
             mock_request,
             {target, nullptr, nullptr, nullptr},
             false,
@@ -440,13 +463,43 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 421);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 1);
+    CHECK(network->get_failure_count(target) == 0);
+    CHECK(network->get_failure_count(target2) == 0);
+    CHECK(network->get_failure_count(target3) == 0);
+    CHECK(network->get_failure_count(PathType::standard, path) == 1);
 
-    // Check the retry request of a 421 with no response data is handled like any other error
+    // Check a non redirect 421 triggers a retry using a different node
     auto mock_request2 = request_info{
+            "BBBB",
+            target,
+            "test",
+            std::nullopt,
+            std::nullopt,
+            x25519_pubkey::from_hex(x_pk_hex),
+            PathType::standard,
+            0ms,
+            std::nullopt,
+            true};
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->set_swarm(x25519_pubkey::from_hex(x_pk_hex), 1, {target, target2, target3});
+    network->set_paths(PathType::standard, {path});
+    network->reset_calls();
+    network->handle_errors(
+            mock_request2,
+            {target, nullptr, nullptr, nullptr},
+            false,
+            421,
+            std::nullopt,
+            [](bool, bool, int16_t, std::optional<std::string>) {});
+    CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
+    REQUIRE(network->last_request_info.has_value());
+    CHECK(node_for_destination(network->last_request_info->destination) != node_for_destination(mock_request2.destination));
+
+    // Check that when a retry request of a 421 receives it's own 421 that it tries
+    // to update the snode cache
+    auto mock_request3 = request_info{
             "BBBB",
             target,
             "test",
@@ -457,105 +510,21 @@ TEST_CASE("Network error handling", "[network]") {
             0ms,
             request_info::RetryReason::redirect,
             true};
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
-            mock_request2,
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled", "refresh_snode_cache");
+    network->set_paths(PathType::standard, {path});
+    network->handle_errors(
+            mock_request3,
             {target, nullptr, nullptr, nullptr},
             false,
             421,
             std::nullopt,
-            [&result](
-                    bool success,
-                    bool timeout,
-                    int16_t status_code,
-                    std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
-            });
-    CHECK_FALSE(result.success);
-    CHECK_FALSE(result.timeout);
-    CHECK(result.status_code == 421);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 1);
+            [](bool, bool, int16_t, std::optional<std::string>) {});
+    CHECK(EVENTUALLY(10ms, network->called("refresh_snode_cache")));
 
-    // Check the retry request of a 421 with non-swarm response data is handled like any other error
-    network.set_paths(PathType::standard, {path});
-    network.handle_errors(
-            mock_request2,
-            {target, nullptr, nullptr, nullptr},
-            false,
-            421,
-            "Test",
-            [&result](
-                    bool success,
-                    bool timeout,
-                    int16_t status_code,
-                    std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
-            });
-    CHECK_FALSE(result.success);
-    CHECK_FALSE(result.timeout);
-    CHECK(result.status_code == 421);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 1);
-
-    // Check the retry request of a 421 instructs to replace the swarm
-    auto snodes = nlohmann::json::array();
-    snodes.push_back(
-            {{"ip", "1.1.1.1"},
-             {"port_omq", 1},
-             {"pubkey_ed25519", ed25519_pubkey::from_bytes(ed_pk).hex()}});
-    snodes.push_back(
-            {{"ip", "2.2.2.2"},
-             {"port_omq", 2},
-             {"pubkey_ed25519", ed25519_pubkey::from_bytes(ed_pk).hex()}});
-    snodes.push_back(
-            {{"ip", "3.3.3.3"},
-             {"port_omq", 3},
-             {"pubkey_ed25519", ed25519_pubkey::from_bytes(ed_pk).hex()}});
-    nlohmann::json swarm_json{{"snodes", snodes}};
-    response = swarm_json.dump();
-    network.set_swarm(x25519_pubkey::from_hex(x_pk_hex), {target, target2, target3});
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
-            mock_request2,
-            {target, nullptr, nullptr, nullptr},
-            false,
-            421,
-            response,
-            [&result](
-                    bool success,
-                    bool timeout,
-                    int16_t status_code,
-                    std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
-            });
-
-    CHECK_FALSE(result.success);
-    CHECK_FALSE(result.timeout);
-    CHECK(result.status_code == 421);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 0);
-    REQUIRE(network.get_swarm_value(x25519_pubkey::from_hex(x_pk_hex)).size() == 3);
-    CHECK(network.get_swarm_value(x25519_pubkey::from_hex(x_pk_hex)).front().to_string() ==
-          "1.1.1.1:1");
-    CHECK(oxenc::to_hex(network.get_swarm_value(x25519_pubkey::from_hex(x_pk_hex))
-                                .front()
-                                .view_remote_key()) == oxenc::to_hex(ed_pk));
-
-    // Check a non redirect 421 with swam data triggers a retry
-    auto mock_request3 = request_info{
+    // Check when the retry after refreshing the snode cache due to a 421 receives it's own 421 it is handled like any other error
+    auto mock_request4 = request_info{
             "BBBB",
             target,
             "test",
@@ -564,22 +533,32 @@ TEST_CASE("Network error handling", "[network]") {
             x25519_pubkey::from_hex(x_pk_hex),
             PathType::standard,
             0ms,
-            std::nullopt,
+            request_info::RetryReason::redirect_swarm_refresh,
             true};
-    network.set_swarm(x25519_pubkey::from_hex(x_pk_hex), {target, target2, target3});
-    network.set_paths(PathType::standard, {path});
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.reset_calls();
-    network.handle_errors(
-            mock_request3,
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->set_paths(PathType::standard, {path});
+    network->handle_errors(
+            mock_request4,
             {target, nullptr, nullptr, nullptr},
             false,
             421,
-            response,
-            [](bool, bool, int16_t, std::optional<std::string>) {});
-    CHECK(EVENTUALLY(10ms, network.called("_send_onion_request")));
+            std::nullopt,
+            [&result](
+                    bool success,
+                    bool timeout,
+                    int16_t status_code,
+                    std::optional<std::string> response) {
+                result = {success, timeout, status_code, response};
+            });
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.timeout);
+    CHECK(result.status_code == 421);
+    CHECK(network->get_failure_count(target) == 0);
+    CHECK(network->get_failure_count(target2) == 0);
+    CHECK(network->get_failure_count(target3) == 0);
+    CHECK(network->get_failure_count(PathType::standard, path) == 1);
 
     // Check a timeout with a sever destination doesn't impact the failure counts
     auto server = ServerDestination{
@@ -591,7 +570,7 @@ TEST_CASE("Network error handling", "[network]") {
             443,
             std::nullopt,
             "GET"};
-    auto mock_request4 = request_info{
+    auto mock_request5 = request_info{
             "CCCC",
             server,
             "test",
@@ -602,11 +581,11 @@ TEST_CASE("Network error handling", "[network]") {
             0ms,
             std::nullopt,
             false};
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
-            mock_request4,
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->handle_errors(
+            mock_request5,
             {target, nullptr, nullptr, nullptr},
             true,
             std::nullopt,
@@ -621,17 +600,17 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.success);
     CHECK(result.timeout);
     CHECK(result.status_code == -1);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 0);
+    CHECK(network->get_failure_count(target) == 0);
+    CHECK(network->get_failure_count(target2) == 0);
+    CHECK(network->get_failure_count(target3) == 0);
+    CHECK(network->get_failure_count(PathType::standard, path) == 0);
 
     // Check a server response starting with '500 Internal Server Error' is reported as a `500`
     // error and doesn't affect the failure count
-    network.set_failure_count(target, 0);
-    network.set_failure_count(target2, 0);
-    network.set_failure_count(target3, 0);
-    network.handle_errors(
+    network.emplace(std::nullopt, true, true, false);
+    network->set_suspended(true);  // Make no requests in this test
+    network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
+    network->handle_errors(
             mock_request4,
             {target, nullptr, nullptr, nullptr},
             false,
@@ -647,10 +626,89 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.timeout);
     CHECK(result.status_code == 500);
-    CHECK(network.get_failure_count(target) == 0);
-    CHECK(network.get_failure_count(target2) == 0);
-    CHECK(network.get_failure_count(target3) == 0);
-    CHECK(network.get_failure_count(PathType::standard, path) == 0);
+    CHECK(network->get_failure_count(target) == 0);
+    CHECK(network->get_failure_count(target2) == 0);
+    CHECK(network->get_failure_count(target3) == 0);
+    CHECK(network->get_failure_count(PathType::standard, path) == 0);
+}
+
+TEST_CASE("Network Path Building", "[network][get_unused_nodes]") {
+    const auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
+    std::optional<TestNetwork> network;
+    std::vector<service_node> snode_cache;
+    std::vector<service_node> unused_nodes;
+    for (uint16_t i = 0; i < 12; ++i)
+        snode_cache.emplace_back(test_node(ed_pk, i));
+    auto invalid_info = connection_info{snode_cache[0], nullptr, nullptr, nullptr};
+    auto path = onion_path{invalid_info, {snode_cache[0], snode_cache[1], snode_cache[2]}, 0};
+
+    // Should shuffle the result
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    CHECK(network->get_unused_nodes() != network->get_unused_nodes());
+
+    // Should contain the entire snode cache initially
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    unused_nodes = network->get_unused_nodes();
+    std::stable_sort(unused_nodes.begin(), unused_nodes.end());
+    CHECK(unused_nodes == snode_cache);
+
+    // Should exclude nodes used in paths
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    network->set_paths(PathType::standard, {path});
+    unused_nodes = network->get_unused_nodes();
+    std::stable_sort(unused_nodes.begin(), unused_nodes.end());
+    CHECK(unused_nodes == std::vector<service_node>{snode_cache.begin() + 3, snode_cache.end()});
+
+    // Should exclude nodes in unused connections
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    network->set_unused_connections({invalid_info});
+    unused_nodes = network->get_unused_nodes();
+    std::stable_sort(unused_nodes.begin(), unused_nodes.end());
+    CHECK(unused_nodes == std::vector<service_node>{snode_cache.begin() + 1, snode_cache.end()});
+
+    // Should exclude nodes in in-progress connections
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    network->set_in_progress_connections({{"Test", snode_cache.front()}});
+    unused_nodes = network->get_unused_nodes();
+    std::stable_sort(unused_nodes.begin(), unused_nodes.end());
+    CHECK(unused_nodes == std::vector<service_node>{snode_cache.begin() + 1, snode_cache.end()});
+
+    // Should exclude nodes destinations in pending requests
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    network->add_pending_request(
+            PathType::standard,
+            request_info::make(
+                    snode_cache.front(), 1s, std::nullopt, std::nullopt, PathType::standard));
+    unused_nodes = network->get_unused_nodes();
+    std::stable_sort(unused_nodes.begin(), unused_nodes.end());
+    CHECK(unused_nodes == std::vector<service_node>{snode_cache.begin() + 1, snode_cache.end()});
+
+    // Should exclude nodes which have passed the failure threshold
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(snode_cache);
+    network->set_failure_count(snode_cache.front(), 10);
+    unused_nodes = network->get_unused_nodes();
+    std::stable_sort(unused_nodes.begin(), unused_nodes.end());
+    CHECK(unused_nodes == std::vector<service_node>{snode_cache.begin() + 1, snode_cache.end()});
+
+    // Should exclude nodes which have the same IP if one was excluded
+    std::vector<service_node> same_ip_snode_cache;
+    auto unique_node = service_node{ed_pk, {2, 8, 0}, INVALID_SWARM_ID, "0.0.0.20", uint16_t{20}};
+    for (uint16_t i = 0; i < 11; ++i)
+        same_ip_snode_cache.emplace_back(test_node(ed_pk, i, false));
+    same_ip_snode_cache.emplace_back(unique_node);
+    network.emplace(std::nullopt, true, false, false);
+    network->set_snode_cache(same_ip_snode_cache);
+    network->set_failure_count(same_ip_snode_cache.front(), 10);
+    unused_nodes = network->get_unused_nodes();
+    REQUIRE(unused_nodes.size() == 1);
+    CHECK(unused_nodes.front() == unique_node);
 }
 
 TEST_CASE("Network Path Building", "[network][build_path]") {
@@ -658,7 +716,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     std::optional<TestNetwork> network;
     std::vector<service_node> snode_cache;
     for (uint16_t i = 0; i < 12; ++i)
-        snode_cache.emplace_back(service_node{ed_pk, {2, 8, 0}, fmt::format("0.0.0.{}", i), i});
+        snode_cache.emplace_back(test_node(ed_pk, i));
     auto invalid_info = connection_info{snode_cache[0], nullptr, nullptr, nullptr};
 
     // Nothing should happen if the network is suspended
@@ -679,22 +737,19 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network.emplace(std::nullopt, true, false, false);
     network->set_snode_cache(snode_cache);
     network->set_unused_connections({invalid_info});
-    network->set_in_progress_connections({"TestInProgress"});
+    network->set_in_progress_connections({{"TestInProgress", snode_cache.front()}});
     network->build_path(PathType::standard, "Test1");
-    REQUIRE(network->get_unused_connection_and_path_build_nodes().has_value());
-    CHECK(network->get_unused_connection_and_path_build_nodes()->size() == snode_cache.size() - 3);
+    CHECK(network->get_unused_nodes_value().size() == snode_cache.size() - 3);
     CHECK(network->get_path_build_queue().empty());
 
     // It should exclude nodes that are already in existing paths
     network.emplace(std::nullopt, true, false, false);
     network->set_snode_cache(snode_cache);
     network->set_unused_connections({invalid_info});
-    network->set_in_progress_connections({"TestInProgress"});
+    network->set_in_progress_connections({{"TestInProgress", snode_cache.front()}});
     network->add_path(PathType::standard, {snode_cache.begin() + 1, snode_cache.begin() + 1 + 3});
     network->build_path(PathType::standard, "Test1");
-    REQUIRE(network->get_unused_connection_and_path_build_nodes().has_value());
-    CHECK(network->get_unused_connection_and_path_build_nodes()->size() ==
-          (snode_cache.size() - 3 - 3));
+    CHECK(network->get_unused_nodes_value().size() == (snode_cache.size() - 3 - 3));
     CHECK(network->get_path_build_queue().empty());
 
     // If there aren't enough unused nodes it resets the failure count, re-queues the path build and
@@ -715,7 +770,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network.emplace(std::nullopt, true, false, false);
     network->set_snode_cache(snode_cache);
     network->set_unused_connections({invalid_info});
-    network->set_unused_connection_and_path_build_nodes(std::vector<service_node>{
+    network->set_unused_nodes(std::vector<service_node>{
             snode_cache[0], snode_cache[0], snode_cache[0], snode_cache[0]});
     network->build_path(PathType::standard, "Test1");
     network->ignore_calls_to("build_path");  // Ignore the 2nd loop
@@ -760,10 +815,11 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
 
 TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
-    auto target = service_node{ed_pk, {2, 8, 0}, "0.0.0.1", uint16_t{1}};
+    auto target = test_node(ed_pk, 1);
     auto test_service_node = service_node{
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
             {2, 8, 0},
+            INVALID_SWARM_ID,
             "144.76.164.202",
             uint16_t{35400}};
     auto network = TestNetwork(std::nullopt, true, false, false);
@@ -809,7 +865,8 @@ TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
 
 TEST_CASE("Network Enqueue Path Build", "[network][build_path_if_needed]") {
     auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
-    auto target = service_node{ed_pk, {2, 8, 0}, "0.0.0.0", uint16_t{0}};
+    auto target = test_node(ed_pk, 0);
+    ;
     std::optional<TestNetwork> network;
     auto invalid_path =
             onion_path{connection_info{target, nullptr, nullptr, nullptr}, {target}, uint8_t{0}};
@@ -906,6 +963,7 @@ TEST_CASE("Network requests", "[network][establish_connection]") {
     auto test_service_node = service_node{
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
             {2, 8, 0},
+            INVALID_SWARM_ID,
             "144.76.164.202",
             uint16_t{35400}};
     auto network = TestNetwork(std::nullopt, true, true, false);
@@ -930,6 +988,7 @@ TEST_CASE("Network requests", "[network][send_request]") {
     auto test_service_node = service_node{
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
             {2, 8, 0},
+            INVALID_SWARM_ID,
             "144.76.164.202",
             uint16_t{35400}};
     auto network = TestNetwork(std::nullopt, true, true, false);
@@ -982,6 +1041,7 @@ TEST_CASE("Network onion request", "[network][send_onion_request]") {
     auto test_service_node = service_node{
             "decaf007f26d3d6f9b845ad031ffdf6d04638c25bb10b8fffbbe99135303c4b9"_hexbytes,
             {2, 8, 0},
+            INVALID_SWARM_ID,
             "144.76.164.202",
             uint16_t{35400}};
     auto network = Network(std::nullopt, true, true, false);
@@ -1063,4 +1123,113 @@ TEST_CASE("Network direct request C API", "[network][network_send_request]") {
     CHECK(response.contains("t"));
     CHECK(response.contains("version"));
     network_free(network);
+}
+
+TEST_CASE("Network swarm", "[network][detail][pubkey_to_swarm_space]") {
+    x25519_pubkey pk;
+
+    pk = x25519_pubkey::from_hex("3506f4a71324b7dd114eddbf4e311f39dde243e1f2cb97c40db1961f70ebaae8");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 17589930838143112648ULL);
+    pk = x25519_pubkey::from_hex("cf27da303a50ac8c4b2d43d27259505c9bcd73fc21cf2a57902c3d050730b604");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 10370619079776428163ULL);
+    pk = x25519_pubkey::from_hex("d3511706b8b34f6e8411bf07bd22ba6b2435ca56846fbccf6eb1e166a6cd15cc");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 2144983569669512198ULL);
+    pk = x25519_pubkey::from_hex("0f06693428fca9102a451e3f28d9cc743d8ea60a89ab6aa69eb119470c11cbd3");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 9690840703409570833ULL);
+    pk = x25519_pubkey::from_hex("ffba630924aa1224bb930dde21c0d11bf004608f2812217f8ac812d6c7e3ad48");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 4532060000165252872ULL);
+    pk = x25519_pubkey::from_hex("eeeeeeeeeeeeeeee777777777777777711111111111111118888888888888888");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 0);
+    pk = x25519_pubkey::from_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 0);
+    pk = x25519_pubkey::from_hex("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 1);
+    pk = x25519_pubkey::from_hex("ffffffffffffffffffffffffffffffffffffffffffffffff7fffffffffffffff");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 1ULL << 63);
+    pk = x25519_pubkey::from_hex("000000000000000000000000000000000000000000000000ffffffffffffffff");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == (uint64_t)-1);
+    pk = x25519_pubkey::from_hex("0000000000000000000000000000000000000000000000000123456789abcdef");
+    CHECK(session::network::detail::pubkey_to_swarm_space(pk) == 0x0123456789abcdefULL);
+}
+
+TEST_CASE("Network swarm", "[network][get_swarm]") {
+    auto ed_pk = "4cb76fdc6d32278e3f83dbf608360ecc6b65727934b85d2fb86862ff98c46ab7"_hexbytes;
+    std::vector<std::pair<swarm_id_t, std::vector<service_node>>> swarms = {{100, {}}, {200, {}}, {300, {}}, {399, {}}, {498, {}}, {596, {}}, {694, {}}};
+    auto network = TestNetwork(std::nullopt, true, true, false);
+    network.set_snode_cache({test_node(ed_pk, 0)});
+    network.set_all_swarms(swarms);
+
+    // Exact matches:
+    // 0x64 = 100, 0xc8 = 200, 0x1f2 = 498
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000064") == 100);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000c8") == 200);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001f2") == 498);
+
+    // Nearest
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000000") == 100);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000001") == 100);
+
+    // Nearest, with wraparound
+    // 0x8000... is closest to the top value
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000008000000000000000") == 694);
+
+    // 0xa000... is closest (via wraparound) to the smallest
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000a000000000000000") == 100);
+
+    // This is the invalid swarm id for swarms, but should still work for a client
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000ffffffffffffffff") == 100);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffffe") == 100);
+
+    // Midpoint tests; we prefer the lower value when exactly in the middle between two swarms.
+    // 0x96 = 150
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000095") == 100);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000096") == 100);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000097") == 200);
+
+    // 0xfa = 250
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000f9") == 200);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000fa") == 200);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000000fb") == 300);
+
+    // 0x15d = 349
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000015d") == 300);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000000000000000015e") == 399);
+
+    // 0x1c0 = 448
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001c0") == 399);
+    CHECK(network.get_swarm_id("0500000000000000000000000000000000000000000000000000000000000001c1") == 498);
+
+    // 0x223 = 547
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000222") == 498);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000223") == 498);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000224") == 596);
+
+    // 0x285 = 645
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000285") == 596);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000286") == 694);
+
+    // 0x800....d is the midpoint between 694 and 100 (the long way).  We always round "down" (which
+    // in this case, means wrapping to the largest swarm).
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018c") == 694);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018d") == 694);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000800000000000018e") == 100);
+
+    // With a swarm at -20 the midpoint is now 40 (=0x28).  When our value is the *low* value we
+    // prefer the *last* swarm in the case of a tie (while consistent with the general case of
+    // preferring the left edge, it means we're inconsistent with the other wraparound case, above.
+    // *sigh*).
+    swarms.push_back({(uint64_t)-20, {}});
+    network.set_all_swarms(swarms);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000027") == swarms.back().first);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000028") == swarms.back().first);
+    CHECK(network.get_swarm_id("050000000000000000000000000000000000000000000000000000000000000029") == swarms.front().first);
+    
+    // The code used to have a broken edge case if we have a swarm at zero and a client at max-u64
+    // because of an overflow in how the distance is calculated (the first swarm will be calculated
+    // as max-u64 away, rather than 1 away), and so the id always maps to the highest swarm (even
+    // though 0xfff...fe maps to the lowest swarm; the first check here, then, would fail.
+    swarms.insert(swarms.begin(), {0, {}});
+    network.set_all_swarms(swarms);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000ffffffffffffffff") == 0);
+    CHECK(network.get_swarm_id("05000000000000000000000000000000000000000000000000fffffffffffffffe") == 0);
 }
