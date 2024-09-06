@@ -111,6 +111,12 @@ struct onion_path {
 
     bool is_valid() const { return !nodes.empty() && conn_info.is_valid(); };
     bool has_pending_requests() const { return conn_info.has_pending_requests(); }
+    size_t num_pending_requests() const {
+        if (!conn_info.pending_requests)
+            return 0;
+        return (*conn_info.pending_requests);
+    }
+
     std::string to_string() const;
 
     bool operator==(const onion_path& other) const {

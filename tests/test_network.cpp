@@ -937,7 +937,7 @@ TEST_CASE("Network Enqueue Path Build", "[network][build_path_if_needed]") {
     CHECK(EVENTUALLY(10ms, network->called("establish_and_store_connection")));
     CHECK(network->get_path_build_queue() == std::deque<PathType>{PathType::standard});
 
-    // Can only add two path build to the queue
+    // Can only add the correct number of 'standard' path builds to the queue
     network.emplace(std::nullopt, true, false, false);
     network->ignore_calls_to("establish_and_store_connection");
     network->build_path_if_needed(PathType::standard, false);
@@ -949,7 +949,7 @@ TEST_CASE("Network Enqueue Path Build", "[network][build_path_if_needed]") {
     CHECK(network->get_path_build_queue() ==
           std::deque<PathType>{PathType::standard, PathType::standard});
 
-    // Can add a second 'standard' path build even if there is an active 'standard' path
+    // Can add additional 'standard' path builds if below the minimum threshold
     network.emplace(std::nullopt, true, false, false);
     network->ignore_calls_to("establish_and_store_connection");
     network->set_paths(PathType::standard, {invalid_path});
@@ -985,27 +985,29 @@ TEST_CASE("Network Enqueue Path Build", "[network][build_path_if_needed]") {
     CHECK(ALWAYS(10ms, network->did_not_call("establish_and_store_connection")));
     CHECK(network->get_path_build_queue() == std::deque<PathType>{PathType::standard});
 
-    // Can only add a single 'download' path build
+    // Can only add the correct number of 'download' path builds to the queue
     network.emplace(std::nullopt, true, false, false);
     network->ignore_calls_to("establish_and_store_connection");
-    network->set_paths(PathType::download, {});
     network->build_path_if_needed(PathType::download, false);
-    CHECK(EVENTUALLY(10ms, network->called("establish_and_store_connection")));
+    network->build_path_if_needed(PathType::download, false);
+    CHECK(EVENTUALLY(10ms, network->called("establish_and_store_connection", 2)));
     network->reset_calls();  // This triggers 'call_soon' so we need to wait until they are enqueued
     network->build_path_if_needed(PathType::download, false);
     CHECK(ALWAYS(10ms, network->did_not_call("establish_and_store_connection")));
-    CHECK(network->get_path_build_queue() == std::deque<PathType>{PathType::download});
+    CHECK(network->get_path_build_queue() ==
+          std::deque<PathType>{PathType::download, PathType::download});
 
-    // Can only add a single 'upload' path build
+    // Can only add the correct number of 'upload' path builds to the queue
     network.emplace(std::nullopt, true, false, false);
     network->ignore_calls_to("establish_and_store_connection");
-    network->set_paths(PathType::upload, {});
     network->build_path_if_needed(PathType::upload, false);
-    CHECK(EVENTUALLY(10ms, network->called("establish_and_store_connection")));
+    network->build_path_if_needed(PathType::upload, false);
+    CHECK(EVENTUALLY(10ms, network->called("establish_and_store_connection", 2)));
     network->reset_calls();  // This triggers 'call_soon' so we need to wait until they are enqueued
     network->build_path_if_needed(PathType::upload, false);
     CHECK(ALWAYS(10ms, network->did_not_call("establish_and_store_connection")));
-    CHECK(network->get_path_build_queue() == std::deque<PathType>{PathType::upload});
+    CHECK(network->get_path_build_queue() ==
+          std::deque<PathType>{PathType::upload, PathType::upload});
 }
 
 TEST_CASE("Network requests", "[network][establish_connection]") {

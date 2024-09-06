@@ -85,6 +85,11 @@ namespace {
     constexpr auto ALPN = "oxenstorage"sv;
     constexpr auto ONION = "onion_req";
 
+    enum class PathSelectionBehaviour {
+        random,
+        new_or_least_busy,
+    };
+
     std::string path_type_name(PathType path_type, bool single_path_mode) {
         if (single_path_mode)
             return "single_path";
@@ -104,10 +109,19 @@ namespace {
 
         switch (path_type) {
             case PathType::standard: return 2;
-            case PathType::upload: return 1;
-            case PathType::download: return 1;
+            case PathType::upload: return 2;
+            case PathType::download: return 2;
         }
         return 2;  // Default
+    }
+
+    PathSelectionBehaviour path_selection_behaviour(PathType path_type) {
+        switch (path_type) {
+            case PathType::standard: return PathSelectionBehaviour::random;
+            case PathType::upload: return PathSelectionBehaviour::new_or_least_busy;
+            case PathType::download: return PathSelectionBehaviour::new_or_least_busy;
+        }
+        return PathSelectionBehaviour::random;  // Default
     }
 
     /// Converts a string such as "1.2.3" to a vector of ints {1,2,3}.  Throws if something
@@ -1423,6 +1437,16 @@ void Network::build_path(PathType path_type, std::string request_id) {
         }
     }
 
+    // Remove the nodes from unused_nodes which have the same IPs as nodes in
+    // the final path
+    std::vector<oxen::quic::ipv4> path_ips;
+    for (const auto& node : path_nodes)
+        path_ips.emplace_back(node.to_ipv4());
+
+    std::erase_if(unused_nodes, [&path_ips](const auto& node) {
+        return std::find(path_ips.begin(), path_ips.end(), node.to_ipv4()) != path_ips.end();
+    });
+
     // If there are pending requests which this path is valid for then resume them
     std::erase_if(request_queue[path_type], [this, &path](const auto& request) {
         if (!find_valid_path(request.first, {path}))
@@ -1486,10 +1510,37 @@ std::optional<onion_path> Network::find_valid_path(
     if (possible_paths.empty())
         return std::nullopt;
 
+    // Randomise the possible paths (if all paths are equal for the PathSelectionBehaviour then we
+    // want a random one to be selected)
     CSRNG rng;
     std::shuffle(possible_paths.begin(), possible_paths.end(), rng);
 
-    return possible_paths.front();
+    // Select from the possible paths based on the desired behaviour
+    auto behaviour = path_selection_behaviour(info.path_type);
+    switch (behaviour) {
+        case PathSelectionBehaviour::new_or_least_busy: {
+            auto min_num_paths = min_path_count(info.path_type, single_path_mode);
+            std::sort(
+                    possible_paths.begin(), possible_paths.end(), [](const auto& a, const auto& b) {
+                        return a.num_pending_requests() < b.num_pending_requests();
+                    });
+
+            // If we have already have the min number of paths for this path type, or there is
+            // a path with no pending requests then return the first path
+            if (paths.size() >= min_num_paths ||
+                possible_paths.front().num_pending_requests() == 0)
+                return possible_paths.front();
+
+            // Otherwise we want to build a new path (for this PathSelectionBehaviour the assuption
+            // is that it'd be faster to build a new path and send the request along that rather
+            // than use an existing path)
+            return std::nullopt;
+        }
+
+        // Random is the default behaviour
+        case PathSelectionBehaviour::random: return possible_paths.front();
+        default: return possible_paths.front();
+    }
 };
 
 void Network::build_path_if_needed(PathType path_type, bool found_path) {
