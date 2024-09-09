@@ -18,6 +18,7 @@
 #include <array>
 #include <cassert>
 #include <cstring>
+#include <sstream>
 #include <stdexcept>
 
 #include "session/blinding.hpp"
@@ -40,13 +41,13 @@ namespace detail {
     // milliseconds since epoch then treated as an integer value.
     template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
     std::string_view to_hashable(const T& val, char*& buffer) {
-        int length = std::snprintf(buffer, 20, "%d", val);
+        std::ostringstream ss;
+        ss << val;
 
-        if (length < 0) length = 0;
-        if (length > 20) length = 20; 
-        auto [p, ec] = std::to_chars(buffer, buffer + 20, val);
-        std::string_view s(buffer, length);
-        buffer += length;
+        std::string str = ss.str();
+        std::copy(str.begin(), str.end(), buffer);
+        std::string_view s(buffer, str.length());
+        buffer += str.length();
         return s;
     }
     inline std::string_view to_hashable(
