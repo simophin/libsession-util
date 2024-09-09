@@ -1189,7 +1189,7 @@ TEST_CASE("Network requests", "[network][send_request]") {
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
     INFO("*result.response is: " << *result.response);
-    REQUIRE_NOTHROW(static_cast<void>(nlohmann::json::parse(*result.response)));
+    REQUIRE_NOTHROW([&] { [[maybe_unused]] auto _ = nlohmann::json::parse(*result.response); });
 
     auto response = nlohmann::json::parse(*result.response);
     CHECK(response.contains("hf"));
@@ -1230,7 +1230,7 @@ TEST_CASE("Network onion request", "[network][send_onion_request]") {
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
     INFO("*result.response is: " << *result.response);
-    REQUIRE_NOTHROW(static_cast<void>(nlohmann::json::parse(*result.response)));
+    REQUIRE_NOTHROW([&] { [[maybe_unused]] auto _ = nlohmann::json::parse(*result.response); });
 
     auto response = nlohmann::json::parse(*result.response);
     CHECK(response.contains("hf"));
@@ -1295,7 +1295,7 @@ TEST_CASE("Network direct request C API", "[network][network_send_request]") {
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
     INFO("*result.response is: " << *result.response);
-    REQUIRE_NOTHROW(static_cast<void>(nlohmann::json::parse(*result.response)));
+    REQUIRE_NOTHROW([&] { [[maybe_unused]] auto _ = nlohmann::json::parse(*result.response); });
 
     auto response = nlohmann::json::parse(*result.response);
     CHECK(response.contains("hf"));
