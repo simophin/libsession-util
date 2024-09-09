@@ -355,15 +355,15 @@ TEST_CASE("user profile C API", "[config][user_profile][c]") {
 
     // Since only one of them set a profile pic there should be no conflict there:
     pic = user_profile_get_pic(conf);
-    REQUIRE(pic.url);
+    REQUIRE(pic.url != nullptr);
     CHECK(pic.url == "http://new.example.com/pic"sv);
-    REQUIRE(pic.key);
+    REQUIRE(pic.key != nullptr);
     CHECK(to_hex(ustring_view{pic.key, 32}) ==
           "7177657274007975696f31323334353637383930313233343536373839303132");
     pic = user_profile_get_pic(conf2);
-    REQUIRE(pic.url);
+    REQUIRE(pic.url != nullptr);
     CHECK(pic.url == "http://new.example.com/pic"sv);
-    REQUIRE(pic.key);
+    REQUIRE(pic.key != nullptr);
     CHECK(to_hex(ustring_view{pic.key, 32}) ==
           "7177657274007975696f31323334353637383930313233343536373839303132");
 
