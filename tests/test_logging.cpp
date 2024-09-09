@@ -58,12 +58,12 @@ TEST_CASE("Logging callbacks", "[logging]") {
     log::critical(log::Cat("test.a"), "abc {}", 21 * 2);
 #if defined(__APPLE__) && defined(__clang__)
 #else
-    int line0 = __LINE__ - 1;
+    int line0 = __LINE__ - 3;
 #endif
     log::info(log::Cat("test.b"), "hi");
 #if defined(__APPLE__) && defined(__clang__)
 #else
-    int line1 = __LINE__ - 1;
+    int line1 = __LINE__ - 3;
 #endif
 
     oxen::log::clear_sinks();
