@@ -181,6 +181,9 @@ LIBSESSION_EXPORT void network_get_random_nodes(
 /// - `success` -- true if the request was successful, false if it failed.
 /// - `timeout` -- true if the request failed because of a timeout
 /// - `status_code` -- the HTTP numeric status code of the request, e.g. 200 for OK
+/// - `headers` -- the response headers, array of null-terminated C strings
+/// - `header_values` -- the response header values, array of null-terminated C strings
+/// - `headers_size` -- the number of `headers`/`header_values`
 /// - `response` -- pointer to the beginning of the response body
 /// - `response_size` -- length of the response body
 /// - `ctx` -- the context pointer passed to the function that initiated the request.
@@ -188,6 +191,9 @@ typedef void (*network_onion_response_callback_t)(
         bool success,
         bool timeout,
         int16_t status_code,
+        const char** headers,
+        const char** header_values,
+        size_t headers_size,
         const char* response,
         size_t response_size,
         void* ctx);

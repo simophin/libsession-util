@@ -19,6 +19,7 @@ struct Result {
     bool success;
     bool timeout;
     int16_t status_code;
+    std::vector<std::pair<std::string, std::string>> headers;
     std::optional<std::string> response;
 };
 
@@ -161,7 +162,12 @@ class TestNetwork : public Network {
 
     void add_pending_request(PathType path_type, request_info info) {
         request_queue[path_type].emplace_back(
-                std::move(info), [](bool, bool, int16_t, std::optional<std::string>) {});
+                std::move(info),
+                [](bool,
+                   bool,
+                   int16_t,
+                   std::vector<std::pair<std::string, std::string>>,
+                   std::optional<std::string>) {});
     }
 
     // Overridden Functions
@@ -262,12 +268,19 @@ class TestNetwork : public Network {
             request_info info,
             connection_info conn_info,
             bool timeout,
-            std::optional<int16_t> status_code,
+            int16_t status_code,
+            std::vector<std::pair<std::string, std::string>> headers,
             std::optional<std::string> response,
             std::optional<network_response_callback_t> handle_response) override {
         call_counts["handle_errors"]++;
         Network::handle_errors(
-                info, conn_info, timeout, status_code, response, std::move(handle_response));
+                info,
+                conn_info,
+                timeout,
+                status_code,
+                headers,
+                response,
+                std::move(handle_response));
     }
 
     // Mocking Functions
@@ -356,13 +369,15 @@ TEST_CASE("Network error handling", "[network]") {
                 {target, nullptr, nullptr, nullptr},
                 false,
                 code,
+                {},
                 std::nullopt,
                 [&result](
                         bool success,
                         bool timeout,
                         int16_t status_code,
+                        std::vector<std::pair<std::string, std::string>> headers,
                         std::optional<std::string> response) {
-                    result = {success, timeout, status_code, response};
+                    result = {success, timeout, status_code, headers, response};
                 });
 
         CHECK_FALSE(result.success);
@@ -385,13 +400,15 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             500,
+            {},
             std::nullopt,
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.timeout);
@@ -413,13 +430,15 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             500,
+            {},
             std::nullopt,
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
 
     CHECK_FALSE(result.success);
@@ -445,13 +464,15 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             500,
+            {},
             response,
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
 
     CHECK_FALSE(result.success);
@@ -475,13 +496,15 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             421,
+            {},
             std::nullopt,
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.timeout);
@@ -516,8 +539,13 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             421,
+            {},
             std::nullopt,
-            [](bool, bool, int16_t, std::optional<std::string>) {});
+            [](bool,
+               bool,
+               int16_t,
+               std::vector<std::pair<std::string, std::string>>,
+               std::optional<std::string>) {});
     CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
     REQUIRE(network->last_request_info.has_value());
     CHECK(node_for_destination(network->last_request_info->destination) !=
@@ -548,8 +576,13 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             421,
+            {},
             std::nullopt,
-            [](bool, bool, int16_t, std::optional<std::string>) {});
+            [](bool,
+               bool,
+               int16_t,
+               std::vector<std::pair<std::string, std::string>>,
+               std::optional<std::string>) {});
     CHECK(EVENTUALLY(10ms, network->called("refresh_snode_cache")));
 
     // Check when the retry after refreshing the snode cache due to a 421 receives it's own 421 it
@@ -576,13 +609,15 @@ TEST_CASE("Network error handling", "[network]") {
             {target, nullptr, nullptr, nullptr},
             false,
             421,
+            {},
             std::nullopt,
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.timeout);
@@ -622,14 +657,16 @@ TEST_CASE("Network error handling", "[network]") {
             mock_request5,
             {target, nullptr, nullptr, nullptr},
             true,
-            std::nullopt,
+            -1,
+            {},
             "Test",
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
     CHECK_FALSE(result.success);
     CHECK(result.timeout);
@@ -648,14 +685,16 @@ TEST_CASE("Network error handling", "[network]") {
             mock_request4,
             {target, nullptr, nullptr, nullptr},
             false,
-            std::nullopt,
+            -1,
+            {},
             "500 Internal Server Error",
             [&result](
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result = {success, timeout, status_code, response};
+                result = {success, timeout, status_code, headers, response};
             });
     CHECK_FALSE(result.success);
     CHECK_FALSE(result.timeout);
@@ -1052,7 +1091,11 @@ TEST_CASE("Network requests", "[network][check_request_queue_timeouts]") {
             test_service_node,
             ustring{to_usv("{\"method\":\"info\",\"params\":{}}")},
             std::nullopt,
-            [](bool, bool, int16_t, std::optional<std::string>) {},
+            [](bool,
+               bool,
+               int16_t,
+               std::vector<std::pair<std::string, std::string>>,
+               std::optional<std::string>) {},
             oxen::quic::DEFAULT_TIMEOUT,
             std::nullopt);
     CHECK(ALWAYS(300ms, network->did_not_call("check_request_queue_timeouts")));
@@ -1065,7 +1108,11 @@ TEST_CASE("Network requests", "[network][check_request_queue_timeouts]") {
             test_service_node,
             ustring{to_usv("{\"method\":\"info\",\"params\":{}}")},
             std::nullopt,
-            [](bool, bool, int16_t, std::optional<std::string>) {},
+            [](bool,
+               bool,
+               int16_t,
+               std::vector<std::pair<std::string, std::string>>,
+               std::optional<std::string>) {},
             oxen::quic::DEFAULT_TIMEOUT,
             oxen::quic::DEFAULT_TIMEOUT);
     CHECK(EVENTUALLY(300ms, network->called("check_request_queue_timeouts")));
@@ -1081,8 +1128,9 @@ TEST_CASE("Network requests", "[network][check_request_queue_timeouts]") {
             [&prom](bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                prom.set_value({success, timeout, status_code, response});
+                prom.set_value({success, timeout, status_code, headers, response});
             },
             oxen::quic::DEFAULT_TIMEOUT,
             100ms);
@@ -1111,7 +1159,7 @@ TEST_CASE("Network requests", "[network][send_request]") {
             [&prom, &network, test_service_node](
                     connection_info info, std::optional<std::string> error) {
                 if (!info.is_valid())
-                    return prom.set_value({false, false, -1, error.value_or("Unknown Error")});
+                    return prom.set_value({false, false, -1, {}, error.value_or("Unknown Error")});
 
                 network.send_request(
                         request_info::make(
@@ -1127,8 +1175,9 @@ TEST_CASE("Network requests", "[network][send_request]") {
                         [&prom](bool success,
                                 bool timeout,
                                 int16_t status_code,
+                                std::vector<std::pair<std::string, std::string>> headers,
                                 std::optional<std::string> response) {
-                            prom.set_value({success, timeout, status_code, response});
+                            prom.set_value({success, timeout, status_code, headers, response});
                         });
             });
 
@@ -1140,7 +1189,7 @@ TEST_CASE("Network requests", "[network][send_request]") {
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
     INFO("*result.response is: " << *result.response);
-    REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
+    REQUIRE_NOTHROW(static_cast<void>(nlohmann::json::parse(*result.response)));
 
     auto response = nlohmann::json::parse(*result.response);
     CHECK(response.contains("hf"));
@@ -1166,8 +1215,9 @@ TEST_CASE("Network onion request", "[network][send_onion_request]") {
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
-                result_promise.set_value({success, timeout, status_code, response});
+                result_promise.set_value({success, timeout, status_code, headers, response});
             },
             oxen::quic::DEFAULT_TIMEOUT,
             oxen::quic::DEFAULT_TIMEOUT);
@@ -1180,7 +1230,7 @@ TEST_CASE("Network onion request", "[network][send_onion_request]") {
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
     INFO("*result.response is: " << *result.response);
-    REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
+    REQUIRE_NOTHROW(static_cast<void>(nlohmann::json::parse(*result.response)));
 
     auto response = nlohmann::json::parse(*result.response);
     CHECK(response.contains("hf"));
@@ -1212,12 +1262,28 @@ TEST_CASE("Network direct request C API", "[network][network_send_request]") {
             [](bool success,
                bool timeout,
                int16_t status_code,
+               const char** headers,
+               const char** header_values,
+               size_t headers_size,
                const char* c_response,
                size_t response_size,
                void* ctx) {
                 auto result_promise = static_cast<std::promise<Result>*>(ctx);
                 auto response_str = std::string(c_response, response_size);
-                result_promise->set_value({success, timeout, status_code, response_str});
+                std::vector<std::pair<std::string, std::string>> header_pairs;
+                header_pairs.reserve(headers_size);
+
+                for (size_t i = 0; i < headers_size; ++i) {
+                    if (headers[i] == nullptr)
+                        continue;  // Skip null entries
+                    if (header_values[i] == nullptr)
+                        continue;  // Skip null entries
+
+                    header_pairs.emplace_back(headers[i], header_values[i]);
+                }
+
+                result_promise->set_value(
+                        {success, timeout, status_code, header_pairs, response_str});
             },
             static_cast<void*>(result_promise.get()));
 
@@ -1229,7 +1295,7 @@ TEST_CASE("Network direct request C API", "[network][network_send_request]") {
     CHECK(result.status_code == 200);
     REQUIRE(result.response.has_value());
     INFO("*result.response is: " << *result.response);
-    REQUIRE_NOTHROW(nlohmann::json::parse(*result.response));
+    REQUIRE_NOTHROW(static_cast<void>(nlohmann::json::parse(*result.response)));
 
     auto response = nlohmann::json::parse(*result.response);
     CHECK(response.contains("hf"));

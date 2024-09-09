@@ -14,7 +14,11 @@ namespace session::network {
 namespace fs = std::filesystem;
 
 using network_response_callback_t = std::function<void(
-        bool success, bool timeout, int16_t status_code, std::optional<std::string> response)>;
+        bool success,
+        bool timeout,
+        int16_t status_code,
+        std::vector<std::pair<std::string, std::string>> headers,
+        std::optional<std::string> response)>;
 
 enum class ConnectionStatus {
     unknown,
@@ -658,9 +662,13 @@ class Network {
     /// - `response` -- [in] the response data returned from the destination.
     ///
     /// Outputs:
-    /// - A pair containing the status code and body of the decrypted onion request response.
-    std::pair<int16_t, std::optional<std::string>> process_v3_onion_response(
-            session::onionreq::Builder builder, std::string response);
+    /// - A tuple containing the status code, headers and body of the decrypted onion request
+    /// response.
+    std::tuple<
+            int16_t,
+            std::vector<std::pair<std::string, std::string>>,
+            std::optional<std::string>>
+    process_v3_onion_response(session::onionreq::Builder builder, std::string response);
 
     /// API: network/process_v4_onion_response
     ///
@@ -671,9 +679,13 @@ class Network {
     /// - `response` -- [in] the response data returned from the destination.
     ///
     /// Outputs:
-    /// - A pair containing the status code and body of the decrypted onion request response.
-    std::pair<int16_t, std::optional<std::string>> process_v4_onion_response(
-            session::onionreq::Builder builder, std::string response);
+    /// - A tuple containing the status code, headers and body of the decrypted onion request
+    /// response.
+    std::tuple<
+            int16_t,
+            std::vector<std::pair<std::string, std::string>>,
+            std::optional<std::string>>
+    process_v4_onion_response(session::onionreq::Builder builder, std::string response);
 
     /// API: network/validate_response
     ///
@@ -716,7 +728,8 @@ class Network {
     /// - `info` -- [in] the information for the request that was made.
     /// - `conn_info` -- [in] the connection info for the request that failed.
     /// - `timeout` -- [in, optional] flag indicating whether the request timed out.
-    /// - `status_code` -- [in, optional] the status code returned from the network.
+    /// - `status_code` -- [in] the status code returned from the network.
+    /// - `headers` -- [in] the response headers returned from the network.
     /// - `response` -- [in, optional] response data returned from the network.
     /// - `handle_response` -- [in, optional] callback to be called with updated response
     /// information after processing the error.
@@ -724,7 +737,8 @@ class Network {
             request_info info,
             connection_info conn_info,
             bool timeout,
-            std::optional<int16_t> status_code,
+            int16_t status_code,
+            std::vector<std::pair<std::string, std::string>> headers,
             std::optional<std::string> response,
             std::optional<network_response_callback_t> handle_response);
 };

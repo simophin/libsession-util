@@ -45,14 +45,23 @@ namespace {
     class status_code_exception : public std::runtime_error {
       public:
         int16_t status_code;
+        std::vector<std::pair<std::string, std::string>> headers;
 
-        status_code_exception(int16_t status_code, std::string message) :
-                std::runtime_error(message), status_code{status_code} {}
+        status_code_exception(
+                int16_t status_code,
+                std::vector<std::pair<std::string, std::string>> headers,
+                std::string message) :
+                std::runtime_error(message), status_code{status_code}, headers{headers} {}
     };
 
     constexpr int16_t error_network_suspended = -10001;
     constexpr int16_t error_building_onion_request = -10002;
     constexpr int16_t error_path_build_timeout = -10003;
+
+    const std::pair<std::string, std::string> content_type_plain_text = {
+            "Content-Type", "text/plain; charset=UTF-8"};
+    const std::pair<std::string, std::string> content_type_json = {
+            "Content-Type", "application/json"};
 
     // The amount of time the snode cache can be used before it needs to be refreshed/
     constexpr auto snode_cache_expiration_duration = 2h;
@@ -715,7 +724,12 @@ void Network::_close_connections() {
     // Cancel any pending requests (they can't succeed once the connection is closed)
     for (const auto& [path_type, path_type_requests] : request_queue)
         for (const auto& [info, callback] : path_type_requests)
-            callback(false, false, error_network_suspended, "Network is suspended.");
+            callback(
+                    false,
+                    false,
+                    error_network_suspended,
+                    {content_type_plain_text},
+                    "Network is suspended.");
 
     // Clear all storage of requests, paths and connections so that we are in a fresh state on
     // relaunch
@@ -1238,7 +1252,11 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
     _send_onion_request(
             info,
             [this, request_id](
-                    bool success, bool timeout, int16_t, std::optional<std::string> response) {
+                    bool success,
+                    bool timeout,
+                    int16_t,
+                    std::vector<std::pair<std::string, std::string>>,
+                    std::optional<std::string> response) {
                 // If the 'snode_refresh_results' value doesn't exist it means we have already
                 // completed/cancelled this snode cache refresh and have somehow gotten into an
                 // invalid state, so just ignore this request
@@ -1527,8 +1545,7 @@ std::optional<onion_path> Network::find_valid_path(
 
             // If we have already have the min number of paths for this path type, or there is
             // a path with no pending requests then return the first path
-            if (paths.size() >= min_num_paths ||
-                possible_paths.front().num_pending_requests() == 0)
+            if (paths.size() >= min_num_paths || possible_paths.front().num_pending_requests() == 0)
                 return possible_paths.front();
 
             // Otherwise we want to build a new path (for this PathSelectionBehaviour the assuption
@@ -1738,6 +1755,7 @@ void Network::check_request_queue_timeouts(std::optional<std::string> request_ti
                                 false,
                                 true,
                                 error_path_build_timeout,
+                                {content_type_plain_text},
                                 "Timed out waiting for path build.");
                         return true;
                     }
@@ -1763,7 +1781,8 @@ void Network::send_request(
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, info.request_id);
 
     if (!conn_info.is_valid())
-        return handle_response(false, false, -1, "Network is unreachable.");
+        return handle_response(
+                false, false, -1, {content_type_plain_text}, "Network is unreachable.");
 
     quic::bstring_view payload{};
 
@@ -1782,7 +1801,12 @@ void Network::send_request(
         // If the timeout was somehow negative then just fail the request (no point continuing if
         // we have already timed out)
         if (timeout < std::chrono::milliseconds(0))
-            return handle_response(false, true, error_path_build_timeout, std::nullopt);
+            return handle_response(
+                    false,
+                    true,
+                    error_path_build_timeout,
+                    {content_type_plain_text},
+                    "Path Build Timed Out.");
     }
 
     conn_info.add_pending_request();
@@ -1801,12 +1825,25 @@ void Network::send_request(
                     result = validate_response(resp, false);
                 } catch (const status_code_exception& e) {
                     return handle_errors(
-                            info, conn_info, resp.timed_out, e.status_code, e.what(), cb);
+                            info,
+                            conn_info,
+                            resp.timed_out,
+                            e.status_code,
+                            e.headers,
+                            e.what(),
+                            cb);
                 } catch (const std::exception& e) {
-                    return handle_errors(info, conn_info, resp.timed_out, -1, e.what(), cb);
+                    return handle_errors(
+                            info,
+                            conn_info,
+                            resp.timed_out,
+                            -1,
+                            {content_type_plain_text},
+                            e.what(),
+                            cb);
                 }
 
-                cb(true, false, status_code, body);
+                cb(true, false, status_code, {}, body);
 
                 // After completing a request we should try to clear any pending path drops (just in
                 // case this request was the final one on a pending path drop)
@@ -1852,7 +1889,12 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
         return net.call([this, info = std::move(info), cb = std::move(handle_response)]() {
             // If the network is suspended then fail immediately
             if (suspended)
-                return cb(false, false, error_network_suspended, "Network is suspended.");
+                return cb(
+                        false,
+                        false,
+                        error_network_suspended,
+                        {content_type_plain_text},
+                        "Network is suspended.");
 
             request_queue[info.path_type].emplace_back(std::move(info), std::move(cb));
 
@@ -1881,7 +1923,8 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
         auto payload = builder.generate_payload(info.original_body);
         info.body = builder.build(payload);
     } catch (const std::exception& e) {
-        return handle_response(false, false, error_building_onion_request, e.what());
+        return handle_response(
+                false, false, error_building_onion_request, {content_type_plain_text}, e.what());
     }
 
     // Actually send the request
@@ -1896,13 +1939,14 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                     bool success,
                     bool timeout,
                     int16_t status_code,
+                    std::vector<std::pair<std::string, std::string>> headers,
                     std::optional<std::string> response) {
                 log::trace(cat, "{} got response for {}.", __PRETTY_FUNCTION__, info.request_id);
 
                 // If the request was reported as a failure or a timeout then we
                 // will have already handled the errors so just trigger the callback
                 if (!success || timeout)
-                    return cb(success, timeout, status_code, response);
+                    return cb(success, timeout, status_code, headers, response);
 
                 try {
                     // Ensure the response is long enough to be processed, if not
@@ -1910,11 +1954,16 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                     if (!ResponseParser::response_long_enough(builder.enc_type, response->size()))
                         throw status_code_exception{
                                 status_code,
+                                {content_type_plain_text},
                                 "Response is too short to be an onion request response: " +
                                         *response};
 
                     // Otherwise, process the onion request response
-                    std::pair<int16_t, std::optional<std::string>> processed_response;
+                    std::tuple<
+                            int16_t,
+                            std::vector<std::pair<std::string, std::string>>,
+                            std::optional<std::string>>
+                            processed_response;
 
                     // The SnodeDestination runs via V3 onion requests and the
                     // ServerDestination runs via V4
@@ -1924,10 +1973,12 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                         processed_response = process_v4_onion_response(builder, *response);
 
                     // If we got a non 2xx status code, return the error
-                    auto& [processed_status_code, processed_body] = processed_response;
+                    auto& [processed_status_code, processed_headers, processed_body] =
+                            processed_response;
                     if (processed_status_code < 200 || processed_status_code > 299)
                         throw status_code_exception{
                                 processed_status_code,
+                                {content_type_plain_text},
                                 processed_body.value_or("Request returned "
                                                         "non-success status "
                                                         "code.")};
@@ -1954,13 +2005,20 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                     // If there was no 'results' array then it wasn't a batch
                     // request so we can stop here and return
                     if (!results)
-                        return cb(true, false, processed_status_code, processed_body);
+                        return cb(
+                                true,
+                                false,
+                                processed_status_code,
+                                processed_headers,
+                                processed_body);
 
                     // Otherwise we want to check if all of the results have the
                     // same status code and, if so, handle that failure case
                     // (default the 'error_body' to the 'processed_body' in case we
                     // don't get an explicit error)
                     int16_t single_status_code = -1;
+                    std::vector<std::pair<std::string, std::string>> single_headers = {
+                            content_type_plain_text};
                     std::optional<std::string> error_body = processed_body;
                     for (const auto& result : results->items()) {
                         if (result.value().contains("code") && result.value()["code"].is_number() &&
@@ -1976,6 +2034,14 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                             break;
                         }
 
+                        if (result.value().contains("headers")) {
+                            single_headers = {};
+                            auto header_vals = result.value()["headers"];
+
+                            for (auto it = header_vals.begin(); it != header_vals.end(); ++it)
+                                single_headers.emplace_back(it.key(), it.value());
+                        }
+
                         if (result.value().contains("body") && result.value()["body"].is_string())
                             error_body = result.value()["body"].get<std::string>();
                     }
@@ -1985,16 +2051,26 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
                     if (single_status_code < 200 || single_status_code > 299)
                         throw status_code_exception{
                                 single_status_code,
+                                single_headers,
                                 error_body.value_or("Sub-request returned "
                                                     "non-success status code.")};
 
                     // Otherwise some requests succeeded and others failed so
                     // succeed with the processed data
-                    return cb(true, false, processed_status_code, processed_body);
+                    return cb(
+                            true, false, processed_status_code, processed_headers, processed_body);
                 } catch (const status_code_exception& e) {
-                    handle_errors(info, path.conn_info, false, e.status_code, e.what(), cb);
+                    handle_errors(
+                            info, path.conn_info, false, e.status_code, e.headers, e.what(), cb);
                 } catch (const std::exception& e) {
-                    handle_errors(info, path.conn_info, false, -1, e.what(), cb);
+                    handle_errors(
+                            info,
+                            path.conn_info,
+                            false,
+                            -1,
+                            {content_type_plain_text},
+                            e.what(),
+                            cb);
                 }
             });
 }
@@ -2121,8 +2197,8 @@ void Network::get_client_version(
 
 // MARK: Response Handling
 
-std::pair<int16_t, std::optional<std::string>> Network::process_v3_onion_response(
-        Builder builder, std::string response) {
+std::tuple<int16_t, std::vector<std::pair<std::string, std::string>>, std::optional<std::string>>
+Network::process_v3_onion_response(Builder builder, std::string response) {
     std::string base64_iv_and_ciphertext;
     try {
         nlohmann::json response_json = nlohmann::json::parse(response);
@@ -2147,6 +2223,7 @@ std::pair<int16_t, std::optional<std::string>> Network::process_v3_onion_respons
     auto result = parser.decrypt(iv_and_ciphertext);
     auto result_json = nlohmann::json::parse(result);
     int16_t status_code;
+    std::vector<std::pair<std::string, std::string>> headers;
     std::string body;
 
     if (result_json.contains("status_code") && result_json["status_code"].is_number())
@@ -2156,16 +2233,23 @@ std::pair<int16_t, std::optional<std::string>> Network::process_v3_onion_respons
     else
         throw std::runtime_error{"Invalid JSON response, missing required status_code field."};
 
+    if (result_json.contains("headers")) {
+        auto header_vals = result_json["headers"];
+
+        for (auto it = header_vals.begin(); it != header_vals.end(); ++it)
+            headers.emplace_back(it.key(), it.value());
+    }
+
     if (result_json.contains("body") && result_json["body"].is_string())
         body = result_json["body"].get<std::string>();
     else
         body = result_json.dump();
 
-    return {status_code, body};
+    return {status_code, headers, body};
 }
 
-std::pair<int16_t, std::optional<std::string>> Network::process_v4_onion_response(
-        Builder builder, std::string response) {
+std::tuple<int16_t, std::vector<std::pair<std::string, std::string>>, std::optional<std::string>>
+Network::process_v4_onion_response(Builder builder, std::string response) {
     ustring response_data{to_unsigned(response.data()), response.size()};
     auto parser = ResponseParser(builder);
     auto result = parser.decrypt(response_data);
@@ -2178,6 +2262,7 @@ std::pair<int16_t, std::optional<std::string>> Network::process_v4_onion_respons
 
     auto response_info_string = result_bencode.consume_string();
     int16_t status_code;
+    std::vector<std::pair<std::string, std::string>> headers;
     nlohmann::json response_info_json = nlohmann::json::parse(response_info_string);
 
     if (response_info_json.contains("code") && response_info_json["code"].is_number())
@@ -2185,10 +2270,17 @@ std::pair<int16_t, std::optional<std::string>> Network::process_v4_onion_respons
     else
         throw std::runtime_error{"Invalid JSON response, missing required code field."};
 
-    if (result_bencode.is_finished())
-        return {status_code, std::nullopt};
+    if (response_info_json.contains("headers")) {
+        auto header_vals = response_info_json["headers"];
 
-    return {status_code, result_bencode.consume_string()};
+        for (auto it = header_vals.begin(); it != header_vals.end(); ++it)
+            headers.emplace_back(it.key(), it.value());
+    }
+
+    if (result_bencode.is_finished())
+        return {status_code, headers, std::nullopt};
+
+    return {status_code, headers, result_bencode.consume_string()};
 }
 
 // MARK: Error Handling
@@ -2215,9 +2307,11 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
             if (result_bencode.is_finished() || !result_bencode.is_string())
                 throw status_code_exception{
                         status_code,
+                        {content_type_plain_text},
                         "Request failed with status code: " + std::to_string(status_code)};
 
-            throw status_code_exception{status_code, result_bencode.consume_string()};
+            throw status_code_exception{
+                    status_code, {content_type_plain_text}, result_bencode.consume_string()};
         }
 
         // Can't convert the data to a string so just return the response body itself
@@ -2226,10 +2320,12 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
 
     // Default to a 200 success if the response is empty but didn't timeout or error
     int16_t status_code = 200;
+    std::pair<std::string, std::string> content_type;
     std::string response_string;
 
     try {
         nlohmann::json response_json = nlohmann::json::parse(body);
+        content_type = content_type_json;
 
         if (response_json.is_array() && response_json.size() == 2) {
             status_code = response_json[0].get<int16_t>();
@@ -2238,10 +2334,11 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
             response_string = body;
     } catch (...) {
         response_string = body;
+        content_type = content_type_plain_text;
     }
 
     if (status_code < 200 || status_code > 299)
-        throw status_code_exception{status_code, response_string};
+        throw status_code_exception{status_code, {content_type}, response_string};
 
     return {status_code, response_string};
 }
@@ -2289,11 +2386,13 @@ void Network::handle_errors(
         request_info info,
         connection_info conn_info,
         bool timeout_,
-        std::optional<int16_t> status_code_,
+        int16_t status_code_,
+        std::vector<std::pair<std::string, std::string>> headers_,
         std::optional<std::string> response,
         std::optional<network_response_callback_t> handle_response) {
     bool timeout = timeout_;
-    auto status_code = status_code_.value_or(-1);
+    auto status_code = status_code_;
+    auto headers = headers_;
     auto path_name = path_type_name(info.path_type, single_path_mode);
 
     // There is an issue which can occur where we get invalid data back and are unable to decrypt
@@ -2321,6 +2420,7 @@ void Network::handle_errors(
     if (status_code == -1 && response) {
         const std::unordered_map<std::string, std::pair<int16_t, bool>> response_map = {
                 {"400 Bad Request", {400, false}},
+                {"403 Forbidden", {403, false}},
                 {"500 Internal Server Error", {500, false}},
                 {"502 Bad Gateway", {502, false}},
                 {"503 Service Unavailable", {503, false}},
@@ -2352,7 +2452,7 @@ void Network::handle_errors(
     // the server side and don't update the path/snode state
     if (!info.node_destination && timeout) {
         if (handle_response)
-            return (*handle_response)(false, true, status_code, response);
+            return (*handle_response)(false, true, status_code, headers, response);
         return;
     }
 
@@ -2362,7 +2462,7 @@ void Network::handle_errors(
         case 400:
         case 404:
             if (handle_response)
-                return (*handle_response)(false, false, status_code, response);
+                return (*handle_response)(false, false, status_code, headers, response);
             return;
 
         // The user's clock is out of sync with the service node network (a
@@ -2370,7 +2470,7 @@ void Network::handle_errors(
         case 406:
         case 425:
             if (handle_response)
-                return (*handle_response)(false, false, status_code, response);
+                return (*handle_response)(false, false, status_code, headers, response);
             return;
 
         // The snode is reporting that it isn't associated with the given public key anymore. If
@@ -2439,12 +2539,18 @@ void Network::handle_errors(
                                                                 swarm_pubkey = info.swarm_pubkey,
                                                                 info,
                                                                 status_code,
+                                                                headers,
                                                                 response,
                                                                 cb = std::move(
                                                                         *handle_response)]() {
                             get_swarm(
                                     *swarm_pubkey,
-                                    [this, info, status_code, response, cb = std::move(cb)](
+                                    [this,
+                                     info,
+                                     status_code,
+                                     headers,
+                                     response,
+                                     cb = std::move(cb)](
                                             swarm_id_t, std::vector<service_node> swarm) {
                                         auto target =
                                                 detail::node_for_destination(info.destination);
@@ -2469,7 +2575,7 @@ void Network::handle_errors(
                                                     "another 421 and had no other nodes in the "
                                                     "swarm.",
                                                     info.request_id);
-                                            return cb(false, false, status_code, response);
+                                            return cb(false, false, status_code, headers, response);
                                         }
 
                                         auto updated_info = info;
@@ -2513,7 +2619,7 @@ void Network::handle_errors(
             // state
             if (!info.node_destination) {
                 if (handle_response)
-                    return (*handle_response)(false, timeout, status_code, response);
+                    return (*handle_response)(false, timeout, status_code, headers, response);
                 return;
             }
             break;
@@ -2554,7 +2660,7 @@ void Network::handle_errors(
                     path_name);
 
             if (handle_response)
-                (*handle_response)(false, timeout, status_code, response);
+                (*handle_response)(false, timeout, status_code, headers, response);
             return;
         }
         path = path_pending_drop_it->first;
@@ -2662,7 +2768,7 @@ void Network::handle_errors(
     }
 
     if (handle_response)
-        (*handle_response)(false, timeout, status_code, response);
+        (*handle_response)(false, timeout, status_code, headers, response);
 }
 
 }  // namespace session::network
@@ -2849,21 +2955,43 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
                         bool success,
                         bool timeout,
                         int status_code,
+                        std::vector<std::pair<std::string, std::string>> headers,
                         std::optional<std::string> response) {
+                    std::vector<const char*> cHeaders;
+                    std::vector<const char*> cHeaderValues;
+                    cHeaders.reserve(headers.size());
+                    cHeaderValues.reserve(headers.size());
+
+                    for (const auto& [header, value] : headers) {
+                        cHeaders.push_back(header.c_str());
+                        cHeaderValues.push_back(value.c_str());
+                    }
+
                     if (response)
                         cb(success,
                            timeout,
                            status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
                            (*response).c_str(),
                            (*response).size(),
                            ctx);
                     else
-                        cb(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success,
+                           timeout,
+                           status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
+                           nullptr,
+                           0,
+                           ctx);
                 },
                 std::chrono::milliseconds{request_timeout_ms},
                 request_and_path_build_timeout);
     } catch (const std::exception& e) {
-        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
+        callback(false, false, -1, nullptr, nullptr, 0, e.what(), std::strlen(e.what()), ctx);
     }
 }
 
@@ -2897,21 +3025,43 @@ LIBSESSION_C_API void network_send_onion_request_to_server_destination(
                         bool success,
                         bool timeout,
                         int status_code,
+                        std::vector<std::pair<std::string, std::string>> headers,
                         std::optional<std::string> response) {
+                    std::vector<const char*> cHeaders;
+                    std::vector<const char*> cHeaderValues;
+                    cHeaders.reserve(headers.size());
+                    cHeaderValues.reserve(headers.size());
+
+                    for (const auto& [header, value] : headers) {
+                        cHeaders.push_back(header.c_str());
+                        cHeaderValues.push_back(value.c_str());
+                    }
+
                     if (response)
                         cb(success,
                            timeout,
                            status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
                            (*response).c_str(),
                            (*response).size(),
                            ctx);
                     else
-                        cb(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success,
+                           timeout,
+                           status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
+                           nullptr,
+                           0,
+                           ctx);
                 },
                 std::chrono::milliseconds{request_timeout_ms},
                 request_and_path_build_timeout);
     } catch (const std::exception& e) {
-        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
+        callback(false, false, -1, nullptr, nullptr, 0, e.what(), std::strlen(e.what()), ctx);
     }
 }
 
@@ -2946,21 +3096,43 @@ LIBSESSION_C_API void network_upload_to_server(
                         bool success,
                         bool timeout,
                         int status_code,
+                        std::vector<std::pair<std::string, std::string>> headers,
                         std::optional<std::string> response) {
+                    std::vector<const char*> cHeaders;
+                    std::vector<const char*> cHeaderValues;
+                    cHeaders.reserve(headers.size());
+                    cHeaderValues.reserve(headers.size());
+
+                    for (const auto& [header, value] : headers) {
+                        cHeaders.push_back(header.c_str());
+                        cHeaderValues.push_back(value.c_str());
+                    }
+
                     if (response)
                         cb(success,
                            timeout,
                            status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
                            (*response).c_str(),
                            (*response).size(),
                            ctx);
                     else
-                        cb(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success,
+                           timeout,
+                           status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
+                           nullptr,
+                           0,
+                           ctx);
                 },
                 std::chrono::milliseconds{request_timeout_ms},
                 request_and_path_build_timeout);
     } catch (const std::exception& e) {
-        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
+        callback(false, false, -1, nullptr, nullptr, 0, e.what(), std::strlen(e.what()), ctx);
     }
 }
 
@@ -2986,21 +3158,43 @@ LIBSESSION_C_API void network_download_from_server(
                         bool success,
                         bool timeout,
                         int status_code,
+                        std::vector<std::pair<std::string, std::string>> headers,
                         std::optional<std::string> response) {
+                    std::vector<const char*> cHeaders;
+                    std::vector<const char*> cHeaderValues;
+                    cHeaders.reserve(headers.size());
+                    cHeaderValues.reserve(headers.size());
+
+                    for (const auto& [header, value] : headers) {
+                        cHeaders.push_back(header.c_str());
+                        cHeaderValues.push_back(value.c_str());
+                    }
+
                     if (response)
                         cb(success,
                            timeout,
                            status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
                            (*response).c_str(),
                            (*response).size(),
                            ctx);
                     else
-                        cb(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success,
+                           timeout,
+                           status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
+                           nullptr,
+                           0,
+                           ctx);
                 },
                 std::chrono::milliseconds{request_timeout_ms},
                 request_and_path_build_timeout);
     } catch (const std::exception& e) {
-        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
+        callback(false, false, -1, nullptr, nullptr, 0, e.what(), std::strlen(e.what()), ctx);
     }
 }
 
@@ -3027,21 +3221,43 @@ LIBSESSION_C_API void network_get_client_version(
                         bool success,
                         bool timeout,
                         int status_code,
+                        std::vector<std::pair<std::string, std::string>> headers,
                         std::optional<std::string> response) {
+                    std::vector<const char*> cHeaders;
+                    std::vector<const char*> cHeaderValues;
+                    cHeaders.reserve(headers.size());
+                    cHeaderValues.reserve(headers.size());
+
+                    for (const auto& [header, value] : headers) {
+                        cHeaders.push_back(header.c_str());
+                        cHeaderValues.push_back(value.c_str());
+                    }
+
                     if (response)
                         cb(success,
                            timeout,
                            status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
                            (*response).c_str(),
                            (*response).size(),
                            ctx);
                     else
-                        cb(success, timeout, status_code, nullptr, 0, ctx);
+                        cb(success,
+                           timeout,
+                           status_code,
+                           cHeaders.data(),
+                           cHeaderValues.data(),
+                           headers.size(),
+                           nullptr,
+                           0,
+                           ctx);
                 },
                 std::chrono::milliseconds{request_timeout_ms},
                 request_and_path_build_timeout);
     } catch (const std::exception& e) {
-        callback(false, false, -1, e.what(), std::strlen(e.what()), ctx);
+        callback(false, false, -1, nullptr, nullptr, 0, e.what(), std::strlen(e.what()), ctx);
     }
 }
 
