@@ -1208,10 +1208,12 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
         return;
     }
 
-    // We are starting a new cache refresh so store an identifier for it
+    // We are starting a new cache refresh so store an identifier for it (we also initialise
+    // `snode_refresh_results` so we can use it to track the results from the different requests)
     if (!current_snode_cache_refresh_request_id) {
         log::info(cat, "Refreshing snode cache ({}).", request_id);
         current_snode_cache_refresh_request_id = request_id;
+        snode_refresh_results = std::make_shared<std::vector<std::vector<service_node>>>();
     }
 
     // If we don't have enough nodes in the unused nodes then refresh it
@@ -1299,8 +1301,15 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
                 }
 
                 // If we haven't received all results then do nothing
-                if (snode_refresh_results->size() != num_snodes_to_refresh_cache_from)
+                if (snode_refresh_results->size() != num_snodes_to_refresh_cache_from) {
+                    log::info(
+                            cat,
+                            "Received snode cache refresh result {}/{} ({}).",
+                            snode_refresh_results->size(),
+                            num_snodes_to_refresh_cache_from,
+                            request_id);
                     return;
+                }
 
                 auto any_nodes_request_failed = std::any_of(
                         snode_refresh_results->begin(),
@@ -2350,14 +2359,15 @@ void Network::drop_path_when_empty(std::string request_id, PathType path_type, o
             paths[path_type].end());
     log::info(
             cat,
-            "Flagging path to be dropped, now have {} {} paths(s) ({}): [{}].",
+            "Flagging path to be dropped [{}], now have {} {} paths(s) ({}).",
+            path.to_string(),
             paths[path_type].size(),
             path_type_name(path_type, single_path_mode),
-            request_id,
-            path.to_string());
+            request_id);
 
-    // Clear any paths which are waiting to be dropped
-    clear_empty_pending_path_drops();
+    // Clear any paths which are waiting to be dropped (do this in the next loop to avoid confusing
+    // logs where the logs from `clear_empty_pending_path_drops` could appear before the above log)
+    net.call_soon([this]() { clear_empty_pending_path_drops(); });
 }
 
 void Network::clear_empty_pending_path_drops() {
@@ -2367,9 +2377,10 @@ void Network::clear_empty_pending_path_drops() {
         if (!path_info.first.has_pending_requests()) {
             log::info(
                     cat,
-                    "Removing flagged {} path: {}: [{}].",
+                    "Removing flagged {} path that {}: [{}].",
                     path_type_name(path_info.second, single_path_mode),
-                    (path_info.first.is_valid() ? "No remaining requests" : "No longer valid"),
+                    (path_info.first.is_valid() ? "has no remaining requests"
+                                                : "is no longer valid"),
                     path_info.first.to_string());
             return true;
         }
