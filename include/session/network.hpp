@@ -89,9 +89,7 @@ struct connection_info {
     std::shared_ptr<oxen::quic::BTRequestStream> stream;
 
     bool is_valid() const { return conn && stream && !stream->is_closing(); };
-    bool has_pending_requests() const {
-        return is_valid() && (!pending_requests || ((*pending_requests) == 0));
-    };
+    bool has_pending_requests() const { return (pending_requests && (*pending_requests) > 0); };
 
     void add_pending_request() {
         if (!pending_requests)
@@ -109,6 +107,7 @@ struct connection_info {
 };
 
 struct onion_path {
+    std::string id;
     connection_info conn_info;
     std::vector<service_node> nodes;
     uint8_t failure_count;
@@ -516,14 +515,14 @@ class Network {
     /// established (or closed in case it fails).
     ///
     /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
+    /// - 'id' - [in] id for the request or path build which triggered the call.
     /// - `target` -- [in] the target service node to connect to.
     /// - `timeout` -- [in, optional] optional timeout for the request, if NULL the
     /// `quic::DEFAULT_HANDSHAKE_TIMEOUT` will be used.
     /// - `callback` -- [in] callback to be called with connection info once the connection is
     /// established or fails.
     void establish_connection(
-            std::string request_id,
+            std::string id,
             service_node target,
             std::optional<std::chrono::milliseconds> timeout,
             std::function<void(connection_info info, std::optional<std::string> error)> callback);
@@ -534,8 +533,8 @@ class Network {
     /// list.
     ///
     /// Inputs:
-    /// - 'request_id' - [in] id for the request which triggered the call.
-    virtual void establish_and_store_connection(std::string request_id);
+    /// - 'path_id' - [in] id for the path build which triggered the call.
+    virtual void establish_and_store_connection(std::string path_id);
 
     /// API: network/refresh_snode_cache_complete
     ///
@@ -577,9 +576,9 @@ class Network {
     /// this will open a new connection to a random service nodes in the snode cache.
     ///
     /// Inputs:
+    /// - 'path_id' - [in] id for the new path.
     /// - `path_type` -- [in] the type of path to build.
-    /// - 'request_id' - [in] id for the build_path request.
-    virtual void build_path(PathType path_type, std::string request_id);
+    virtual void build_path(std::string path_id, PathType path_type);
 
     /// API: network/find_valid_path
     ///
@@ -707,10 +706,11 @@ class Network {
     /// Flags a path to be dropped once all pending requests have finished.
     ///
     /// Inputs:
-    /// - `request_id` -- [in] the request_id which triggered the path drop.
+    /// - `id` -- [in] id the request or path which triggered the path drop (if the id is a path_id
+    /// then the drop was triggered by the connection being dropped).
     /// - `path_type` -- [in] the type of path to build.
     /// - `path` -- [in] the path to be dropped.
-    void drop_path_when_empty(std::string request_id, PathType path_type, onion_path path);
+    void drop_path_when_empty(std::string id, PathType path_type, onion_path path);
 
     /// API: network/clear_empty_pending_path_drops
     ///

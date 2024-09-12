@@ -84,7 +84,8 @@ class TestNetwork : public Network {
     }
 
     void add_path(PathType path_type, std::vector<service_node> nodes) {
-        paths[path_type].emplace_back(onion_path{{nodes[0], nullptr, nullptr, nullptr}, nodes, 0});
+        paths[path_type].emplace_back(
+                onion_path{"Test", {nodes[0], nullptr, nullptr, nullptr}, nodes, 0});
     }
 
     void set_paths(PathType path_type, std::vector<onion_path> paths_) {
@@ -203,13 +204,13 @@ class TestNetwork : public Network {
         Network::refresh_snode_cache(existing_request_id);
     }
 
-    void build_path(PathType path_type, std::string request_id) override {
+    void build_path(std::string path_id, PathType path_type) override {
         const auto func_name = "build_path";
 
         if (check_should_ignore_and_log_call(func_name))
             return;
 
-        Network::build_path(path_type, request_id);
+        Network::build_path(path_id, path_type);
     }
 
     std::optional<onion_path> find_valid_path(
@@ -339,7 +340,8 @@ TEST_CASE("Network error handling", "[network]") {
     auto target2 = test_node(ed_pk2, 1);
     auto target3 = test_node(ed_pk2, 2);
     auto target4 = test_node(ed_pk2, 3);
-    auto path = onion_path{{target, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
+    auto path =
+            onion_path{"Test", {target, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
     auto mock_request = request_info{
             "AAAA",
             target,
@@ -420,7 +422,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network->get_failure_count(PathType::standard, path) == 1);
 
     // // Check general error handling with no response (too many path failures)
-    path = onion_path{{target, nullptr, nullptr, nullptr}, {target, target2, target3}, 9};
+    path = onion_path{"Test", {target, nullptr, nullptr, nullptr}, {target, target2, target3}, 9};
     network.emplace(std::nullopt, true, true, false);
     network->set_suspended(true);  // Make no requests in this test
     network->ignore_calls_to("_send_onion_request", "update_disk_cache_throttled");
@@ -451,7 +453,7 @@ TEST_CASE("Network error handling", "[network]") {
     CHECK(network->get_failure_count(PathType::standard, path) == 0);  // Path dropped and reset
 
     // // Check general error handling with a path and specific node failure
-    path = onion_path{{target, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
+    path = onion_path{"Test", {target, nullptr, nullptr, nullptr}, {target, target2, target3}, 0};
     auto response = std::string{"Next node not found: "} + ed25519_pubkey::from_bytes(ed_pk2).hex();
     network.emplace(std::nullopt, true, true, false);
     network->set_suspended(true);  // Make no requests in this test
@@ -713,7 +715,8 @@ TEST_CASE("Network Path Building", "[network][get_unused_nodes]") {
     for (uint16_t i = 0; i < 12; ++i)
         snode_cache.emplace_back(test_node(ed_pk, i));
     auto invalid_info = connection_info{snode_cache[0], nullptr, nullptr, nullptr};
-    auto path = onion_path{invalid_info, {snode_cache[0], snode_cache[1], snode_cache[2]}, 0};
+    auto path =
+            onion_path{"Test", invalid_info, {snode_cache[0], snode_cache[1], snode_cache[2]}, 0};
 
     // Should shuffle the result
     network.emplace(std::nullopt, true, false, false);
@@ -800,14 +803,14 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     // Nothing should happen if the network is suspended
     network.emplace(std::nullopt, true, false, false);
     network->set_suspended(true);
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     CHECK(ALWAYS(10ms, network->did_not_call("establish_and_store_connection")));
 
     // If there are no unused connections it puts the path build in the queue and calls
     // establish_and_store_connection
     network.emplace(std::nullopt, true, false, false);
     network->ignore_calls_to("establish_and_store_connection");
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     CHECK(network->get_path_build_queue() == std::deque<PathType>{PathType::standard});
     CHECK(EVENTUALLY(10ms, network->called("establish_and_store_connection")));
 
@@ -816,7 +819,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network->set_snode_cache(snode_cache);
     network->set_unused_connections({invalid_info});
     network->set_in_progress_connections({{"TestInProgress", snode_cache.front()}});
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     CHECK(network->get_unused_nodes_value().size() == snode_cache.size() - 3);
     CHECK(network->get_path_build_queue().empty());
 
@@ -826,7 +829,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network->set_unused_connections({invalid_info});
     network->set_in_progress_connections({{"TestInProgress", snode_cache.front()}});
     network->add_path(PathType::standard, {snode_cache.begin() + 1, snode_cache.begin() + 1 + 3});
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     CHECK(network->get_unused_nodes_value().size() == (snode_cache.size() - 3 - 3));
     CHECK(network->get_path_build_queue().empty());
 
@@ -838,7 +841,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network->set_unused_connections({invalid_info});
     network->set_path_build_failures(10);
     network->add_path(PathType::standard, snode_cache);
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     CHECK(network->get_path_build_failures() == 0);
     CHECK(network->get_path_build_queue() == std::deque<PathType>{PathType::standard});
     CHECK(EVENTUALLY(10ms, network->called("refresh_snode_cache")));
@@ -850,7 +853,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     network->set_unused_connections({invalid_info});
     network->set_unused_nodes(std::vector<service_node>{
             snode_cache[0], snode_cache[0], snode_cache[0], snode_cache[0]});
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     network->ignore_calls_to("build_path");  // Ignore the 2nd loop
     CHECK(network->get_path_build_failures() == 1);
     CHECK(network->get_path_build_queue().empty());
@@ -860,7 +863,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     // status or call the 'paths_changed' hook
     network.emplace(std::nullopt, true, false, false);
     network->find_valid_path_response =
-            onion_path{invalid_info, {snode_cache.begin(), snode_cache.begin() + 3}, 0};
+            onion_path{"Test", invalid_info, {snode_cache.begin(), snode_cache.begin() + 3}, 0};
     network->ignore_calls_to("_send_onion_request");
     network->set_snode_cache(snode_cache);
     network->set_unused_connections({invalid_info});
@@ -873,7 +876,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
                     1s,
                     std::nullopt,
                     PathType::download));
-    network->build_path(PathType::download, "Test1");
+    network->build_path("Test1", PathType::download);
     CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
     CHECK(network->get_paths(PathType::download).size() == 1);
 
@@ -881,7 +884,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
     // and kicks of queued requests
     network.emplace(std::nullopt, true, false, false);
     network->find_valid_path_response =
-            onion_path{invalid_info, {snode_cache.begin(), snode_cache.begin() + 3}, 0};
+            onion_path{"Test", invalid_info, {snode_cache.begin(), snode_cache.begin() + 3}, 0};
     network->ignore_calls_to("_send_onion_request");
     network->set_snode_cache(snode_cache);
     network->set_unused_connections({invalid_info});
@@ -894,7 +897,7 @@ TEST_CASE("Network Path Building", "[network][build_path]") {
                     1s,
                     std::nullopt,
                     PathType::standard));
-    network->build_path(PathType::standard, "Test1");
+    network->build_path("Test1", PathType::standard);
     CHECK(EVENTUALLY(10ms, network->called("_send_onion_request")));
     CHECK(network->get_paths(PathType::standard).size() == 1);
     CHECK(network->get_status() == ConnectionStatus::connected);
@@ -913,7 +916,10 @@ TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
     auto network = TestNetwork(std::nullopt, true, false, false);
     auto info = request_info::make(target, std::nullopt, std::nullopt, 0ms);
     auto invalid_path = onion_path{
-            {test_service_node, nullptr, nullptr, nullptr}, {test_service_node}, uint8_t{0}};
+            "Test",
+            {test_service_node, nullptr, nullptr, nullptr},
+            {test_service_node},
+            uint8_t{0}};
 
     // It returns nothing when given no path options
     CHECK_FALSE(network.find_valid_path(info, {}).has_value());
@@ -936,7 +942,10 @@ TEST_CASE("Network Find Valid Path", "[network][find_valid_path]") {
     auto result = prom.get_future().get();
     REQUIRE(result.first.is_valid());
     auto valid_path = onion_path{
-            std::move(result.first), std::vector<service_node>{test_service_node}, uint8_t{0}};
+            "Test",
+            std::move(result.first),
+            std::vector<service_node>{test_service_node},
+            uint8_t{0}};
 
     // It excludes paths which include the IP of the target
     auto shared_ip_info = request_info::make(test_service_node, std::nullopt, std::nullopt, 0ms);
@@ -956,8 +965,8 @@ TEST_CASE("Network Enqueue Path Build", "[network][build_path_if_needed]") {
     auto target = test_node(ed_pk, 0);
     ;
     std::optional<TestNetwork> network;
-    auto invalid_path =
-            onion_path{connection_info{target, nullptr, nullptr, nullptr}, {target}, uint8_t{0}};
+    auto invalid_path = onion_path{
+            "Test", connection_info{target, nullptr, nullptr, nullptr}, {target}, uint8_t{0}};
 
     // It does not add additional path builds if there is already a path and it's in
     // 'single_path_mode'

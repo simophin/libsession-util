@@ -484,7 +484,7 @@ request_info request_info::make(
         std::optional<std::string> _ep,
         std::optional<ustring> _body) {
     return request_info{
-            _req_id.value_or(random::random_base32(4)),
+            _req_id.value_or("R-{}"_format(random::random_base32(4))),
             std::move(_dest),
             _ep.value_or(ONION),
             std::move(_body),
@@ -526,9 +526,9 @@ Network::Network(
     // Kick off a separate thread to build paths (may as well kick this off early)
     if (pre_build_paths)
         for (int i = 0; i < min_path_count(PathType::standard, single_path_mode); ++i) {
-            auto request_id = random::random_base32(4);
-            in_progress_path_builds[request_id] = PathType::standard;
-            net.call_soon([this, request_id] { build_path(PathType::standard, request_id); });
+            auto path_id = "P-{}"_format(random::random_base32(4));
+            in_progress_path_builds[path_id] = PathType::standard;
+            net.call_soon([this, path_id] { build_path(path_id, PathType::standard); });
         }
 }
 
@@ -852,11 +852,11 @@ std::vector<service_node> Network::get_unused_nodes() {
 }
 
 void Network::establish_connection(
-        std::string request_id,
+        std::string id,
         service_node target,
         std::optional<std::chrono::milliseconds> timeout,
         std::function<void(connection_info info, std::optional<std::string> error)> callback) {
-    log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
+    log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, id);
     auto currently_suspended = net.call_get([this]() -> bool { return suspended; });
 
     // If the network is currently suspended then don't try to open a connection
@@ -881,9 +881,8 @@ void Network::establish_connection(
             creds,
             quic::opt::keep_alive{10s},
             handshake_timeout,
-            [this, request_id, target, cb, cb_called, conn_future](
-                    quic::connection_interface&) mutable {
-                log::trace(cat, "Connection established for {}.", request_id);
+            [this, id, target, cb, cb_called, conn_future](quic::connection_interface&) mutable {
+                log::trace(cat, "Connection established for {}.", id);
 
                 // Just in case, call it within a `net.call`
                 net.call([&] {
@@ -900,9 +899,16 @@ void Network::establish_connection(
                     });
                 });
             },
-            [this, target, request_id, cb, cb_called, conn_future](
+            [this, target, id, cb, cb_called, conn_future](
                     quic::connection_interface& conn, uint64_t error_code) mutable {
-                log::trace(cat, "Connection closed for {}.", request_id);
+                if (error_code == static_cast<uint64_t>(NGTCP2_ERR_HANDSHAKE_TIMEOUT))
+                    log::info(
+                            cat,
+                            "Unable to establish connection to {} for {}.",
+                            target.to_string(),
+                            id);
+                else
+                    log::info(cat, "Connection to {} closed for {}.", target.to_string(), id);
 
                 // Just in case, call it within a `net.call`
                 net.call([&] {
@@ -935,7 +941,7 @@ void Network::establish_connection(
                             if (!path.nodes.empty() && path.nodes.front() == target &&
                                 path.conn_info.conn &&
                                 conn.reference_id() == path.conn_info.conn->reference_id()) {
-                                drop_path_when_empty(request_id, path_type, path);
+                                drop_path_when_empty(id, path_type, path);
                                 break;
                             }
                         }
@@ -957,7 +963,7 @@ void Network::establish_connection(
     conn_promise.set_value(c);
 }
 
-void Network::establish_and_store_connection(std::string request_id) {
+void Network::establish_and_store_connection(std::string path_id) {
     // If we are suspended then don't try to establish a new connection
     if (suspended)
         return;
@@ -976,8 +982,8 @@ void Network::establish_and_store_connection(std::string request_id) {
                 cat,
                 "Unable to establish new connection due to lack of unused nodes, refreshing snode "
                 "cache ({}).",
-                request_id);
-        return net.call_soon([this, request_id]() { refresh_snode_cache(request_id); });
+                path_id);
+        return net.call_soon([this, path_id]() { refresh_snode_cache(path_id); });
     }
 
     // Otherwise check if it's been too long since the last cache update and, if so, trigger a
@@ -998,14 +1004,14 @@ void Network::establish_and_store_connection(std::string request_id) {
 
     // Try to establish a new connection to the target (this has a 3s handshake timeout as we
     // wouldn't want to use any nodes which take longer than that anyway)
-    log::info(cat, "Establishing connection to {} for {}.", target_node.to_string(), request_id);
-    in_progress_connections.emplace(request_id, target_node);
+    log::info(cat, "Establishing connection to {} for {}.", target_node.to_string(), path_id);
+    in_progress_connections.emplace(path_id, target_node);
 
     establish_connection(
-            request_id,
+            path_id,
             target_node,
             3s,
-            [this, target_node, request_id](connection_info info, std::optional<std::string>) {
+            [this, target_node, path_id](connection_info info, std::optional<std::string>) {
                 // If we failed to get a connection then try again after a delay (may as well try
                 // indefinitely because there is no way to recover from this issue)
                 if (!info.is_valid()) {
@@ -1016,21 +1022,20 @@ void Network::establish_and_store_connection(std::string request_id) {
                             "Failed to connect to {}, will try another after {}ms.",
                             target_node.to_string(),
                             connection_retry_delay.count());
-                    return net.call_later(connection_retry_delay, [this, request_id]() {
-                        establish_and_store_connection(request_id);
+                    return net.call_later(connection_retry_delay, [this, path_id]() {
+                        establish_and_store_connection(path_id);
                     });
                 }
 
                 // We were able to connect to the node so add it to the unused_connections queue
-                log::info(
-                        cat, "Connection to {} valid for {}.", target_node.to_string(), request_id);
+                log::info(cat, "Connection to {} valid for {}.", target_node.to_string(), path_id);
                 unused_connections.emplace_back(info);
 
                 // Kick off the next pending path build since we now have a valid connection
                 if (!path_build_queue.empty()) {
-                    in_progress_path_builds[request_id] = path_build_queue.front();
-                    net.call_soon([this, path_type = path_build_queue.front(), request_id]() {
-                        build_path(path_type, request_id);
+                    in_progress_path_builds[path_id] = path_build_queue.front();
+                    net.call_soon([this, path_type = path_build_queue.front(), path_id]() {
+                        build_path(path_id, path_type);
                     });
                     path_build_queue.pop_front();
                 }
@@ -1041,7 +1046,8 @@ void Network::establish_and_store_connection(std::string request_id) {
                 if (!path_build_queue.empty() && in_progress_connections.empty())
                     for ([[maybe_unused]] const auto& _ : path_build_queue)
                         net.call_soon([this]() {
-                            establish_and_store_connection(random::random_base32(4));
+                            auto conn_id = "EC-{}"_format(random::random_base32(4));
+                            establish_and_store_connection(conn_id);
                         });
             });
 }
@@ -1086,9 +1092,9 @@ void Network::refresh_snode_cache_complete(std::vector<service_node> nodes) {
 
     // Resume any queued path builds
     for (const auto& path_type : path_build_queue) {
-        auto request_id = random::random_base32(4);
-        in_progress_path_builds[request_id] = path_type;
-        net.call_soon([this, path_type, request_id]() { build_path(path_type, request_id); });
+        auto path_id = "P-{}"_format(random::random_base32(4));
+        in_progress_path_builds[path_id] = path_type;
+        net.call_soon([this, path_type, path_id]() { build_path(path_id, path_type); });
     }
     path_build_queue.clear();
 }
@@ -1188,7 +1194,7 @@ void Network::refresh_snode_cache_from_seed_nodes(std::string request_id, bool r
 }
 
 void Network::refresh_snode_cache(std::optional<std::string> existing_request_id) {
-    auto request_id = existing_request_id.value_or(random::random_base32(4));
+    auto request_id = existing_request_id.value_or("RSC-{}"_format(random::random_base32(4)));
 
     if (suspended) {
         log::info(cat, "Ignoring snode cache refresh as network is suspended ({}).", request_id);
@@ -1357,7 +1363,7 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
             });
 }
 
-void Network::build_path(PathType path_type, std::string request_id) {
+void Network::build_path(std::string path_id, PathType path_type) {
     if (suspended) {
         log::info(cat, "Ignoring build_path call as network is suspended.");
         return;
@@ -1370,12 +1376,12 @@ void Network::build_path(PathType path_type, std::string request_id) {
     if (unused_connections.empty()) {
         log::info(
                 cat,
-                "No unused connections available to build {} path, creating new connection ({}).",
+                "No unused connections available to build {} path, creating new connection for {}.",
                 path_name,
-                request_id);
+                path_id);
         path_build_queue.emplace_back(path_type);
-        in_progress_path_builds.erase(request_id);
-        return net.call_soon([this, request_id]() { establish_and_store_connection(request_id); });
+        in_progress_path_builds.erase(path_id);
+        return net.call_soon([this, path_id]() { establish_and_store_connection(path_id); });
     }
 
     // Reset the unused nodes list if it's too small
@@ -1385,19 +1391,16 @@ void Network::build_path(PathType path_type, std::string request_id) {
     // If we still don't have enough unused nodes then we need to refresh the cache
     if (unused_nodes.size() < path_size) {
         log::info(
-                cat,
-                "Re-queing {} path build due to insufficient nodes ({}).",
-                path_name,
-                request_id);
+                cat, "Re-queing {} path build due to insufficient nodes ({}).", path_name, path_id);
         path_build_failures = 0;
         path_build_queue.emplace_back(path_type);
-        in_progress_path_builds.erase(request_id);
+        in_progress_path_builds.erase(path_id);
         return net.call_soon([this]() { refresh_snode_cache(); });
     }
 
     // Build the path
-    log::info(cat, "Building {} path ({}).", path_name, request_id);
-    in_progress_path_builds[request_id] = path_type;
+    log::info(cat, "Building {} path ({}).", path_name, path_id);
+    in_progress_path_builds[path_id] = path_type;
 
     auto conn_info = std::move(unused_connections.front());
     unused_connections.pop_front();
@@ -1410,14 +1413,13 @@ void Network::build_path(PathType path_type, std::string request_id) {
                     cat,
                     "Unable to build {} path due to lack of suitable unused nodes ({}).",
                     path_name,
-                    request_id);
+                    path_id);
 
             // Delay the next path build attempt based on the error we received
             path_build_failures++;
             unused_connections.push_front(std::move(conn_info));
             auto delay = retry_delay(path_build_failures);
-            net.call_later(
-                    delay, [this, request_id, path_type]() { build_path(path_type, request_id); });
+            net.call_later(delay, [this, path_id, path_type]() { build_path(path_id, path_type); });
             return;
         }
 
@@ -1436,18 +1438,18 @@ void Network::build_path(PathType path_type, std::string request_id) {
     }
 
     // Store the new path
-    auto path = onion_path{std::move(conn_info), path_nodes, 0};
+    auto path = onion_path{path_id, std::move(conn_info), path_nodes, 0};
     paths[path_type].emplace_back(path);
-    in_progress_path_builds.erase(request_id);
+    in_progress_path_builds.erase(path_id);
 
     // Log that a path was built
     log::info(
             cat,
-            "Built new onion request path, now have {} {} path(s) ({}): [{}]",
+            "Built new onion request path [{}], now have {} {} path(s) ({}).",
+            path.to_string(),
             paths[path_type].size(),
             path_name,
-            request_id,
-            path.to_string());
+            path_id);
 
     // If the connection info is valid and it's a standard path then update the
     // connection status to connected
@@ -1488,10 +1490,10 @@ void Network::build_path(PathType path_type, std::string request_id) {
     // If there are still pending requests and there are no pending path builds for them then kick
     // off a subsequent path build in an effort to resume the remaining requests
     if (!request_queue[path_type].empty()) {
-        auto additional_request_id = random::random_base32(4);
-        in_progress_path_builds[additional_request_id] = path_type;
-        net.call_soon([this, path_type, additional_request_id] {
-            build_path(path_type, additional_request_id);
+        auto additional_path_id = "P-{}"_format(random::random_base32(4));
+        in_progress_path_builds[additional_path_id] = path_type;
+        net.call_soon([this, path_type, additional_path_id] {
+            build_path(additional_path_id, path_type);
         });
     } else
         request_queue.erase(path_type);
@@ -1596,8 +1598,10 @@ void Network::build_path_if_needed(PathType path_type, bool found_path) {
 
     // If we don't have enough current + pending paths, or the request couldn't be sent then
     // kick off a new path build
-    if ((current_paths.size() + pending_paths) < min_paths || (!found_path && pending_paths == 0))
-        build_path(path_type, random::random_base32(4));
+    if ((current_paths.size() + pending_paths) < min_paths || (!found_path && pending_paths == 0)) {
+        auto path_id = "P-{}"_format(random::random_base32(4));
+        build_path(path_id, path_type);
+    }
 }
 
 // MARK: Direct Requests
@@ -1706,7 +1710,7 @@ void Network::get_swarm(
 
 void Network::get_random_nodes(
         uint16_t count, std::function<void(std::vector<service_node> nodes)> callback) {
-    auto request_id = random::random_base32(4);
+    auto request_id = "R-{}"_format(random::random_base32(4));
     log::trace(cat, "{} called for {}.", __PRETTY_FUNCTION__, request_id);
 
     net.call([this, request_id, count, cb = std::move(callback)]() mutable {
@@ -1742,7 +1746,7 @@ void Network::check_request_queue_timeouts(std::optional<std::string> request_ti
 
     // If there wasn't an existing loop id then set it here
     if (!request_timeout_id)
-        request_timeout_id = random::random_base32(4);
+        request_timeout_id = "RT-{}"_format(random::random_base32(4));
 
     // Timeout and remove any pending requests which should timeout based on path build time
     auto has_remaining_timeout_requests = false;
@@ -2352,21 +2356,30 @@ std::pair<uint16_t, std::string> Network::validate_response(quic::message resp, 
     return {status_code, response_string};
 }
 
-void Network::drop_path_when_empty(std::string request_id, PathType path_type, onion_path path) {
+void Network::drop_path_when_empty(std::string id, PathType path_type, onion_path path) {
     paths_pending_drop.emplace_back(path, path_type);
     paths[path_type].erase(
             std::remove(paths[path_type].begin(), paths[path_type].end(), path),
             paths[path_type].end());
+
+    std::string reason;
+    if (id == path.id)
+        reason = "connection being closed";
+    else
+        reason = "failure threshold passed with {} failure"_format(id);
+
     log::info(
             cat,
-            "Flagging path to be dropped [{}], now have {} {} paths(s) ({}).",
+            "Flagging path {} [{}] to be dropped due to {}, now have {} {} paths(s).",
+            path.id,
             path.to_string(),
+            reason,
             paths[path_type].size(),
-            path_type_name(path_type, single_path_mode),
-            request_id);
+            path_type_name(path_type, single_path_mode));
 
-    // Clear any paths which are waiting to be dropped (do this in the next loop to avoid confusing
-    // logs where the logs from `clear_empty_pending_path_drops` could appear before the above log)
+    // Clear any paths which are waiting to be dropped (do this after a short delay to avoid
+    // confusing logs where the logs from `clear_empty_pending_path_drops` could appear before the
+    // above log)
     net.call_soon([this]() { clear_empty_pending_path_drops(); });
 }
 
@@ -2377,8 +2390,9 @@ void Network::clear_empty_pending_path_drops() {
         if (!path_info.first.has_pending_requests()) {
             log::info(
                     cat,
-                    "Removing flagged {} path that {}: [{}].",
+                    "Removing flagged {} path {} that {}: [{}].",
                     path_type_name(path_info.second, single_path_mode),
+                    path_info.first.id,
                     (path_info.first.is_valid() ? "has no remaining requests"
                                                 : "is no longer valid"),
                     path_info.first.to_string());
@@ -2666,9 +2680,10 @@ void Network::handle_errors(
         if (path_pending_drop_it == paths_pending_drop.end()) {
             log::warning(
                     cat,
-                    "Request {} failed but {} path already dropped.",
+                    "Request {} failed but {} path with guard {} already dropped.",
                     info.request_id,
-                    path_name);
+                    path_name,
+                    conn_info.node.to_string());
 
             if (handle_response)
                 (*handle_response)(false, timeout, status_code, headers, response);
@@ -2729,18 +2744,20 @@ void Network::handle_errors(
                             target_node);
                     log::info(
                             cat,
-                            "Found bad node ({}) in {} path, replacing node.",
+                            "Found bad node ({}) in {} path, replacing node ({}).",
                             *ed25519PublicKey,
-                            path_name);
+                            path_name,
+                            updated_path.id);
                 } catch (...) {
                     // There aren't enough unused nodes remaining so we need to drop the
                     // path
                     updated_path.failure_count = path_failure_threshold;
                     log::info(
                             cat,
-                            "Unable to replace bad node ({}) in {} path.",
+                            "Unable to replace bad node ({}) in {} path ({}).",
                             *ed25519PublicKey,
-                            path_name);
+                            path_name,
+                            updated_path.id);
                 }
             }
         }
