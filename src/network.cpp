@@ -2377,10 +2377,8 @@ void Network::drop_path_when_empty(std::string id, PathType path_type, onion_pat
             paths[path_type].size(),
             path_type_name(path_type, single_path_mode));
 
-    // Clear any paths which are waiting to be dropped (do this after a short delay to avoid
-    // confusing logs where the logs from `clear_empty_pending_path_drops` could appear before the
-    // above log)
-    net.call_soon([this]() { clear_empty_pending_path_drops(); });
+    // Clear any paths which are waiting to be dropped
+    clear_empty_pending_path_drops();
 }
 
 void Network::clear_empty_pending_path_drops() {

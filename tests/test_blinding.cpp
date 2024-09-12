@@ -329,8 +329,8 @@ TEST_CASE("Communities session id blinded id matching", "[blinding][matching]") 
     CHECK(session_id_matches_blinded_id(session_id2, b25_5, server_pks[4]));
     CHECK(session_id_matches_blinded_id(session_id1, b25_6, server_pks[5]));
 
-    auto invalid_session_id = "9" + session_id1.substr(1, 65);
-    auto invalid_blinded_id = "9" + b15_1.substr(1, 65);
+    auto invalid_session_id = "9"s + session_id1.substr(1);
+    auto invalid_blinded_id = "9"s + b15_1.substr(1);
     auto invalid_server_pk = server_pks[0].substr(0, 60);
     CHECK_THROWS(session_id_matches_blinded_id(invalid_session_id, b15_1, server_pks[0]));
     CHECK_THROWS(session_id_matches_blinded_id(session_id1, invalid_blinded_id, server_pks[0]));
