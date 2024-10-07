@@ -278,6 +278,12 @@ class Network {
     /// initialization).
     void clear_cache();
 
+    /// API: network/snode_cache_size
+    ///
+    /// Retrieves the current size of the snode cache from memory (if a cache doesn't exist or
+    /// hasn't been loaded then this will return 0).
+    size_t snode_cache_size();
+
     /// API: network/get_swarm
     ///
     /// Retrieves the swarm for the given pubkey.  If there is already an entry in the cache for the
