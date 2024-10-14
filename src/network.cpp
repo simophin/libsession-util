@@ -696,6 +696,10 @@ void Network::clear_cache() {
     });
 }
 
+size_t Network::snode_cache_size() {
+    return net.call_get([this]() -> size_t { return snode_cache.size(); });
+}
+
 // MARK: Connection
 
 void Network::suspend() {
@@ -2869,6 +2873,10 @@ LIBSESSION_C_API void network_close_connections(network_object* network) {
 
 LIBSESSION_C_API void network_clear_cache(network_object* network) {
     unbox(network).clear_cache();
+}
+
+LIBSESSION_C_API size_t network_get_snode_cache_size(network_object* network) {
+    return unbox(network).snode_cache_size();
 }
 
 LIBSESSION_C_API void network_set_status_changed_callback(
