@@ -674,6 +674,16 @@ LIBSESSION_C_API bool user_groups_get_or_construct_group(
             false);
 }
 
+LIBSESSION_EXPORT bool user_groups_create_group(config_object* conf, ugroups_group_info* group) {
+    return wrap_exceptions(
+            conf,
+            [&] {
+                unbox<UserGroups>(conf)->create_group().into(*group);
+                return true;
+            },
+            false);
+}
+
 LIBSESSION_C_API void ugroups_legacy_group_free(ugroups_legacy_group_info* group) {
     if (group && group->_internal) {
         delete static_cast<ugroups_internals*>(group->_internal);

@@ -149,6 +149,9 @@ LIBSESSION_EXPORT bool user_groups_get_group(
 LIBSESSION_EXPORT bool user_groups_get_or_construct_group(
         config_object* conf, ugroups_group_info* group, const char* group_id);
 
+LIBSESSION_EXPORT bool user_groups_create_group(
+        config_object* conf, ugroups_group_info* group);
+
 /// API: user_groups/user_groups_get_community
 ///
 /// Gets community conversation info into `comm`, if the community info was found. `base_url` and
