@@ -323,16 +323,38 @@ namespace detail {
         return result;
     }
 
-    std::optional<service_node> node_for_destination(network_destination destination) {
-        if (auto* dest = std::get_if<service_node>(&destination))
+    std::optional<onionreq::ServiceNodeDestination> node_for_destination(
+            network_destination destination) {
+        if (auto* dest = std::get_if<onionreq::ServiceNodeDestination>(&destination))
             return *dest;
 
         return std::nullopt;
     }
 
+    onionreq::ServiceNodeDestination onion_destination_from_node(const service_node& node) {
+        auto ip_addr = node.to_ipv4().addr;
+
+        return onionreq::ServiceNodeDestination{
+                onionreq::ed25519_pubkey::from_bytes(node.view_remote_key()),
+                {static_cast<uint8_t>(ip_addr >> 24),
+                 static_cast<uint8_t>((ip_addr >> 16) & 0xFF),
+                 static_cast<uint8_t>((ip_addr >> 8) & 0xFF),
+                 static_cast<uint8_t>(ip_addr & 0xFF)},
+                node.port()};
+    }
+
+    bool onion_destination_is_service_node(
+            const onionreq::ServiceNodeDestination& dest, const service_node& node) {
+        oxen::quic::ipv4 dest_ip{dest.ip[0], dest.ip[1], dest.ip[2], dest.ip[3]};
+
+        return node.view_remote_key() ==
+                       ustring_view{dest.public_key.data(), dest.public_key.size()} &&
+               dest_ip == node.to_ipv4().addr && dest.port == node.port();
+    }
+
     session::onionreq::x25519_pubkey pubkey_for_destination(network_destination destination) {
-        if (auto* dest = std::get_if<service_node>(&destination))
-            return compute_xpk(dest->view_remote_key());
+        if (auto* dest = std::get_if<onionreq::ServiceNodeDestination>(&destination))
+            return compute_xpk({dest->public_key.data(), dest->public_key.size()});
 
         if (auto* dest = std::get_if<ServerDestination>(&destination))
             return dest->x25519_pubkey;
@@ -817,8 +839,8 @@ std::vector<service_node> Network::get_unused_nodes() {
     // Exclude pending requests
     for (const auto& [path_type, path_type_requests] : request_queue)
         for (const auto& [info, callback] : path_type_requests)
-            if (auto* dest = std::get_if<service_node>(&info.destination))
-                node_ips_to_exlude.emplace_back(dest->to_ipv4());
+            if (auto* dest = std::get_if<onionreq::ServiceNodeDestination>(&info.destination))
+                node_ips_to_exlude.emplace_back(dest->ip[0], dest->ip[1], dest->ip[2], dest->ip[3]);
 
     // Exclude any nodes which have surpassed the failure threshold
     for (const auto& [node_string, failure_count] : snode_failure_counts)
@@ -1254,7 +1276,7 @@ void Network::refresh_snode_cache(std::optional<std::string> existing_request_id
               {"params", detail::get_service_nodes_params(std::nullopt)}}},
     };
     auto info = request_info::make(
-            target_node,
+            detail::onion_destination_from_node(target_node),
             ustring{quic::to_usv(payload.dump())},
             std::nullopt,
             quic::DEFAULT_TIMEOUT,
@@ -1519,11 +1541,12 @@ std::optional<onion_path> Network::find_valid_path(
     // the destination
     if (auto target = detail::node_for_destination(info.destination)) {
         std::vector<onion_path> ip_excluded_paths;
+        oxen::quic::ipv4 target_ip{target->ip[0], target->ip[1], target->ip[2], target->ip[3]};
         std::copy_if(
                 possible_paths.begin(),
                 possible_paths.end(),
                 std::back_inserter(ip_excluded_paths),
-                [excluded_ip = target->to_ipv4()](const auto& path) {
+                [excluded_ip = target_ip](const auto& path) {
                     return std::none_of(
                             path.nodes.begin(), path.nodes.end(), [&excluded_ip](const auto& node) {
                                 return node.to_ipv4() == excluded_ip;
@@ -1984,7 +2007,7 @@ void Network::_send_onion_request(request_info info, network_response_callback_t
 
                     // The SnodeDestination runs via V3 onion requests and the
                     // ServerDestination runs via V4
-                    if (std::holds_alternative<service_node>(info.destination))
+                    if (std::holds_alternative<onionreq::ServiceNodeDestination>(info.destination))
                         processed_response = process_v3_onion_response(builder, *response);
                     else if (std::holds_alternative<ServerDestination>(info.destination))
                         processed_response = process_v4_onion_response(builder, *response);
@@ -2531,7 +2554,10 @@ void Network::handle_errors(
                                 cached_swarm.second.begin(),
                                 cached_swarm.second.end(),
                                 std::back_inserter(swarm_copy),
-                                [&target = *target](const auto& node) { return node != target; });
+                                [&target = *target](const auto& node) {
+                                    return !session::network::detail::
+                                            onion_destination_is_service_node(target, node);
+                                });
                         std::shuffle(swarm_copy.begin(), swarm_copy.end(), rng);
 
                         if (swarm_copy.empty())
@@ -2544,7 +2570,8 @@ void Network::handle_errors(
                                 info.request_id,
                                 path_name);
                         auto updated_info = info;
-                        updated_info.destination = swarm_copy.front();
+                        updated_info.destination =
+                                detail::onion_destination_from_node(swarm_copy.front());
                         updated_info.retry_reason = request_info::RetryReason::redirect;
                         return net.call_soon(
                                 [this, updated_info, cb = std::move(*handle_response)]() {
@@ -2589,7 +2616,9 @@ void Network::handle_errors(
                                                 swarm.end(),
                                                 std::back_inserter(swarm_copy),
                                                 [&target = *target](const auto& node) {
-                                                    return node != target;
+                                                    return !session::network::detail::
+                                                            onion_destination_is_service_node(
+                                                                    target, node);
                                                 });
                                         std::shuffle(swarm_copy.begin(), swarm_copy.end(), rng);
 
@@ -2608,7 +2637,9 @@ void Network::handle_errors(
                                         auto updated_info = info;
                                         updated_info.retry_reason =
                                                 request_info::RetryReason::redirect_swarm_refresh;
-                                        updated_info.destination = swarm_copy.front();
+                                        updated_info.destination =
+                                                detail::onion_destination_from_node(
+                                                        swarm_copy.front());
                                         net.call_soon([this, updated_info, cb = std::move(cb)]() {
                                             _send_onion_request(updated_info, std::move(cb));
                                         });
@@ -2973,16 +3004,12 @@ LIBSESSION_C_API void network_send_onion_request_to_snode_destination(
             request_and_path_build_timeout =
                     std::chrono::milliseconds{request_and_path_build_timeout_ms};
 
-        std::array<uint8_t, 4> ip;
-        std::memcpy(ip.data(), node.ip, ip.size());
-
         unbox(network).send_onion_request(
-                service_node{
-                        oxenc::from_hex({node.ed25519_pubkey_hex, 64}),
-                        {0},
-                        INVALID_SWARM_ID,
-                        "{}"_format(fmt::join(ip, ".")),
-                        node.quic_port},
+                session::onionreq::ServiceNodeDestination{
+                        session::onionreq::ed25519_pubkey::from_hex({node.ed25519_pubkey_hex, 64}),
+                        {node.ip[0], node.ip[1], node.ip[2], node.ip[3]},
+                        node.quic_port,
+                },
                 body,
                 swarm_pubkey,
                 [cb = std::move(callback), ctx](

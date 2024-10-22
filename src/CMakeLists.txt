@@ -104,10 +104,23 @@ if(ENABLE_ONIONREQ)
         onionreq/key_types.cpp
         onionreq/parser.cpp
         onionreq/response_parser.cpp
-        network.cpp
     )
 
     target_link_libraries(onionreq
+        PUBLIC
+        crypto
+        PRIVATE
+        nlohmann_json::nlohmann_json
+        libsodium::sodium-internal
+    )
+
+
+if(ENABLE_QUIC_NETWORKING)
+    add_libsession_util_library(quic_networking
+        network.cpp
+    )
+
+    target_link_libraries(quic_networking
         PUBLIC
         crypto
         quic
@@ -116,6 +129,8 @@ if(ENABLE_ONIONREQ)
         libsodium::sodium-internal
         nettle::nettle
     )
+endif()
+
 endif()
 
 if(WARNINGS_AS_ERRORS AND NOT USE_LTO AND CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_COMPILER_VERSION MATCHES "^11\\.")

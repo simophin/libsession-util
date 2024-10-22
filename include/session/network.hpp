@@ -134,7 +134,11 @@ namespace detail {
     std::vector<std::pair<swarm_id_t, std::vector<service_node>>> generate_swarms(
             std::vector<service_node> nodes);
 
-    std::optional<service_node> node_for_destination(onionreq::network_destination destination);
+    std::optional<onionreq::ServiceNodeDestination> node_for_destination(
+            onionreq::network_destination destination);
+
+    onionreq::ServiceNodeDestination onion_destination_from_node(const service_node& node);
+    bool onion_destination_is_service_node(const onionreq::ServiceNodeDestination& dest, const service_node &node);
 
     session::onionreq::x25519_pubkey pubkey_for_destination(
             onionreq::network_destination destination);

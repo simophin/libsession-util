@@ -1,18 +1,18 @@
 #pragma once
 
-#include <oxen/quic/address.hpp>
 #include <string>
 #include <string_view>
 #include <variant>
 
 #include "key_types.hpp"
 
-namespace session::network {
-struct service_node;
-struct request_info;
-}  // namespace session::network
-
 namespace session::onionreq {
+
+struct ServiceNodeDestination {
+    ed25519_pubkey public_key;
+    std::array<uint8_t, 4> ip;
+    uint16_t port;
+};
 
 struct ServerDestination {
     std::string protocol;
@@ -40,7 +40,7 @@ struct ServerDestination {
             method{std::move(method)} {}
 };
 
-using network_destination = std::variant<session::network::service_node, ServerDestination>;
+using network_destination = std::variant<ServiceNodeDestination, ServerDestination>;
 
 enum class EncryptType {
     aes_gcm,

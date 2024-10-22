@@ -118,7 +118,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_subdirectory(external)
 
-if(ENABLE_ONIONREQ)
+if(ENABLE_QUIC_NETWORKING)
     if(NOT TARGET nettle::nettle)
         if(BUILD_STATIC_DEPS)
             message(FATAL_ERROR "Internal error: nettle::nettle target (expected via libquic BUILD_STATIC_DEPS) not found")

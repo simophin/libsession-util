@@ -1,8 +1,8 @@
 #include "session/onionreq/hop_encryption.hpp"
 
-#include <nettle/gcm.h>
 #include <oxenc/endian.h>
 #include <oxenc/hex.h>
+#include <sodium/crypto_aead_aes256gcm.h>
 #include <sodium/crypto_aead_xchacha20poly1305.h>
 #include <sodium/crypto_auth_hmacsha256.h>
 #include <sodium/crypto_box.h>
@@ -84,7 +84,9 @@ bool HopEncryption::response_long_enough(EncryptType type, size_t response_size)
     switch (type) {
         case EncryptType::xchacha20:
             return (response_size >= crypto_aead_xchacha20poly1305_ietf_ABYTES);
-        case EncryptType::aes_gcm: return (response_size >= GCM_IV_SIZE + GCM_DIGEST_SIZE);
+        case EncryptType::aes_gcm:
+            return (response_size >=
+                    crypto_aead_aes256gcm_NPUBBYTES + crypto_aead_aes256gcm_ABYTES);
     }
     return false;
 }
@@ -110,27 +112,31 @@ ustring HopEncryption::decrypt(
 ustring HopEncryption::encrypt_aesgcm(ustring plaintext, const x25519_pubkey& pubKey) const {
     auto key = derive_symmetric_key(private_key_, pubKey);
 
-    // Initialise cipher context with the key
-    struct gcm_aes256_ctx ctx;
-    static_assert(key.size() == AES256_KEY_SIZE);
-    gcm_aes256_set_key(&ctx, key.data());
+    static_assert(key.size() == crypto_aead_aes256gcm_KEYBYTES);
 
     ustring output;
-    output.resize(GCM_IV_SIZE + plaintext.size() + GCM_DIGEST_SIZE);
+    output.resize(
+            crypto_aead_aes256gcm_ABYTES + plaintext.size() + crypto_aead_aes256gcm_NPUBBYTES);
 
     // Start the output with the random IV, and load it into ctx
     auto* o = output.data();
-    randombytes_buf(o, GCM_IV_SIZE);
-    gcm_aes256_set_iv(&ctx, GCM_IV_SIZE, o);
-    o += GCM_IV_SIZE;
+    randombytes_buf(o, crypto_aead_aes256gcm_NPUBBYTES);
+    const auto* npub = o;  // The nonce/IV
+    o += crypto_aead_aes256gcm_NPUBBYTES;
 
-    // Append encrypted data
-    gcm_aes256_encrypt(&ctx, plaintext.size(), o, plaintext.data());
-    o += plaintext.size();
-
-    // Append digest
-    gcm_aes256_digest(&ctx, GCM_DIGEST_SIZE, o);
-    o += GCM_DIGEST_SIZE;
+    // Append encrypted data and digest
+    unsigned long long ciphertext_len = 0;
+    crypto_aead_aes256gcm_encrypt(
+            o,
+            &ciphertext_len,
+            plaintext.data(),
+            plaintext.size(),
+            nullptr,
+            0,
+            nullptr,
+            npub,
+            key.data());
+    o += ciphertext_len;
 
     assert(o == output.data() + output.size());
 
@@ -146,27 +152,28 @@ ustring HopEncryption::decrypt_aesgcm(ustring ciphertext_, const x25519_pubkey& 
 
     auto key = derive_symmetric_key(private_key_, pubKey);
 
-    // Initialise cipher context with the key
-    struct gcm_aes256_ctx ctx;
-    static_assert(key.size() == AES256_KEY_SIZE);
-    gcm_aes256_set_key(&ctx, key.data());
+    static_assert(key.size() == crypto_aead_aes256gcm_KEYBYTES);
 
-    gcm_aes256_set_iv(&ctx, GCM_IV_SIZE, ciphertext.data());
-
-    ciphertext.remove_prefix(GCM_IV_SIZE);
-    auto digest_in = ciphertext.substr(ciphertext.size() - GCM_DIGEST_SIZE);
-    ciphertext.remove_suffix(GCM_DIGEST_SIZE);
+    auto nonce = ciphertext.substr(0, crypto_aead_aes256gcm_NPUBBYTES);
+    auto cipher_and_mac = ciphertext.substr(crypto_aead_aes256gcm_NPUBBYTES);
 
     ustring plaintext;
-    plaintext.resize(ciphertext.size());
+    plaintext.resize(
+            ciphertext.size() - crypto_aead_aes256gcm_NPUBBYTES - crypto_aead_aes256gcm_ABYTES);
 
-    gcm_aes256_decrypt(&ctx, ciphertext.size(), plaintext.data(), ciphertext.data());
-
-    std::array<uint8_t, GCM_DIGEST_SIZE> digest_out;
-    gcm_aes256_digest(&ctx, digest_out.size(), digest_out.data());
-
-    if (sodium_memcmp(digest_out.data(), digest_in.data(), GCM_DIGEST_SIZE) != 0)
+    unsigned long long plaintext_len = 0;
+    if (crypto_aead_aes256gcm_decrypt(
+                plaintext.data(),
+                &plaintext_len,
+                nullptr,
+                cipher_and_mac.data(),
+                cipher_and_mac.size(),
+                nullptr,
+                0,
+                nonce.data(),
+                key.data())) {
         throw std::runtime_error{"Decryption failed (AES256-GCM)"};
+    }
 
     return plaintext;
 }

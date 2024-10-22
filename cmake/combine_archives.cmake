@@ -13,7 +13,7 @@ function(combine_archives output_archive dep_target)
     add_custom_command(
         OUTPUT ${FULL_OUTPUT_PATH}
         DEPENDS ${mri_file} ${ARGN}
-        COMMAND ar -M < ${mri_file})
+        COMMAND ${CMAKE_AR} -M < ${mri_file})
   else()
     set(merge_libs)
     foreach(in_archive ${ARGN})

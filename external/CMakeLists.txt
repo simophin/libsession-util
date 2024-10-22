@@ -101,7 +101,7 @@ if(CMAKE_CROSSCOMPILING)
 endif()
 
 set(LIBQUIC_BUILD_TESTS OFF CACHE BOOL "")
-if(ENABLE_ONIONREQ)
+if(ENABLE_QUIC_NETWORKING)
   libsession_system_or_submodule(OXENQUIC quic liboxenquic>=1.1.0 oxen-libquic)
 endif()
 

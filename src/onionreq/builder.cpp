@@ -1,7 +1,6 @@
 #include "session/onionreq/builder.hpp"
 
 #include <fmt/format.h>
-#include <nettle/gcm.h>
 #include <oxenc/bt.h>
 #include <oxenc/endian.h>
 #include <oxenc/hex.h>
@@ -19,10 +18,8 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <oxen/log/format.hpp>
-#include <oxen/quic/address.hpp>
 
 #include "session/export.h"
-#include "session/network.hpp"
 #include "session/onionreq/builder.h"
 #include "session/onionreq/hop_encryption.hpp"
 #include "session/onionreq/key_types.hpp"
@@ -56,8 +53,8 @@ EncryptType parse_enc_type(std::string_view enc_type) {
 void Builder::set_destination(network_destination destination) {
     ed25519_public_key_.reset();
 
-    if (auto* dest = std::get_if<session::network::service_node>(&destination))
-        ed25519_public_key_.emplace(ed25519_pubkey::from_bytes(dest->view_remote_key()));
+    if (auto* dest = std::get_if<ServiceNodeDestination>(&destination))
+        ed25519_public_key_.emplace(dest->public_key);
     else if (auto* dest = std::get_if<ServerDestination>(&destination)) {
         host_.emplace(dest->host);
         endpoint_.emplace(dest->endpoint);
@@ -292,14 +289,9 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
         const char* ed25519_pubkey) {
     assert(builder && ip && ed25519_pubkey);
 
-    std::array<uint8_t, 4> target_ip;
-    std::memcpy(target_ip.data(), ip, target_ip.size());
-
-    unbox(builder).set_destination(session::network::service_node(
-            oxenc::from_hex({ed25519_pubkey, 64}),
-            {0},
-            session::network::INVALID_SWARM_ID,
-            "{}"_format(fmt::join(target_ip, ".")),
+    unbox(builder).set_destination(session::onionreq::ServiceNodeDestination(
+            session::onionreq::ed25519_pubkey::from_hex(ed25519_pubkey),
+            {ip[0], ip[1], ip[2], ip[3]},
             quic_port));
 }
 
