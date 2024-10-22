@@ -111,6 +111,7 @@ if(ENABLE_ONIONREQ)
         crypto
         PRIVATE
         nlohmann_json::nlohmann_json
+        oxen::logging
         libsodium::sodium-internal
     )
 

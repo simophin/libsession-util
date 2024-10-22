@@ -115,7 +115,7 @@ endif()
 if(NOT TARGET oxen::logging)
     add_subdirectory(oxen-libquic/external/oxen-logging)
 endif()
-
+libsession_static_bundle(oxen::logging)
 oxen_logging_add_source_dir("${PROJECT_SOURCE_DIR}")
 
 # Apple xcode 15 has a completely broken std::source_location; we can't fix it, but at least we can
