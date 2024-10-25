@@ -289,9 +289,11 @@ LIBSESSION_C_API void onion_request_builder_set_snode_destination(
         const char* ed25519_pubkey) {
     assert(builder && ip && ed25519_pubkey);
 
+    std::array<uint8_t, 4> ip_array{ip[0], ip[1], ip[2], ip[3]};
+
     unbox(builder).set_destination(session::onionreq::ServiceNodeDestination(
             session::onionreq::ed25519_pubkey::from_hex(ed25519_pubkey),
-            {ip[0], ip[1], ip[2], ip[3]},
+            ip_array,
             quic_port));
 }
 
